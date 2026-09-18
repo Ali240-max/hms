@@ -1,0 +1,9 @@
+{
+  "include": ["src/client/src/**/*"],
+  "compilerOptions": {
+    "jsx": "react-jsx", "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext", "moduleResolution": "bundler", "target": "ES2022",
+    "strict": true, "skipLibCheck": true, "noEmit": true,
+    "baseUrl": ".", "paths": { "@/*": ["src/client/src/*"] }
+  }
+}

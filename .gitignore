@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.rendercheck/out.mjs
+
+# Local configuration — contains the database password, never commit it
+.env
+.env.local
+
+# Backups written by the running server
+logs/
+backups/
+*.ndjson.gz
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,314 @@
+/* Inter is bundled rather than fetched: a hospital LAN may have no internet,
+   and a login screen that falls back to Times because a CDN is unreachable
+   looks broken. */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+/* Urdu needs a Nastaliq face; Inter has no Arabic-script coverage at all. */
+@import '@fontsource/noto-nastaliq-urdu/400.css';
+@import '@fontsource/noto-nastaliq-urdu/600.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+/**
+ * Three themes.
+ *
+ * Classic is the default and is the original palette: a soft blue-white page
+ * with white cards. The only thing wrong with it was the border, which at
+ * 1.9:1 against a white card was under the 3:1 minimum for a UI edge — that
+ * is why nothing looked separated. The borders here are darker and 2px, and
+ * the palette is otherwise untouched.
+ *
+ * Slate is the cooler, greyer alternative, for anyone who prefers more
+ * contrast between the page and the cards.
+ *
+ * Dark is a desaturated navy rather than black, because pure black beside a
+ * bright card causes halation on the panels these machines have.
+ *
+ * Values are raw RGB triplets so Tailwind can apply its own opacity.
+ */
+:root, .theme-classic {
+  --c-primary: 16 158 216;
+  --c-accent:  36 209 233;
+  --c-screen:  239 244 248;
+  --c-card:    255 255 255;
+  --c-raised:  244 249 252;
+  /* Darker and thicker than the original hairline: this was the actual bug. */
+  --c-line:    120 148 172;
+  --c-divide:  208 222 234;
+  --c-heading:  16  32  46;
+  --c-body:     71  96 111;
+  --c-muted:    94 116 131;
+  --c-ok:       18 156  92;
+  --c-warn:    196 112   4;
+  --c-bad:     208  46  50;
+  --c-shadow:   16  32  46;
+  --c-tint-a:  238 249 253;
+  --c-tint-b:  255 255 255;
+}
+
+.theme-slate {
+  --c-primary: 14 132 184;
+  --c-accent:  22 178 200;
+  --c-screen:  214 226 236;
+  --c-card:    255 255 255;
+  --c-raised:  237 243 248;
+  --c-line:    122 149 172;
+  --c-divide:  186 205 220;
+  --c-heading:  13  27  39;
+  --c-body:     55  76  92;
+  --c-muted:    94 117 134;
+  --c-ok:       13 148  88;
+  --c-warn:    197 112   4;
+  --c-bad:     205  43  49;
+  --c-shadow:   16  32  46;
+  --c-tint-a:  233 245 250;
+  --c-tint-b:  255 255 255;
+}
+
+.dark, .theme-dark {
+  --c-primary:  56 175 226;
+  --c-accent:   56 208 231;
+  --c-screen:   14  21  30;
+  --c-card:     34  47  62;
+  --c-raised:   46  62  80;
+  --c-line:     99 128 152;
+  --c-divide:   58  78  97;
+  --c-heading: 235 243 249;
+  --c-body:    186 203 217;
+  --c-muted:   137 158 176;
+  --c-ok:       52 199 123;
+  --c-warn:    247 160  43;
+  --c-bad:     248 113 113;
+  --c-shadow:    0   0   0;
+  --c-tint-a:   40  58  76;
+  --c-tint-b:   34  47  62;
+}
+
+/**
+ * Urdu keeps the layout and changes only the script. Nastaliq needs noticeably
+ * more vertical room than Latin or its descenders collide, so line height and
+ * a small size bump go with the face.
+ */
+html.lang-ur body { @apply font-urdu; }
+html.lang-ur { line-height: 1.9; }
+html.lang-ur .num { @apply font-sans; }
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body { @apply bg-screen text-body antialiased; }
+  h1, h2, h3, h4 { @apply text-heading; }
+  .num { font-variant-numeric: tabular-nums; }
+  :focus-visible { @apply outline-none ring-2 ring-primary/40 ring-offset-1; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { @apply rounded-full bg-line; }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border-2 border-line bg-card shadow-card
+           transition-shadow duration-200;
+  }
+  .card-tint { @apply rounded-2xl border-2 border-line bg-tint shadow-card; }
+  /* Panels that hold other cards get the larger radius, so nesting reads. */
+  .panel { @apply rounded-3xl border-2 border-line bg-card shadow-card; }
+  .field {
+    @apply w-full rounded-xl border-2 border-line bg-card px-3 py-2 text-sm text-heading
+           placeholder:text-muted focus:border-primary focus:outline-none
+           focus:ring-2 focus:ring-primary/25;
+  }
+  /*
+   * Buttons lift slightly and press down.
+   *
+   * The press is the important half: a counter clerk hitting Complete Bill
+   * needs to know the click registered before the server answers, and a
+   * button that visibly moves is the cheapest possible acknowledgement.
+   * Kept to two pixels — enough to feel, not enough to notice.
+   */
+  .btn-primary {
+    @apply rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white
+           transition-all duration-150 hover:opacity-90 hover:-translate-y-px
+           hover:shadow-md active:translate-y-0 active:shadow-sm
+           disabled:opacity-40 disabled:translate-y-0 disabled:shadow-none;
+  }
+  .btn-ghost {
+    @apply rounded-xl border-2 border-line bg-card px-3 py-2 text-sm text-body
+           shadow-sm transition-all duration-150 hover:border-primary hover:bg-raised
+           hover:-translate-y-px active:translate-y-0
+           disabled:opacity-40 disabled:translate-y-0;
+  }
+  .tile { @apply flex h-8 w-8 items-center justify-center rounded-xl bg-brand text-white; }
+  .label { @apply mb-1 block text-2xs font-medium uppercase tracking-wide text-muted; }
+
+  /**
+   * Table headings sit on a tinted strip rather than plain white. Without it
+   * a long table reads as one undifferentiated block of text, which is the
+   * main thing that made the old screens hard to scan.
+   */
+  .thead-strip { @apply border-b-2 border-line bg-raised; }
+
+  /* Zebra striping, kept very light so it guides the eye without shouting. */
+  .rows-striped > tr:nth-child(even) { @apply bg-raised/60; }
+  .rows-striped > tr { @apply transition-colors duration-100; }
+  .rows-striped > tr:hover { @apply bg-primary/10; }
+
+  /* A section heading inside a card, e.g. the role groups on the staff panel. */
+  .section-head { @apply border-b-2 border-line pb-1.5 text-sm font-medium text-heading; }
+}
+
+/* ----------------------------------------------------------------- motion */
+
+/*
+ * Movement earns its place by telling somebody something.
+ *
+ * A row sliding in says "this is new". A bar crawling says "it is working,
+ * wait". A number counting up says "this changed". Anything that does not say
+ * something is decoration, and decoration on a screen someone stares at for
+ * nine hours becomes an irritation by the second week — which is why
+ * everything here is fast, small, and plays once.
+ */
+
+@keyframes hms-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes hms-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes hms-slide-in {
+  from { opacity: 0; transform: translateY(-4px) scale(.995); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes hms-pop {
+  0%   { transform: scale(.94); opacity: 0; }
+  60%  { transform: scale(1.02); }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes hms-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(300%); }
+}
+@keyframes hms-shimmer {
+  from { background-position: -400px 0; }
+  to   { background-position: 400px 0; }
+}
+@keyframes hms-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgb(var(--c-primary) / .35); }
+  70%  { box-shadow: 0 0 0 8px rgb(var(--c-primary) / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(var(--c-primary) / 0); }
+}
+
+@layer components {
+  /* A screen or a tab arriving. */
+  .anim-in { animation: hms-fade-up .22s ease-out both; }
+  .anim-fade { animation: hms-fade .18s ease-out both; }
+
+  /* A dialog. Slightly more presence than a panel, because it interrupts. */
+  .anim-pop { animation: hms-pop .16s cubic-bezier(.34, 1.4, .64, 1) both; }
+
+  /*
+   * Rows arriving in a list, each a beat after the one above.
+   *
+   * Capped at eight: past that the last row waits noticeably, and a queue of
+   * forty patients should appear at once rather than dealt out like cards.
+   */
+  .anim-rows > * { animation: hms-slide-in .2s ease-out both; }
+  .anim-rows > *:nth-child(1) { animation-delay: 0ms }
+  .anim-rows > *:nth-child(2) { animation-delay: 25ms }
+  .anim-rows > *:nth-child(3) { animation-delay: 50ms }
+  .anim-rows > *:nth-child(4) { animation-delay: 75ms }
+  .anim-rows > *:nth-child(5) { animation-delay: 100ms }
+  .anim-rows > *:nth-child(6) { animation-delay: 125ms }
+  .anim-rows > *:nth-child(7) { animation-delay: 150ms }
+  .anim-rows > *:nth-child(n+8) { animation-delay: 175ms }
+
+  /*
+   * The loading bar.
+   *
+   * An indeterminate sweep rather than a percentage, because the server does
+   * not report progress and a fake percentage that jumps to 90 and stops is
+   * worse than no percentage at all.
+   */
+  .loading-bar {
+    @apply relative h-0.5 w-full overflow-hidden rounded-full bg-line/40;
+  }
+  .loading-bar::after {
+    content: '';
+    @apply absolute inset-y-0 left-0 w-1/3 rounded-full bg-brand;
+    animation: hms-sweep 1.1s ease-in-out infinite;
+  }
+
+  /*
+   * Skeleton rows while a table loads.
+   *
+   * Shows the shape of what is coming, so the screen does not jump when the
+   * data lands — the thing that makes an interface feel unsteady.
+   */
+  .skeleton {
+    @apply rounded-lg;
+    background-image: linear-gradient(90deg,
+      rgb(var(--c-line) / .25) 0%, rgb(var(--c-line) / .45) 50%, rgb(var(--c-line) / .25) 100%);
+    background-size: 800px 100%;
+    animation: hms-shimmer 1.3s linear infinite;
+  }
+
+  /* Something that wants attention without shouting: a new patient arriving. */
+  .anim-attention { animation: hms-pulse-ring 1.6s ease-out 2; }
+
+  /* Tiles and stat cards lift under the cursor. */
+  .lift { @apply transition-transform duration-150 hover:-translate-y-0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/**
+ * Printing.
+ *
+ * Reception prints from the browser, so the print stylesheet has to strip the
+ * application down to the slip itself. Everything is hidden, then the preview
+ * is promoted to the top of the page. Works on whatever printer the hospital
+ * happens to own, which is the only portable option here.
+ */
+@media print {
+  /* Roll printers are fed a page exactly as wide as the paper. */
+  @page { size: var(--print-paper, 80mm) auto; margin: 0; }
+
+  body * { visibility: hidden !important; }
+  .print-area, .print-area * { visibility: visible !important; }
+  .print-area {
+    position: absolute !important;
+    left: 0 !important; top: 0 !important;
+    width: var(--print-width, 72mm) !important;
+    margin: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    /* Thermal paper is white and the head only prints black; forcing both
+       stops a dark-mode screen producing a grey, half-legible slip. */
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .print-area * { background: transparent !important; color: #000 !important; }
+  .no-print { display: none !important; }
+
+  /* A prescription goes on A5, not on a till roll. */
+  .print-area:has(.nuskha), .print-area.nuskha { width: 148mm !important; }
+
+  /*
+   * Labels print as a run of fixed-size stickers rather than one long slip,
+   * so they get their own page box. Sized to the die-cut, not to the content:
+   * a label scaled by the browser lands off the edge of the sticker.
+   */
+  .print-area:has(.label-sticker) { width: 50mm !important; }
+  .label-sticker {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    border: 0 !important;
+  }
+}
