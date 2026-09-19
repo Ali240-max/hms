@@ -13,6 +13,13 @@ import { api } from './api'
  * module can be switched on next month, and a hospital that turns the doctor
  * terminal on in March must find its January visits exactly where they were.
  * This only decides what is worth showing.
+ *
+ * A module covers the work that module does, not everything touching it. With
+ * the doctor terminal off the counter still books appointments against a
+ * doctor and still takes the fee — what stops is the consultation, the
+ * prescribing and the handing over from the OPD desk. That is the part the
+ * hospital has not started using yet, and hiding the booking as well would
+ * have stopped them selling an appointment at all.
  */
 export type Modules = {
   doctor: boolean

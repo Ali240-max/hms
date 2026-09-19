@@ -112,8 +112,15 @@ export async function labReportPdf(
   for (let i = 0; i < range.count; i++) {
     doc.switchToPage(range.start + i)
     doc.font('Helvetica').fontSize(7).fillColor(GREY)
+    /*
+     * Kept clear of the bottom margin.
+     *
+     * pdfkit starts a new page as soon as text reaches the margin, even text
+     * placed at explicit coordinates — writing the page number flush against
+     * it produced a blank final page on every report.
+     */
     doc.text(`Page ${i + 1} of ${range.count}`,
-      MARGIN, doc.page.height - MARGIN - 8,
+      MARGIN, doc.page.height - MARGIN - 20,
       { width: doc.page.width - MARGIN * 2, align: 'right', lineBreak: false })
   }
 
@@ -220,7 +227,7 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
   /* ------------------------------------------------------- the values */
 
   for (const v of values as any[]) {
-    if (doc.y > doc.page.height - 175) {
+    if (doc.y > doc.page.height - 200) {
       doc.addPage()
       doc.y = MARGIN
       doc.font('Helvetica-Bold').fontSize(9).fillColor(GREY)
@@ -267,20 +274,44 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
 
   /* ---------------------------------------------------------- comments */
 
-  doc.y += 6
+  /*
+   * Everything below here is placed against the bottom of the page, not
+   * flowed from where the values happened to end.
+   *
+   * pdfkit adds a page of its own accord the moment flowing text crosses the
+   * bottom margin, and the disclaimer wraps to three lines — so a report with
+   * a full panel of values pushed the comments over and produced a second,
+   * almost empty page. Measuring the block and pinning it to a fixed band
+   * keeps one test on one page, which is the whole point of the layout.
+   */
+  const FOOT = MARGIN + 34          // the rule and the two footer lines
+  const SIG = 62                    // signature lines and their captions
+  const bandBottom = doc.page.height - FOOT - SIG - 10
+
+  doc.font('Helvetica').fontSize(7.5)
+  const discHeight = doc.heightOfString(footer.disclaimer, { width })
+  const noteHeight = report.notes
+    ? doc.fontSize(8).heightOfString(report.notes, { width }) + 4 : 0
+
+  // Start high enough that the whole block lands above the signatures.
+  let cy = Math.min(doc.y + 6, bandBottom - discHeight - noteHeight - 14)
+  cy = Math.max(cy, doc.y + 6)
+
   doc.font('Helvetica-Bold').fontSize(8.5).fillColor(INK)
-     .text('Comments:', MARGIN, doc.y, { lineBreak: false })
-  doc.y += 12
+     .text('Comments:', MARGIN, cy, { lineBreak: false })
+  cy += 12
   if (report.notes) {
-    doc.font('Helvetica').fontSize(8).fillColor(INK).text(report.notes, MARGIN, doc.y, { width })
-    doc.y += 4
+    doc.font('Helvetica').fontSize(8).fillColor(INK)
+       .text(report.notes, MARGIN, cy, { width, height: noteHeight })
+    cy += noteHeight
   }
   doc.font('Helvetica').fontSize(7.5).fillColor(GREY)
-     .text(footer.disclaimer, MARGIN, doc.y, { width })
+     .text(footer.disclaimer, MARGIN, cy, { width, height: discHeight })
+  doc.y = cy + discHeight
 
   /* -------------------------------------------------------- signatures */
 
-  const sigY = Math.max(doc.y + 34, doc.page.height - 136)
+  const sigY = doc.page.height - FOOT - SIG
   signature(doc, MARGIN, sigY, width * 0.30, report.resulted_by ?? '', 'Performed by')
   if (report.verified_by || footer.inCharge) {
     signature(doc, MARGIN + width * 0.64, sigY, width * 0.36,
@@ -291,7 +322,7 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
 
   /* ------------------------------------------------------------ footer */
 
-  const fy = doc.page.height - MARGIN - 34
+  const fy = doc.page.height - MARGIN - 48
   doc.lineWidth(0.6).strokeColor(RULE).moveTo(MARGIN, fy).lineTo(MARGIN + width, fy).stroke()
   doc.font('Helvetica').fontSize(7).fillColor(GREY)
   doc.text([footer.labName, footer.contact, footer.note].filter(Boolean).join('   ·   '),

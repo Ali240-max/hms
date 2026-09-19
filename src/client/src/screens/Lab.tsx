@@ -21,6 +21,14 @@ const FILTERS: [string, string][] = [
  */
 export function Lab({ me }: { me: SessionUser }) {
   /**
+   * Entering results takes over the screen.
+   *
+   * A dialog was the wrong shape for it: a full panel of a CBC is twenty
+   * fields, and typing them inside a box that scrolls independently of the
+   * page, over a queue the technician cannot see, made a long job feel
+   * cramped. It is its own page, with a way back.
+   */
+  /**
    * One screen, two departments.
    *
    * The work is the same shape — ordered, paid, performed, reported — so the
@@ -71,6 +79,14 @@ export function Lab({ me }: { me: SessionUser }) {
   async function act(p: Promise<any>) {
     setErr(null)
     try { await p; load() } catch (e: any) { setErr(e.message) }
+  }
+
+  if (entering) {
+    return (
+      <EnterResults group={entering} isRadiology={isRadiology}
+        onBack={() => { setEntering(null); load() }}
+        onDone={() => { setEntering(null); load() }} />
+    )
   }
 
   return (
@@ -240,16 +256,22 @@ export function Lab({ me }: { me: SessionUser }) {
                                 {onBench.length > 0 ? tr('Enter results') : tr('Edit results')}
                               </button>
                             )}
-                            {reported.map((x: any) => (
-                              <button key={x.service_order_id}
-                                onClick={() => openDocument(`/lab/orders/${x.lab_order_id}/pdf`)
+                            {/*
+                              One document for the whole visit, a page per
+                              test. Three tests used to mean three separate
+                              downloads, which is three things for a patient
+                              to lose on the way to their doctor.
+                            */}
+                            {reported.length > 0 && (
+                              <button
+                                onClick={() => openDocument(`/lab/visits/${g.visit_id}/pdf`)
                                   .catch((e: any) => setErr(e.message))}
-                                className="btn-ghost px-2 py-1 text-2xs"
-                                title={x.service_name}>
+                                className="btn-ghost w-full px-2 py-1 text-2xs">
                                 {reported.length > 1
-                                  ? x.service_name.slice(0, 10) : tr('Report')}
+                                  ? `${tr('Report')} (${reported.length} ${tr('tests')})`
+                                  : tr('Report')}
                               </button>
-                            ))}
+                            )}
                             {/*
                               The second signature. Checking a result before it
                               is handed over is the point of it, and one press
@@ -285,10 +307,7 @@ export function Lab({ me }: { me: SessionUser }) {
           onClose={() => setCollecting(null)}
           onDone={() => { setCollecting(null); load() }} />
       )}
-      {entering && (
-        <EnterResults group={entering} onClose={() => setEntering(null)}
-          onDone={() => { setEntering(null); load() }} />
-      )}
+
     </div>
   )
 }
@@ -384,42 +403,30 @@ function CollectSample({ group, isRadiology, onClose, onDone }: {
  * not for the record.
  */
 /**
- * Results for every test on the visit, in one place.
+ * Entering results, as its own screen.
  *
- * Tests whose sample has not been taken are shown greyed out rather than
- * hidden: the technician can see the whole visit, type what they have, and
- * come back for the rest. What is typed stays typed — a half-finished panel
- * survives closing the screen, because a lab is interrupted constantly and
- * losing twenty typed values to a phone call is how people stop trusting the
- * system and go back to paper.
+ * A dialog was the wrong shape. A CBC is twenty fields; typing them inside a
+ * box that scrolls separately from the page, on top of a queue the technician
+ * cannot see, made a long job feel cramped and made mistakes easy.
+ *
+ * Tests whose sample has not been taken appear locked rather than hidden, so
+ * the whole visit is visible and nobody wonders whether they mis-clicked. What
+ * is typed stays typed: a lab is interrupted constantly, and losing twenty
+ * values to a phone call is how people go back to paper.
  */
-function EnterResults({ group, onClose, onDone }: {
-  group: any; onClose: () => void; onDone: () => void
+function EnterResults({ group, isRadiology, onBack, onDone }: {
+  group: any; isRadiology?: boolean; onBack: () => void; onDone: () => void
 }) {
   const [panels, setPanels] = useState<any[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [problems, setProblems] = useState<string[] | null>(null)
+  const [savedAt, setSavedAt] = useState<string | null>(null)
 
-  /**
-   * Everything paid for on this visit, whether its sample is taken or not.
-   *
-   * The untaken ones are shown locked rather than left out, so the technician
-   * can see the whole visit at once and knows what is still outstanding
-   * instead of wondering whether they mis-clicked.
-   */
   const workable = group.tests.filter((x: any) =>
     x.pay_status === 'paid' || x.pay_status === 'completed')
   const notTaken = workable.filter((x: any) => x.lab_status === 'pending')
 
-  /**
-   * Typed values survive closing the screen.
-   *
-   * Held in a module-level map keyed by lab order rather than in this
-   * component, because the component unmounts the moment the dialog closes. A
-   * lab is interrupted constantly; losing a half-typed panel to a phone call
-   * is how people go back to writing on paper.
-   */
   useEffect(() => {
     async function build() {
       const out: any[] = []
@@ -429,24 +436,17 @@ function EnterResults({ group, onClose, onDone }: {
           ? (await api.labReport(test.lab_order_id).catch(() => null))?.values ?? []
           : []
         const byName = new Map(existing.map((e: any) => [String(e.name).toLowerCase(), e]))
-
         const draft = DRAFTS.get(draftKey(test))
 
         out.push({
           test,
           locked: test.lab_status === 'pending',
           notes: draft?.notes ?? test.notes ?? '',
-          /*
-           * No parameters configured means the test has no panel yet — common
-           * for radiology and for any service added by hand. One free-text
-           * finding is the right shape there, and the setup screen can add a
-           * proper panel later.
-           */
           values: params.length === 0
-            ? [{ name: test.service_name, value:
-                  draft?.values?.[test.service_name]
-                    ?? (byName.get(test.service_name.toLowerCase()) as any)?.value ?? '',
-                unit: null, refText: null, freeText: true }]
+            ? [{ name: test.service_name,
+                 value: draft?.values?.[test.service_name]
+                   ?? (byName.get(test.service_name.toLowerCase()) as any)?.value ?? '',
+                 unit: null, refText: null, freeText: true }]
             : params.map((p: any) => ({
                 name: p.name,
                 value: draft?.values?.[p.name]
@@ -454,7 +454,7 @@ function EnterResults({ group, onClose, onDone }: {
                 unit: p.unit,
                 refLow: p.ref_low, refHigh: p.ref_high,
                 refText: p.ref_text ?? (p.ref_low != null && p.ref_high != null
-                  ? `${trim(p.ref_low)} – ${trim(p.ref_high)}` : null)
+                  ? `${trim(p.ref_low)} - ${trim(p.ref_high)}` : null)
               }))
         })
       }
@@ -472,8 +472,13 @@ function EnterResults({ group, onClose, onDone }: {
     return 'normal'
   }
 
-  const filled = (panels ?? []).reduce((n, p) =>
-    n + (p.locked ? 0 : p.values.filter((v: any) => String(v.value).trim() !== '').length), 0)
+  const open = (panels ?? []).filter((p) => !p.locked)
+  const totalFields = open.reduce((n, p) => n + p.values.length, 0)
+  const filled = open.reduce((n, p) =>
+    n + p.values.filter((v: any) => String(v.value).trim() !== '').length, 0)
+  const complete = totalFields > 0 && filled === totalFields
+  const abnormal = open.reduce((n, p) =>
+    n + p.values.filter((v: any) => ['high', 'low'].includes(flagOf(v) ?? '')).length, 0)
 
   async function save() {
     setBusy(true); setErr(null)
@@ -493,146 +498,186 @@ function EnterResults({ group, onClose, onDone }: {
         if (r.problems?.length) trouble.push(...r.problems)
         DRAFTS.delete(draftKey(panel.test))
       }
+      setSavedAt(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))
       if (trouble.length) setProblems(trouble)
       else onDone()
     } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
   }
 
-  if (problems) {
-    return (
-      <Modal title={tr('Results saved')} onClose={onDone}
-        footer={<button onClick={onDone} className="btn-primary">{tr('Close')}</button>}>
-        <p className="text-sm text-body">{tr('The report is ready to print.')}</p>
-        <div className="mt-3 rounded-xl border-2 border-warn/40 bg-warn/5 p-3">
-          <p className="text-2xs font-medium text-warn">
-            {tr('The store could not be updated for everything this test uses')}
-          </p>
-          <ul className="mt-1 space-y-0.5">
-            {problems.map((p, i) => <li key={i} className="text-2xs text-warn">{p}</li>)}
-          </ul>
-          <p className="mt-1 text-2xs text-muted">
-            {tr('The test itself is unaffected. Tell the store so a count can put it right.')}
-          </p>
-        </div>
-      </Modal>
-    )
-  }
-
   return (
-    <Modal title={tr('Enter results')}
-      hint={`${group.patient_name} · ${group.mrn}`} wide onClose={onClose}
-      footer={<>
-        <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
-        <button onClick={save} disabled={busy || filled === 0} className="btn-primary">
-          {busy ? tr('Saving…') : `${tr('Save results')}${
-            (panels?.length ?? 0) > 1 ? ` (${panels?.length})` : ''}`}
-        </button>
-      </>}>
-      <ErrorNote>{err}</ErrorNote>
+    <div className="flex h-full min-h-0 flex-col bg-screen">
+      {/* ------------------------------------------------------- header */}
+      <header className="anim-in sticky top-0 z-10 border-b-2 border-line bg-card px-5 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <button onClick={onBack} className="btn-ghost px-3 py-1.5 text-2xs">
+              &larr; {tr('Back to the list')}
+            </button>
+            <div>
+              <h2 className="text-base font-semibold text-heading">{group.patient_name}</h2>
+              <p className="num text-2xs text-muted">
+                {group.mrn}
+                {group.age_years != null && ` · ${group.age_years}y`}
+                {group.gender && ` · ${tr(group.gender)}`}
+                {` · ${tr('token')} ${group.token_no}`}
+              </p>
+            </div>
+          </div>
 
-      {notTaken.length > 0 && (
-        <div className="mb-4 rounded-xl border-2 border-warn/40 bg-warn/5 p-3">
-          <p className="text-2xs font-medium text-warn">
-            {notTaken.length === 1
-              ? tr('One test on this visit has no sample yet')
-              : `${notTaken.length} ${tr('tests on this visit have no sample yet')}`}
-          </p>
-          <p className="mt-0.5 text-2xs text-muted">
-            {notTaken.map((x: any) => x.service_name).join(', ')} — {
-              tr('shown below but locked. Take the sample first, then come back; anything you type here is kept.')}
-          </p>
-        </div>
-      )}
-
-      {!panels ? <p className="text-2xs text-muted">{tr('Loading…')}</p>
-        : panels.length === 0 ? <Empty title={tr('Nothing on the bench for this patient')} /> : (
-        <div className="space-y-6">
-          {panels.map((panel, pi) => (
-            <section key={panel.test.service_order_id}
-              className={panel.locked ? 'opacity-55' : ''}>
-              <div className="flex items-baseline justify-between border-b-2 border-line pb-1.5">
-                <h3 className="text-sm font-medium text-heading">
-                  {panel.test.service_name}
-                  {panel.locked && (
-                    <span className="ml-2 rounded-lg border-2 border-warn/50 bg-warn/10 px-1.5
-                                     py-0.5 text-2xs font-normal text-warn">
-                      {tr('sample not taken')}
-                    </span>
-                  )}
-                </h3>
-                <span className="num text-2xs text-muted">
-                  {panel.test.report_no ?? tr('new')}
-                </span>
-              </div>
-
-              {panel.values[0]?.freeText && (
-                <p className="mt-2 text-2xs text-muted">
-                  {tr('No panel set up for this test, so write the finding in full. An administrator can add reference ranges under Services.')}
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="text-2xs uppercase tracking-wide text-muted">{tr('Filled')}</p>
+              <p className="num text-lg font-semibold text-primary">
+                {filled}<span className="text-2xs font-normal text-muted">/{totalFields}</span>
+              </p>
+            </div>
+            {abnormal > 0 && (
+              <div className="text-right">
+                <p className="text-2xs uppercase tracking-wide text-muted">
+                  {tr('Out of range')}
                 </p>
-              )}
-
-              <table className="mt-2 w-full">
-                <thead className="thead-strip">
-                  <tr>
-                    <Th>{tr('Test')}</Th><Th w="w-40">{tr('Result')}</Th>
-                    <Th w="w-24">{tr('Unit')}</Th><Th w="w-40">{tr('Reference')}</Th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-divide">
-                  {panel.values.map((v: any, i: number) => {
-                    const flag = flagOf(v)
-                    return (
-                      <tr key={v.name}>
-                        <td className="px-3 py-1.5 text-sm text-heading">{v.name}</td>
-                        <td className="px-2 py-1.5">
-                          <input value={v.value} disabled={panel.locked}
-                            onChange={(e) => setPanels((ps) => {
-                              const next = ps!.map((p, j) =>
-                                j === pi
-                                  ? { ...p, values: p.values.map((x: any, k: number) =>
-                                      k === i ? { ...x, value: e.target.value } : x) }
-                                  : p)
-                              remember(next[pi])
-                              return next
-                            })}
-                            className={`field num py-1 text-right text-sm ${
-                              flag === 'high' || flag === 'low' ? 'border-warn text-warn' : ''}`} />
-                        </td>
-                        <td className="px-2 py-1.5 text-2xs text-muted">{v.unit || '—'}</td>
-                        <td className="px-2 py-1.5">
-                          <span className="num text-2xs text-muted">{v.refText || '—'}</span>
-                          {(flag === 'high' || flag === 'low') && (
-                            <span className="ml-1 text-2xs font-medium text-warn">
-                              {flag === 'high' ? tr('high') : tr('low')}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-
-              <input value={panel.notes} disabled={panel.locked}
-                onChange={(e) => setPanels((ps) => {
-                  const next = ps!.map((p, j) =>
-                    j === pi ? { ...p, notes: e.target.value } : p)
-                  remember(next[pi])
-                  return next
-                })}
-                placeholder={tr('Comment on this test, printed under its results')}
-                className="field mt-2 text-2xs" />
-            </section>
-          ))}
+                <p className="num text-lg font-semibold text-warn">{abnormal}</p>
+              </div>
+            )}
+            <button onClick={save} disabled={busy || filled === 0} className="btn-primary">
+              {busy ? tr('Saving…')
+                : complete ? tr('Save and finish') : tr('Save what is filled')}
+            </button>
+          </div>
         </div>
-      )}
 
-      <p className="mt-4 text-2xs text-muted">
-        {tr('Each test saves as its own report. Saving takes what they use off the store.')}
-      </p>
-    </Modal>
+        {/* A bar rather than a number: it is read at a glance, mid-task. */}
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-line/40">
+          <div className="h-full rounded-full bg-brand transition-all duration-300"
+            style={{ width: `${totalFields ? (filled / totalFields) * 100 : 0}%` }} />
+        </div>
+        {savedAt && (
+          <p className="mt-1 text-2xs text-ok">{tr('Saved at')} {savedAt}</p>
+        )}
+      </header>
+
+      {/* --------------------------------------------------------- body */}
+      <div className="min-h-0 flex-1 overflow-auto p-5">
+        <ErrorNote>{err}</ErrorNote>
+
+        {problems && (
+          <div className="anim-in mb-4 rounded-xl border-2 border-warn/40 bg-warn/5 p-3">
+            <p className="text-2xs font-medium text-warn">
+              {tr('The store could not be updated for everything this test uses')}
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {problems.map((p, i) => <li key={i} className="text-2xs text-warn">{p}</li>)}
+            </ul>
+            <button onClick={onDone} className="btn-ghost mt-2 text-2xs">{tr('Close')}</button>
+          </div>
+        )}
+
+        {notTaken.length > 0 && (
+          <div className="anim-in mb-5 rounded-xl border-2 border-warn/40 bg-warn/5 p-3">
+            <p className="text-2xs font-medium text-warn">
+              {notTaken.length === 1
+                ? tr('One test on this visit has no sample yet')
+                : `${notTaken.length} ${tr('tests on this visit have no sample yet')}`}
+            </p>
+            <p className="mt-0.5 text-2xs text-muted">
+              {notTaken.map((x: any) => x.service_name).join(', ')} — {
+                tr('shown below but locked. Take the sample first, then come back; anything you type here is kept.')}
+            </p>
+          </div>
+        )}
+
+        {!panels ? <SkeletonRows rows={8} cols={4} />
+          : panels.length === 0
+            ? <Empty title={tr('Nothing on the bench for this patient')} />
+            : (
+          <div className="space-y-5">
+            {panels.map((panel, pi) => (
+              <Card key={panel.test.service_order_id}
+                className={panel.locked ? 'opacity-60' : ''}
+                title={panel.test.service_name}
+                hint={panel.locked
+                  ? tr('Sample not taken — take it from the list, then come back')
+                  : `${panel.test.report_no ?? tr('new')} · ${
+                      panel.values.filter((v: any) => String(v.value).trim() !== '').length}/${
+                      panel.values.length} ${tr('filled')}`}
+                action={panel.locked
+                  ? <span className="rounded-lg border-2 border-warn/50 bg-warn/10 px-2 py-1
+                                     text-2xs text-warn">{tr('locked')}</span>
+                  : undefined}>
+
+                {panel.values[0]?.freeText && !panel.locked && (
+                  <p className="mb-2 text-2xs text-muted">
+                    {tr('No panel set up for this test, so write the finding in full. An administrator can add reference ranges under Services.')}
+                  </p>
+                )}
+
+                <table className="w-full">
+                  <thead className="thead-strip">
+                    <tr>
+                      <Th>{tr('Test')}</Th><Th w="w-44">{tr('Result')}</Th>
+                      <Th w="w-24">{tr('Unit')}</Th><Th w="w-44">{tr('Reference')}</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-divide">
+                    {panel.values.map((v: any, i: number) => {
+                      const flag = flagOf(v)
+                      return (
+                        <tr key={v.name}
+                          className={`transition-colors ${
+                            flag === 'high' || flag === 'low' ? 'bg-warn/5' : ''}`}>
+                          <td className="px-3 py-1.5 text-sm text-heading">{v.name}</td>
+                          <td className="px-2 py-1.5">
+                            <input value={v.value} disabled={panel.locked}
+                              onChange={(e) => setPanels((ps) => {
+                                const next = ps!.map((p, j) =>
+                                  j === pi
+                                    ? { ...p, values: p.values.map((x: any, k: number) =>
+                                        k === i ? { ...x, value: e.target.value } : x) }
+                                    : p)
+                                remember(next[pi])
+                                return next
+                              })}
+                              className={`field num py-1.5 text-right text-sm ${
+                                flag === 'high' || flag === 'low'
+                                  ? 'border-warn font-medium text-warn' : ''}`} />
+                          </td>
+                          <td className="px-2 py-1.5 text-2xs text-muted">{v.unit || '—'}</td>
+                          <td className="px-2 py-1.5">
+                            <span className="num text-2xs text-muted">{v.refText || '—'}</span>
+                            {(flag === 'high' || flag === 'low') && (
+                              <span className="ml-1 rounded px-1 text-2xs font-medium text-warn">
+                                {flag === 'high' ? tr('high') : tr('low')}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+
+                <input value={panel.notes} disabled={panel.locked}
+                  onChange={(e) => setPanels((ps) => {
+                    const next = ps!.map((p, j) =>
+                      j === pi ? { ...p, notes: e.target.value } : p)
+                    remember(next[pi])
+                    return next
+                  })}
+                  placeholder={tr('Comment on this test, printed under its results')}
+                  className="field mt-3 text-2xs" />
+              </Card>
+            ))}
+          </div>
+        )}
+
+        <p className="mt-5 text-2xs text-muted">
+          {tr('Each test saves as its own report. Once every field is filled, the whole visit prints as one document with a page per test.')}
+        </p>
+      </div>
+    </div>
   )
 }
+
 
 /**
  * Half-typed panels, kept outside React.

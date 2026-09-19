@@ -28,49 +28,68 @@ r = await q(`/pharma/returns/lookup?invoice=${encodeURIComponent(sale.invoiceNo 
 ok('the invoice is found', r.status===200, JSON.stringify(r.body).slice(0,90))
 const look = r.body
 ok('its lines come back', look.items.length>0)
-const line = look.items[0]
-ok('the whole quantity is returnable', line.returnable===3, String(line.returnable))
+/*
+ * A sale of three may arrive as two lines.
+ *
+ * FEFO takes the nearest expiry first, so three units can come off two
+ * batches and land as 2 + 1. That is correct — a return has to go back to the
+ * batch it came from, or the expiry on the shelf would be wrong — so the test
+ * works from the biggest line rather than assuming the sale is one row. The
+ * earlier version passed only because the stock happened to sit in one batch.
+ */
+const line = look.items.slice().sort((a,b) => b.returnable - a.returnable)[0]
+const SOLD = Number(line.display_qty)
+ok('a line is returnable in full', line.returnable === SOLD,
+  `${line.returnable} of ${SOLD}`)
+ok('the sale covers three units across its lines',
+  look.items.reduce((n,i)=>n+Number(i.display_qty),0) === 3,
+  look.items.map(i=>i.display_qty).join('+'))
 ok('the refund rate is what was charged',
-  Number(line.unit_refund_paisa)*3 === Number(line.line_total_paisa),
-  `${line.unit_refund_paisa} x3 vs ${line.line_total_paisa}`)
+  Number(line.unit_refund_paisa)*SOLD === Number(line.line_total_paisa),
+  `${line.unit_refund_paisa} x${SOLD} vs ${line.line_total_paisa}`)
 
 r = await q('/pharma/returns/lookup?invoice=NOPE-999','ph')
 ok('an unknown invoice is refused', r.status===404, `got ${r.status}`)
 
 console.log('\n— return two, sealed —')
+// Return all but one of that line, so something is left to test the rest with.
+const FIRST = Math.max(1, SOLD - 1)
 r = await q('/pharma/returns','ph',{method:'POST',body:JSON.stringify({
-  saleId: sale.id, lines:[{ saleItemId: line.id, qty: 2, restock: true }],
+  saleId: sale.id, lines:[{ saleItemId: line.id, qty: FIRST, restock: true }],
   reason:'Patient did not need it' })})
 ok('the return is accepted', r.status===201, JSON.stringify(r.body).slice(0,110))
 const ret = r.body
 ok('it gets a return number', /^SR-\d{6}$/.test(ret.return_no), ret.return_no)
-ok('the refund is two units worth',
-  Number(ret.total_paisa) === Number(line.unit_refund_paisa)*2,
-  `${ret.total_paisa} vs ${Number(line.unit_refund_paisa)*2}`)
+ok('the refund matches what those units cost',
+  Number(ret.total_paisa) === Number(line.unit_refund_paisa)*FIRST,
+  `${ret.total_paisa} vs ${Number(line.unit_refund_paisa)*FIRST}`)
 ok('cash sale refunds from the drawer', ret.refund_to==='cash', ret.refund_to)
 
 const afterStock = (await q('/pharmacy/inventory','ph')).body.find(p=>p.id===prod.id).in_stock
-const units = soldAs === 'pack' ? 2 * prod.pack_size : 2
+const units = soldAs === 'pack' ? FIRST * prod.pack_size : FIRST
 ok('sealed stock goes back on the shelf', afterStock === beforeStock + units,
   `${beforeStock} -> ${afterStock}, expected +${units}`)
 
 console.log('\n— what is left —')
 r = await q(`/pharma/returns/lookup?invoice=${encodeURIComponent(sale.invoiceNo ?? sale.invoice_no)}`,'ph')
-ok('only one remains returnable', r.body.items[0].returnable===1, String(r.body.items[0].returnable))
-ok('the two already returned are recorded', Number(r.body.items[0].already_returned)===2,
-  String(r.body.items[0].already_returned))
+const after = r.body.items.find(i => i.id === line.id)
+ok('what is left on that line is what was not returned',
+  after.returnable === SOLD - FIRST, `${after.returnable} left of ${SOLD}`)
+ok('the returned quantity is recorded', Number(after.already_returned)===FIRST,
+  String(after.already_returned))
 
 console.log('\n— it will not over-return —')
 r = await q('/pharma/returns','ph',{method:'POST',body:JSON.stringify({
-  saleId: sale.id, lines:[{ saleItemId: line.id, qty: 5, restock: true }] })})
+  saleId: sale.id, lines:[{ saleItemId: line.id, qty: SOLD + 5, restock: true }] })})
 ok('returning more than was sold is refused', r.status===409 && r.body.code==='TOO_MANY',
   JSON.stringify(r.body).slice(0,110))
-ok('the refusal says how many are left', /Only 1/.test(r.body.error ?? ''), r.body?.error?.slice(0,60))
+ok('the refusal says how many are left',
+  new RegExp(`Only ${SOLD - FIRST} `).test(r.body.error ?? ''), r.body?.error?.slice(0,70))
 
 console.log('\n— damaged goods are refunded but not restocked —')
 const before2 = (await q('/pharmacy/inventory','ph')).body.find(p=>p.id===prod.id).in_stock
 r = await q('/pharma/returns','ph',{method:'POST',body:JSON.stringify({
-  saleId: sale.id, lines:[{ saleItemId: line.id, qty: 1, restock: false }],
+  saleId: sale.id, lines:[{ saleItemId: line.id, qty: SOLD - FIRST, restock: false }],
   reason:'Strip torn' })})
 ok('a damaged return is accepted', r.status===201)
 ok('the customer still gets their money', Number(r.body.total_paisa)>0, String(r.body?.total_paisa))

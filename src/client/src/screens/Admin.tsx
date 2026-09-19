@@ -834,7 +834,8 @@ function ModulesCard() {
 
   const ITEMS: [string, string, string][] = [
     ['opdCounter', 'OPD counter', 'Holds the queue and records vitals before the doctor'],
-    ['doctor', 'Doctor terminal', 'Consultations, prescriptions and ordering tests'],
+    ['doctor', 'Doctor terminal',
+      'The consultation itself. The counter still books appointments and takes the fee either way'],
     ['pharmacy', 'Pharmacy', 'Counter, stock, ledgers and reports'],
     ['laboratory', 'Laboratory', 'Samples, results and lab reports'],
     ['radiology', 'Radiology', 'X-ray, ultrasound and imaging'],

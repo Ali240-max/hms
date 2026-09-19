@@ -6,7 +6,6 @@ import { ChitPreview } from '../components/Chit'
 import { CounterBilling, type BillTarget } from './counter/Billing'
 import { PrinterSettingsCard } from '../components/PrinterSettings'
 import { t as tr } from '../lib/prefs'
-import { useModules } from '../lib/modules'
 
 type Tab = 'overview' | 'desk' | 'billing' | 'patients' | 'chits' | 'printing'
 
@@ -77,7 +76,6 @@ export function MainCounter({ me }: { me: SessionUser }) {
 }
 
 function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void }) {
-  const modules = useModules()
   const [q, setQ] = useState('')
   const [results, setResults] = useState<any[]>([])
   const [queue, setQueue] = useState<any[]>([])
@@ -150,15 +148,15 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
                   {tr('Test only')}
                 </button>
                 {/*
-                  Hidden when the hospital has no doctor terminal. Those
-                  patients come for a test and pay for it directly, so Test
-                  only is the whole of their visit.
+                  Always available, even with the doctor terminal switched off.
+                  The counter still books an appointment against a doctor and
+                  still takes the fee; what is switched off is the consultation
+                  itself, which the hospital has not started using yet. Hiding
+                  this would have stopped them selling the appointment.
                 */}
-                {modules.doctor && (
-                  <button onClick={() => setBooking(p)} className="btn-ghost shrink-0">
-                    {tr('Send to doctor')}
-                  </button>
-                )}
+                <button onClick={() => setBooking(p)} className="btn-ghost shrink-0">
+                  {tr('Send to doctor')}
+                </button>
               </li>
             ))}
           </ul>
@@ -241,11 +239,7 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
             form. Now it asks what they are here for — and when the doctor
             terminal is switched off it does not ask at all, it goes to tests.
           */
-          onDone={(p) => {
-            setRegistering(false); setQ('')
-            if (modules.doctor) setNext(p)
-            else setDirect(p)
-          }}
+          onDone={(p) => { setRegistering(false); setQ(''); setNext(p) }}
         />
       )}
       {booking && (
