@@ -94,7 +94,12 @@ for (const c of recipe) {
 ok('each recipe line came off the shelf', deducted,
   recipe.map(c=>`${c.item_name}: ${beforeBy.get(c.item_id)}->${after.find(i=>i.id===c.item_id)?.on_hand}`).join(', '))
 const moves = (await q('/supplies/movements?kind=issue','st')).body
-ok('the movement names the lab', moves.some(m=>/Lab test/.test(m.reason ?? '')))
+// The reason changed when deduction moved to sample time: it now names the
+// report it was drawn for, which is more use than "lab test" when a store
+// keeper is working out where a box of syringes went.
+ok('the movement names the lab and the report',
+  moves.some(m=>/Lab sample — LAB-\d{6}/.test(m.reason ?? '')),
+  moves.slice(0,2).map(m=>m.reason).join(' | '))
 
 console.log('\n— re-saving does not deduct twice —')
 const beforeAgain = (await q('/supplies/items','st')).body

@@ -29,7 +29,8 @@
     "verify:lab": "node verify-lab.mjs",
     "seed:pharmacy": "tsx scripts/seed-pharmacy.ts",
     "verify:returns": "node verify-returns.mjs",
-    "verify:modules": "node verify-modules.mjs"
+    "verify:modules": "node verify-modules.mjs",
+    "verify:reports": "node verify-reports.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

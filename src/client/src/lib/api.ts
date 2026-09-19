@@ -32,7 +32,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'pharmacist'
+export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'pharmacist' | 'pharmacy_admin' | 'reports'
 export type SessionUser = {
   id: number; username: string; displayName: string; role: Role
   departmentId: number | null; departmentName?: string | null; doctorId?: number | null
@@ -190,6 +190,11 @@ export const api = {
       body: JSON.stringify({ serviceOrderId, sampleType }) }),
   /* ------------------------------------------- the rebuilt pharmacy */
   reportCatalogue: () => req<any[]>('/pharma/reports'),
+
+  /* Every report the signed-in person may see, across all modules. */
+  allReports: () => req<any[]>('/reports'),
+  runAnyReport: (id: string, o: Record<string, string> = {}) =>
+    req<any>(`/reports/run/${id}?${new URLSearchParams(o)}`),
   runReport: (id: string, o: Record<string, string> = {}) =>
     req<any>(`/pharma/reports/run/${id}?${new URLSearchParams(o)}`),
 

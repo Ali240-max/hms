@@ -127,6 +127,7 @@ function StaffTab({ me }: { me: SessionUser }) {
     ['ipd_counter', 'Emergency', 'Admits arrivals and records bedside medicines'],
     ['store_keeper', 'Stores', 'Hospital consumables — gauze, gloves, IV sets'],
     ['lab_tech', 'Laboratory', 'Takes samples, enters results, issues reports'],
+    ['reports', 'Reports', 'Reads every report in the hospital and changes nothing'],
     ['radiology', 'Radiology', 'X-ray and imaging — its own work list'],
     ['pharmacist', 'Pharmacy', 'Run the till and hold stock'],
     ['admin', 'Administrators', 'Full access, including staff and rates']
@@ -278,6 +279,7 @@ function AddStaff({ onClose, onDone }: { onClose: () => void; onDone: () => void
             <option value="ipd_counter">{tr('Emergency — admissions and bedside medicines')}</option>
             <option value="store_keeper">{tr('Stores — hospital consumables')}</option>
             <option value="lab_tech">{tr('Laboratory — samples and results')}</option>
+            <option value="reports">{tr('Reports — every report, read only')}</option>
             <option value="radiology">{tr('Radiology — x-ray and imaging')}</option>
             <option value="doctor">{tr('Doctor')}</option>
             <option value="pharmacist">{tr('Pharmacy — counter, stock and reports')}</option>

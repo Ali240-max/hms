@@ -9,6 +9,7 @@ import { Lab } from './screens/Lab'
 import { Doctor } from './screens/Doctor'
 import { Pharmacy } from './screens/Pharmacy'
 import { Admin } from './screens/Admin'
+import { ReportsDesk } from './screens/reports/ReportsDesk'
 import { AppearanceToggle, useT } from './lib/prefs'
 import { ModulesProvider } from './lib/modules'
 import { t as tr } from './lib/prefs'
@@ -17,7 +18,7 @@ const HOME: Record<string, string> = {
   admin: 'Administration', main_counter: 'Main counter', receptionist: 'OPD counter',
   ipd_counter: 'Emergency', store_keeper: 'Stores', lab_tech: 'Laboratory',
   radiology: 'Radiology',
-  doctor: 'Consultation', pharmacist: 'Pharmacy'
+  doctor: 'Consultation', pharmacist: 'Pharmacy', reports: 'Reports'
 }
 
 export default function App() {
@@ -81,6 +82,7 @@ export default function App() {
           staring at a blank page.
         */}
         {(me.role as string) === 'pharmacy_admin' && <Pharmacy me={me} />}
+        {me.role === 'reports' && <ReportsDesk me={me} />}
         {me.role === 'admin' && <Admin me={me} />}
       </main>
       <AppearanceToggle />

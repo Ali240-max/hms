@@ -10,7 +10,7 @@ const scryptAsync = promisify(scrypt) as (pw: string, salt: Buffer, len: number)
  * `main_counter` is the cash window; `receptionist` is the OPD desk.
  * The value name is kept for the OPD desk so existing staff rows stay valid.
  */
-export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'pharmacist' | 'pharmacy_admin'
+export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'pharmacist' | 'pharmacy_admin' | 'reports'
 
 export type SessionUser = {
   id: number

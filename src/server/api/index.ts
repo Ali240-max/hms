@@ -21,6 +21,7 @@ import {
 import { loadDemoData, hasAnyData } from '../services/demo'
 import { pharmacy } from './pharmacy'
 import { pharma } from './pharma'
+import { reports } from './reports'
 import {
   createChitsForVisit, chitForPrint, chitsForVisit, payChit, completeChit,
   listChits, ChitError, CATEGORY_LABEL
@@ -195,7 +196,7 @@ api.use('*', async (c, next) => {
  */
 api.post('/tickets', async (c) => {
   const b = z.object({ path: z.string().min(1) }).parse(await c.req.json())
-  if (!/^\/(lab|pharma)\/[\w/-]+\/pdf$/.test(b.path)) {
+  if (!/^\/(lab|pharma|reports)\/[\w/-]+\/pdf$/.test(b.path)) {
     return c.json({ error: 'That is not a downloadable document', code: 'NOT_A_FILE' }, 400)
   }
   return c.json({ ticket: createTicket(b.path, me(c).id), path: b.path })
@@ -246,7 +247,7 @@ api.post('/staff', adminOnly, async (c) => {
     username: z.string().min(1), displayName: z.string().default(''), password: z.string(),
     role: z.enum(['admin', 'main_counter', 'receptionist', 'ipd_counter',
                   'store_keeper', 'lab_tech', 'radiology', 'doctor',
-                  'pharmacist', 'pharmacy_admin']),
+                  'pharmacist', 'pharmacy_admin', 'reports']),
     departmentId: z.number().int().nullable().optional(),
     phone: z.string().nullable().optional(),
     doctor: z.object({
@@ -1142,6 +1143,12 @@ api.route('/pharmacy', pharmacy)
  */
 api.use('/pharma/*', allow('admin', 'pharmacist', 'pharmacy_admin'))
 api.route('/pharma', pharma)
+
+/**
+ * Every report in the system. Each role sees its own module's; the reports
+ * desk and administrators see all of them.
+ */
+api.route('/reports', reports)
 
 api.get('/pharmacy/prescriptions', allow('admin', 'pharmacist', 'pharmacy_admin'), async (c) =>
   c.json(await pendingPrescriptions(c.req.query('q') ?? undefined)))

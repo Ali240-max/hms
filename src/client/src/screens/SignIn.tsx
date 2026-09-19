@@ -12,6 +12,7 @@ const DEPTS = [
   { role: 'store_keeper', label: 'Stores', desc: 'Hospital consumables and supplies' },
   { role: 'lab_tech', label: 'Laboratory', desc: 'Samples, results and reports' },
   { role: 'radiology', label: 'Radiology', desc: 'X-ray, ultrasound and imaging reports' },
+  { role: 'reports', label: 'Reports', desc: 'Every report in the hospital, read only' },
   { role: 'admin', label: 'Administration', desc: 'Staff, services, prices and reports' }
 ] as const
 

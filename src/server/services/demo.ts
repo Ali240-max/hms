@@ -90,6 +90,8 @@ export async function loadDemoData(
   await createStaff({ username: 'stores', displayName: 'Tariq Mehmood', password: '1234', role: 'store_keeper' })
   // The laboratory: samples, results, reports. Handles no money.
   await createStaff({ username: 'lab', displayName: 'Farhan Javed', password: '1234', role: 'lab_tech' })
+  // The accounts desk: reads every report, changes nothing.
+  await createStaff({ username: 'reports', displayName: 'Nadia Saleem', password: '1234', role: 'reports' })
   // Radiology keeps its own list: an x-ray room and a blood lab share nothing
   // but the shape of the workflow.
   await createStaff({ username: 'xray', displayName: 'Waseem Akhtar', password: '1234', role: 'radiology' })
@@ -547,7 +549,9 @@ export async function loadDemoData(
     FROM service_orders so
     JOIN services sv ON sv.id = so.service_id
     JOIN visits v ON v.id = so.visit_id
-    WHERE so.status = 'paid' AND sv.category = 'lab'
+    -- Radiology too, or the x-ray room opens on an empty screen and every
+    -- radiology report reads zero.
+    WHERE so.status = 'paid' AND sv.category IN ('lab', 'radiology')
     ORDER BY so.id DESC LIMIT 90`)).rows as any[]
 
   let labSeq = 0

@@ -35,7 +35,7 @@ function shift(days: number) {
 
 export function Reports({ me }: { me: SessionUser }) {
   const [catalogue, setCatalogue] = useState<any[]>([])
-  const [selected, setSelected] = useState<string>('sales-daily')
+  const [selected, setSelected] = useState<string>('')
   const [range, setRange] = useState('Last 30 days')
   const [from, setFrom] = useState(shift(-29))
   const [to, setTo] = useState(today())
@@ -43,14 +43,21 @@ export function Reports({ me }: { me: SessionUser }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  useEffect(() => { api.reportCatalogue().then(setCatalogue).catch(() => {}) }, [])
+  useEffect(() => {
+    api.allReports().then((r) => {
+      setCatalogue(r)
+      // Open on the first report this person can actually see, whichever
+      // module they belong to.
+      if (r[0]) setSelected((s) => s || r[0].id)
+    }).catch(() => {})
+  }, [])
 
   const def = catalogue.find((r) => r.id === selected)
 
   const load = useCallback(() => {
     if (!selected) return
     setLoading(true); setErr(null)
-    api.runReport(selected, { from, to })
+    api.runAnyReport(selected, { from, to })
       .then(setData).catch((e: any) => setErr(e.message)).finally(() => setLoading(false))
   }, [selected, from, to])
   useEffect(load, [load])
@@ -105,7 +112,7 @@ export function Reports({ me }: { me: SessionUser }) {
           action={
             <button
               onClick={() => openDocument(
-                `/pharma/reports/print/${selected}/pdf?from=${from}&to=${to}`)
+                `/reports/print/${selected}/pdf?from=${from}&to=${to}`)
                 .catch((e: any) => setErr(e.message))}
               disabled={!data} className="btn-primary">
               {tr('Print / PDF')}

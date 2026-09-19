@@ -2,12 +2,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, rs, toPaisa, today, newId, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../components/ui'
 import { t as tr } from '../lib/prefs'
+import { Sidebar, type NavItem } from '../components/Sidebar'
 
 type Tab = 'stock' | 'issue' | 'receive' | 'movements' | 'reports'
 
-const TABS: [Tab, string][] = [
-  ['stock', 'Stock'], ['issue', 'Issue'], ['receive', 'Receive'],
-  ['movements', 'Movements'], ['reports', 'Reports']
+const NAV: (NavItem & { id: Tab })[] = [
+  { id: 'stock', label: 'Stock', glyph: 'S' },
+  { id: 'issue', label: 'Issue', glyph: 'out' },
+  { id: 'receive', label: 'Receive', glyph: 'in' },
+  { id: 'movements', label: 'Movements', glyph: 'M' },
+  { id: 'reports', label: 'Reports', glyph: 'Rp' }
 ]
 
 const FILTERS: [string, string][] = [
@@ -27,18 +31,10 @@ const FILTERS: [string, string][] = [
 export function Stores({ me }: { me: SessionUser }) {
   const [tab, setTab] = useState<Tab>('stock')
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <nav className="no-print flex gap-1 overflow-x-auto border-b-2 border-line bg-card px-4 pt-3">
-        {TABS.map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`whitespace-nowrap rounded-t-xl px-3 py-2 text-sm transition-colors ${
-              tab === id ? 'border-b-2 border-primary font-medium text-primary'
-                         : 'text-muted hover:text-body'}`}>
-            {tr(label)}
-          </button>
-        ))}
-      </nav>
-      <div className="min-h-0 flex-1 overflow-auto bg-screen">
+    <div className="flex h-full min-h-0">
+      <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
+        title="Stores" subtitle={me.displayName} />
+      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'stock' && <StockTab />}
         {tab === 'issue' && <IssueTab me={me} />}
         {tab === 'receive' && <ReceiveTab onAddItem={() => setTab('stock')} />}

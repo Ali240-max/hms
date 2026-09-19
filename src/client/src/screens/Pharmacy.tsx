@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Sidebar, type NavItem } from '../components/Sidebar'
 import { api, type SessionUser } from '../lib/api'
 import { useT } from '../lib/prefs'
 import { Billing } from './pharmacy/Billing'
@@ -17,11 +18,29 @@ import { Returns } from './pharma/Returns'
 type Tab = 'billing' | 'prescriptions' | 'medicines' | 'receive' | 'stock' | 'bills'
   | 'returns' | 'overview' | 'reports' | 'ledgers' | 'access' | 'printing'
 
-const TABS: [Tab, string][] = [
-  ['billing', 'Billing'], ['prescriptions', 'Prescriptions'], ['medicines', 'Medicines'],
-  ['receive', 'Receive'], ['returns', 'Returns'], ['stock', 'Stock'],
-  ['bills', 'Bills'], ['overview', 'Overview'],
-  ['reports', 'Reports'], ['ledgers', 'Ledgers'], ['access', 'Access'], ['printing', 'Printing']
+/**
+ * The rail, grouped by what a person is doing rather than alphabetically.
+ *
+ * Eleven tabs across the top scrolled off the right-hand edge on the 1366-wide
+ * screens these counters have, and the ones that scrolled off were the ones
+ * nobody found. Down the side they all fit and stay readable.
+ */
+const NAV: (NavItem & { id: Tab })[] = [
+  { id: 'billing', label: 'Billing', glyph: 'B', section: 'Counter' },
+  { id: 'prescriptions', label: 'Prescriptions', glyph: 'Rx' },
+  { id: 'returns', label: 'Returns', glyph: 'R' },
+
+  { id: 'medicines', label: 'Medicines', glyph: 'M', section: 'Stock' },
+  { id: 'receive', label: 'Receive', glyph: 'in' },
+  { id: 'stock', label: 'Stock', glyph: 'S' },
+
+  { id: 'overview', label: 'Overview', glyph: 'O', section: 'Money' },
+  { id: 'bills', label: 'Bills', glyph: 'Bl' },
+  { id: 'ledgers', label: 'Ledgers', glyph: 'L' },
+  { id: 'reports', label: 'Reports', glyph: 'Rp' },
+
+  { id: 'access', label: 'Access', glyph: 'A', section: 'Setup' },
+  { id: 'printing', label: 'Printing', glyph: 'P' }
 ]
 
 export type PendingFill = {
@@ -84,22 +103,14 @@ export function Pharmacy({ me }: { me: SessionUser }) {
     setTab('billing')
   }
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <nav className="flex gap-1 overflow-x-auto border-b border-line bg-card px-4 pt-3">
-        {TABS.filter(([id]) => can(id)).map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`relative whitespace-nowrap rounded-t-xl px-3 py-2 text-sm
-                        transition-all duration-150 hover:-translate-y-px ${
-              tab === id
-                ? 'border-b-2 border-primary font-medium text-primary'
-                : 'text-muted hover:text-body'}`}>
-            {tr(label)}
-          </button>
-        ))}
-      </nav>
+  const items = NAV.filter((n) => can(n.id))
 
-      <div className="min-h-0 flex-1 overflow-auto bg-screen">
+  return (
+    <div className="flex h-full min-h-0">
+      <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as Tab)}
+        title="Pharmacy" subtitle={me.displayName} />
+
+      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'billing' && (
           <Billing me={me} pending={pending} onConsumed={() => setPending(null)} />
         )}

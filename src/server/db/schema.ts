@@ -28,7 +28,7 @@ import {
  */
 export const staffRole = pgEnum('staff_role',
   ['admin', 'main_counter', 'receptionist', 'ipd_counter', 'store_keeper', 'lab_tech', 'radiology',
-   'doctor', 'pharmacist', 'pharmacy_admin'])
+   'doctor', 'pharmacist', 'pharmacy_admin', 'reports'])
 
 export const departments = pgTable(
   'departments',
