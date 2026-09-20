@@ -298,6 +298,9 @@ export const api = {
   saveVitals: (visitId: number, b: any) =>
     req<any>(`/visits/${visitId}/vitals`, { method: 'PATCH', body: JSON.stringify(b) }),
   receptionOverview: (hours = 24) => req<any>(`/reception/overview?hours=${hours}`),
+  /** A one-minute ticket so the browser can fetch a document by itself. */
+  documentTicket: (path: string) =>
+    req<{ ticket: string }>('/tickets', { method: 'POST', body: JSON.stringify({ path }) }),
   modules: () => req<Record<string, boolean>>('/modules'),
   saveModules: (b: Record<string, boolean>) =>
     req<Record<string, boolean>>('/modules', { method: 'PUT', body: JSON.stringify(b) }),

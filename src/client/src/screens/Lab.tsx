@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, rs, openDocument, type SessionUser } from '../lib/api'
+import { api, rs, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../components/ui'
 import { t as tr } from '../lib/prefs'
+import { Sidebar, type NavItem } from '../components/Sidebar'
+import { PdfPreview } from '../components/PdfPreview'
+import { Reports } from './pharma/Reports'
+import {
+  ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2,
+  Clock, AlertTriangle, FileText, ArrowLeft, Save
+} from 'lucide-react'
 
 const FILTERS: [string, string][] = [
   ['active', 'On the bench'], ['pending', 'Awaiting sample'],
@@ -19,7 +26,7 @@ const FILTERS: [string, string][] = [
  * started. The server refuses it too, but showing why on the row saves the
  * technician walking to the counter to ask.
  */
-export function Lab({ me }: { me: SessionUser }) {
+function LabQueue({ me }: { me: SessionUser }) {
   /**
    * Entering results takes over the screen.
    *
@@ -40,18 +47,18 @@ export function Lab({ me }: { me: SessionUser }) {
   const [rows, setRows] = useState<any[]>([])
   const [stats, setStats] = useState<any>(null)
   const [status, setStatus] = useState('active')
-  const [category, setCategory] = useState('all')
   const [q, setQ] = useState('')
   const [entering, setEntering] = useState<any | null>(null)
+  const [viewing, setViewing] = useState<any | null>(null)
   const [collecting, setCollecting] = useState<any | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(() => {
     setLoading(true)
-    api.labQueue({ status, category, q }).then(setRows).finally(() => setLoading(false))
+    api.labQueue({ status, q }).then(setRows).finally(() => setLoading(false))
     api.labStats().then(setStats).catch(() => {})
-  }, [status, category, q])
+  }, [status, q])
 
   useEffect(() => { const t = setTimeout(load, q ? 250 : 0); return () => clearTimeout(t) }, [load, q])
   useEffect(() => {
@@ -118,15 +125,7 @@ export function Lab({ me }: { me: SessionUser }) {
               {tr(label)}
             </button>
           ))}
-          {/* A radiographer has only one category, so the filter is noise. */}
-          {!isRadiology && (
-            <select value={category} onChange={(e) => setCategory(e.target.value)}
-              className="field ml-auto w-40 py-1.5 text-2xs">
-              <option value="all">{tr('All departments')}</option>
-              <option value="lab">{tr('Laboratory')}</option>
-              <option value="procedure">{tr('Procedures')}</option>
-            </select>
-          )}
+
         </div>
 
         <ErrorNote>{err}</ErrorNote>
@@ -264,26 +263,11 @@ export function Lab({ me }: { me: SessionUser }) {
                             */}
                             {reported.length > 0 && (
                               <button
-                                onClick={() => openDocument(`/lab/visits/${g.visit_id}/pdf`)
-                                  .catch((e: any) => setErr(e.message))}
+                                onClick={() => setViewing(g)}
                                 className="btn-ghost w-full px-2 py-1 text-2xs">
                                 {reported.length > 1
                                   ? `${tr('Report')} (${reported.length} ${tr('tests')})`
                                   : tr('Report')}
-                              </button>
-                            )}
-                            {/*
-                              The second signature. Checking a result before it
-                              is handed over is the point of it, and one press
-                              covers every report on the visit.
-                            */}
-                            {reported.some((x: any) => !x.verified_at) && (
-                              <button
-                                onClick={() => act(Promise.all(
-                                  reported.filter((x: any) => !x.verified_at)
-                                    .map((x: any) => api.verifyResult(x.lab_order_id))))}
-                                className="btn-primary px-2 py-1 text-2xs">
-                                {tr('Verify')}
                               </button>
                             )}
                           </div>
@@ -302,6 +286,16 @@ export function Lab({ me }: { me: SessionUser }) {
         {tr('Signed in as')} {me.displayName}. {tr('The laboratory takes no payments. A test appears here once it has been paid for at the main counter.')}
       </p>
 
+      {/*
+        Drawn onto canvases by pdf.js rather than handed to the browser's PDF
+        viewer, which plenty of people have set to download instead of display.
+      */}
+      {viewing && (
+        <PdfPreview path={`/lab/visits/${viewing.visit_id}/pdf`}
+          title={`${viewing.patient_name} — ${tr('lab report')}`}
+          filename={`${viewing.mrn}-lab-report.pdf`}
+          onClose={() => setViewing(null)} />
+      )}
       {collecting && (
         <CollectSample group={collecting} isRadiology={isRadiology}
           onClose={() => setCollecting(null)}
@@ -701,4 +695,34 @@ function remember(panel: any) {
 function trim(v: any) {
   const n = Number(v)
   return Number.isFinite(n) ? String(n) : String(v)
+}
+
+/* ---------------------------------------------------------------- shell */
+
+/**
+ * The laboratory, and the x-ray room, which run the same screens.
+ *
+ * A rail rather than tabs, the same as everywhere else. The work list is what
+ * the department opens on; reports are what the in-charge opens at the end of
+ * a day, and putting them behind a second click keeps the bench screen clear.
+ */
+export function Lab({ me }: { me: SessionUser }) {
+  const isRadiology = me.role === 'radiology'
+  const [tab, setTab] = useState<'queue' | 'reports'>('queue')
+
+  const items: NavItem[] = [
+    { id: 'queue', label: isRadiology ? 'Imaging list' : 'Work list',
+      glyph: isRadiology ? 'X' : 'L', icon: isRadiology ? ScanLine : FlaskConical },
+    { id: 'reports', label: 'Reports', glyph: 'R', icon: BarChart3 }
+  ]
+
+  return (
+    <div className="flex h-full min-h-0">
+      <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as any)}
+        title={isRadiology ? 'Radiology' : 'Laboratory'} subtitle={me.displayName} />
+      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+        {tab === 'queue' ? <LabQueue me={me} /> : <Reports me={me} />}
+      </div>
+    </div>
+  )
 }

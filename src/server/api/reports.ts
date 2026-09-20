@@ -99,7 +99,16 @@ reports.get('/print/:id/pdf', async (c) => {
   return new Response(pdf, {
     headers: {
       'content-type': 'application/pdf',
-      'content-disposition': `inline; filename="${def.id}-${w.from}-to-${w.to}.pdf"`
+      /*
+       * Inline unless asked otherwise.
+       *
+       * A browser with its PDF viewer switched off downloads either way, which
+       * is why the screen previews the report as HTML and only asks for this
+       * when someone presses Download.
+       */
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="${def.id}-${w.from}-to-${w.to}.pdf"`
     }
   })
 })

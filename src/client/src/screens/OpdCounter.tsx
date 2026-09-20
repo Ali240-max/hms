@@ -3,6 +3,9 @@ import { api, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../components/ui'
 import { useT } from '../lib/prefs'
 import { t as tr } from '../lib/prefs'
+import { Sidebar, type NavItem } from '../components/Sidebar'
+import { Reports } from './pharma/Reports'
+import { ListChecks, BarChart3 } from 'lucide-react'
 import { useModules } from '../lib/modules'
 
 /**
@@ -18,7 +21,7 @@ import { useModules } from '../lib/modules'
  * nothing on this screen that can take a payment, and the server refuses even
  * if the endpoint is called directly.
  */
-export function OpdCounter({ me }: { me: SessionUser }) {
+function OpdCounterWork({ me }: { me: SessionUser }) {
   const tr = useT()
   const modules = useModules()
   const [queue, setQueue] = useState<any[]>([])
@@ -381,5 +384,32 @@ function VitalsForm({ visit, onClose, onDone }: {
       )}
       <div className="mt-2"><ErrorNote>{err}</ErrorNote></div>
     </Modal>
+  )
+}
+
+/* ---------------------------------------------------------------- shell */
+
+/**
+ * The rail, so this desk looks like the rest of the system.
+ *
+ * Only two places to be — the work in front of them, and the figures someone
+ * asks for at the end of a day — but the shape is the same everywhere, and a
+ * person moved between counters should not have to relearn where things are.
+ */
+const NAV: NavItem[] = [
+  { id: 'work', label: 'Queue and vitals', glyph: 'W', icon: ListChecks },
+  { id: 'reports', label: 'Reports', glyph: 'R', icon: BarChart3 }
+]
+
+export function OpdCounter({ me }: { me: SessionUser }) {
+  const [tab, setTab] = useState<'work' | 'reports'>('work')
+  return (
+    <div className="flex h-full min-h-0">
+      <Sidebar items={NAV} active={tab} onSelect={(id: string) => setTab(id as 'work' | 'reports')}
+        title="OPD counter" subtitle={me.displayName} />
+      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+        {tab === 'work' ? <OpdCounterWork me={me} /> : <Reports me={me} />}
+      </div>
+    </div>
   )
 }

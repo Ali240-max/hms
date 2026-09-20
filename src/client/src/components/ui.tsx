@@ -1,3 +1,4 @@
+import { Inbox } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 export function Card({ title, hint, action, tint, className = '', children }: {
@@ -99,6 +100,7 @@ export function Modal({ title, hint, wide, onClose, children, footer }: {
 export function Empty({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
   return (
     <div className="anim-in flex flex-col items-center justify-center px-6 py-16 text-center">
+      <Inbox size={34} className="mb-3 text-muted/50" />
       <p className="text-sm font-medium text-heading">{title}</p>
       {hint && <p className="mt-1 max-w-sm text-2xs text-muted">{hint}</p>}
       {action && <div className="mt-4">{action}</div>}

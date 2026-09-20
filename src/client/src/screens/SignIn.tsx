@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, setToken, type SessionUser } from '../lib/api'
 import { ErrorNote, Field } from '../components/ui'
+import {
+  Banknote, ListChecks, Siren, Stethoscope, Pill, Boxes,
+  FlaskConical, ScanLine, BarChart3, Settings, type LucideIcon
+} from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
 const DEPTS = [
@@ -22,6 +26,20 @@ const DEPTS = [
  * entry because they are always on: without them nobody can sign in or be
  * registered.
  */
+/** The face of each desk on the home screen. */
+const CELL_ICON: Record<string, LucideIcon> = {
+  main_counter: Banknote,
+  receptionist: ListChecks,
+  ipd_counter: Siren,
+  doctor: Stethoscope,
+  pharmacist: Pill,
+  store_keeper: Boxes,
+  lab_tech: FlaskConical,
+  radiology: ScanLine,
+  reports: BarChart3,
+  admin: Settings
+}
+
 const CELL_MODULE: Record<string, string> = {
   receptionist: 'opdCounter',
   ipd_counter: 'emergency',
@@ -140,7 +158,13 @@ export function SignIn({ onSignedIn }: { onSignedIn: (u: SessionUser) => void })
           }).map((d) => (
             <button key={d.role} onClick={() => setDept(d.role)}
               className="card-tint flex items-start gap-3 p-4 text-left transition-shadow hover:shadow-md">
-              <span className="tile shrink-0">{d.label[0]}</span>
+              <span className="tile shrink-0 transition-transform group-hover:scale-105"
+                style={{
+                  backgroundImage:
+                    'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
+                }}>
+                {(() => { const I = CELL_ICON[d.role]; return I ? <I size={17} /> : d.label[0] })()}
+              </span>
               <span>
                 <span className="block text-sm font-medium text-heading">{tr(d.label)}</span>
                 <span className="block text-2xs text-muted">{tr(d.desc)}</span>
@@ -161,7 +185,13 @@ export function SignIn({ onSignedIn }: { onSignedIn: (u: SessionUser) => void })
         &larr; Choose a different station
       </button>
       <div className="flex items-center gap-3">
-        <span className="tile">{chosen.label[0]}</span>
+        <span className="tile"
+          style={{
+            backgroundImage:
+              'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
+          }}>
+          {(() => { const I = CELL_ICON[chosen.role]; return I ? <I size={17} /> : chosen.label[0] })()}
+        </span>
         <div>
           <h1 className="text-lg font-semibold">{chosen.label}</h1>
           <p className="text-2xs text-muted">{tr('Sign in with your own account')}</p>

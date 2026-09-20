@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 
 /**
  * Emergency intake.
@@ -50,8 +51,15 @@ export async function createEmergencyVisit(input: {
 
     const today = new Date().toISOString().slice(0, 10)
     const tokenNo = await nextCounter(tx, `token:emergency:${today}`)
-    const seq = await nextCounter(tx, 'visit')
-    const visitNo = `E-${today.replace(/-/g, '')}-${String(seq).padStart(5, '0')}`
+    /*
+     * VIS-260918-E00042.
+     *
+     * The sequence resets daily like every other document. It used to run
+     * from one global counter, which meant the visit number grew forever
+     * while the date beside it already said which day it was — two things
+     * carrying the same information, one of them unbounded.
+     */
+    const visitNo = await documentNo(tx, { prefix: 'VIS', letter: 'E' })
 
     /**
      * Starts at 'ready', not 'registered'.

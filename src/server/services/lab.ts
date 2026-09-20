@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 import { issueSupplies } from './supplies'
 
 /**
@@ -24,7 +25,7 @@ export const LAB_STATUS = ['pending', 'collected', 'in_progress', 'resulted'] as
 
 /** LAB-000123. */
 async function nextReportNo(tx: any): Promise<string> {
-  return `LAB-${String(await nextCounter(tx, 'lab_report')).padStart(6, '0')}`
+  return documentNo(tx, { prefix: 'LAB', letter: 'L' })
 }
 
 /**

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 
 /**
  * Billing at the main counter window.
@@ -23,9 +24,15 @@ export class BillError extends Error {
   }
 }
 
-/** INV-000123, gapless: an unexplained gap in an invoice series invites questions. */
-async function nextBillNo(tx: any): Promise<string> {
-  return `INV-${String(await nextCounter(tx, 'counter_bill')).padStart(6, '0')}`
+/**
+ * INV-260618-C00123.
+ *
+ * The letter says what was paid for: C a consultation fee, D a department
+ * chit. The date resets the sequence daily, so the number never has to be
+ * wide enough to hold years of trading.
+ */
+async function nextBillNo(tx: any, kind: 'consultation' | 'chit'): Promise<string> {
+  return documentNo(tx, { prefix: 'INV', letter: kind === 'chit' ? 'D' : 'C' })
 }
 
 /**
@@ -135,7 +142,7 @@ export async function completeBill(input: {
   const change = Math.max(0, tendered - total)
 
   return db.transaction(async (tx) => {
-    const billNo = await nextBillNo(tx)
+    const billNo = await nextBillNo(tx, input.kind)
     const bill = (await tx.execute<any>(sql`
       INSERT INTO counter_bills
         (bill_no, kind, visit_id, patient_id, chit_id, subtotal_paisa, discount_paisa,
@@ -206,8 +213,15 @@ export async function directServiceVisit(input: {
 
     const today = new Date().toISOString().slice(0, 10)
     const tokenNo = await nextCounter(tx, `token:direct:${today}`)
-    const seq = await nextCounter(tx, 'visit')
-    const visitNo = `D-${today.replace(/-/g, '')}-${String(seq).padStart(5, '0')}`
+    /*
+     * VIS-260918-D00042.
+     *
+     * The sequence resets daily like every other document. It used to run
+     * from one global counter, which meant the visit number grew forever
+     * while the date beside it already said which day it was — two things
+     * carrying the same information, one of them unbounded.
+     */
+    const visitNo = await documentNo(tx, { prefix: 'VIS', letter: 'D' })
 
     /**
      * No doctor and no fee. `doctor_id` is nullable only for this case, so
@@ -240,7 +254,7 @@ export async function directServiceVisit(input: {
     const chits: any[] = []
     for (const [category, list] of byCategory) {
       const n = await nextCounter(tx, 'chit')
-      const chitNo = `CHIT-${String(n).padStart(6, '0')}`
+      const chitNo = await documentNo(tx, { prefix: 'CHIT', letter: 'T' })
       const total = list.reduce((sum, sv) => sum + Number(sv.price_paisa), 0)
       const chit = (await tx.execute<any>(sql`
         INSERT INTO chits (chit_no, visit_id, patient_id, category, total_paisa, created_by)

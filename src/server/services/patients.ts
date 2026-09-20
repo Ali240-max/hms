@@ -1,6 +1,7 @@
 import { sql, eq } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
 import * as s from '../db/schema'
+import { documentNo } from './numbering'
 
 /**
  * Patient identity.
@@ -59,15 +60,28 @@ export async function findPossibleDuplicates(input: NewPatient) {
                THEN 'same phone'
              WHEN ${input.cnic ?? ''} <> '' AND p.cnic = ${input.cnic ?? ''}
                THEN 'same CNIC'
+             WHEN ${name} <> '' AND lower(p.name) = lower(${name}) THEN 'same name'
              ELSE 'similar name'
            END AS why
     FROM patients p
     WHERE (${phone} <> '' AND regexp_replace(COALESCE(p.phone,''), '\\D', '', 'g') = ${phone})
        OR (${input.cnic ?? ''} <> '' AND p.cnic = ${input.cnic ?? ''})
-       OR (${name} <> '' AND lower(p.name) = lower(${name}))
+       /*
+        * Matched as the name is being typed, not only when it is finished.
+        *
+        * An exact match found nothing until the last letter, by which point
+        * the clerk had moved on to the phone field and stopped looking. Two
+        * letters is enough to start showing candidates, which is the whole
+        * point: the warning has to arrive before the record is created, not
+        * after.
+        */
+       OR (length(${name}) >= 2 AND p.name ILIKE ${name + '%'})
+       OR (length(${name}) >= 4 AND p.name ILIKE ${'%' + name + '%'})
     ORDER BY (regexp_replace(COALESCE(p.phone,''), '\\D', '', 'g') = ${phone}) DESC,
+             (lower(p.name) = lower(${name})) DESC,
+             (SELECT MAX(v.created_at) FROM visits v WHERE v.patient_id = p.id) DESC NULLS LAST,
              p.created_at DESC
-    LIMIT 10`)
+    LIMIT 8`)
   return r.rows
 }
 
@@ -178,8 +192,15 @@ export async function createVisit(input: {
     const today = new Date().toISOString().slice(0, 10)
     const tokenKey = `token:${today}`
     const tokenNo = await nextCounter(tx, tokenKey)
-    const seq = await nextCounter(tx, 'visit')
-    const visitNo = `V-${today.replace(/-/g, '')}-${String(seq).padStart(5, '0')}`
+    /*
+     * VIS-260918-V00042.
+     *
+     * The sequence resets daily like every other document. It used to run
+     * from one global counter, which meant the visit number grew forever
+     * while the date beside it already said which day it was — two things
+     * carrying the same information, one of them unbounded.
+     */
+    const visitNo = await documentNo(tx, { prefix: 'VIS', letter: 'V' })
 
     const [row] = await tx.insert(s.visits).values({
       visitNo,

@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type ComponentType, type ReactNode } from 'react'
+import { ChevronLeft } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
 /**
@@ -16,7 +17,9 @@ import { t as tr } from '../lib/prefs'
 export type NavItem = {
   id: string
   label: string
-  /** One or two characters. A real icon set would be another 40kB over a LAN. */
+  /** Drawn when given; the glyph is the fallback. */
+  icon?: ComponentType<{ size?: number | string; className?: string }>
+  /** One or two characters, used where no icon is supplied. */
   glyph: string
   /** Optional count shown on the right, for work waiting. */
   badge?: number
@@ -102,11 +105,11 @@ export function Sidebar({ items, active, onSelect, title, subtitle, footer }: {
                   <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-white/70" />
                 )}
 
-                <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg text-2xs
+                <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg text-2xs
                                   font-semibold transition-colors
                                   ${on ? 'bg-white/20 text-white'
                                        : 'bg-raised text-muted group-hover:text-primary'}`}>
-                  {item.glyph}
+                  {item.icon ? <item.icon size={15} /> : item.glyph}
                 </span>
 
                 {open && (
@@ -132,9 +135,8 @@ export function Sidebar({ items, active, onSelect, title, subtitle, footer }: {
         title={open ? tr('Collapse') : tr('Expand')}
         className="flex items-center justify-center gap-2 border-t-2 border-line/70 py-2
                    text-2xs text-muted transition-colors hover:bg-card/70 hover:text-primary">
-        <span className={`inline-block transition-transform duration-200 ${open ? '' : 'rotate-180'}`}>
-          &larr;
-        </span>
+        <ChevronLeft size={14}
+          className={`transition-transform duration-200 ${open ? '' : 'rotate-180'}`} />
         {open && tr('Collapse')}
       </button>
     </nav>

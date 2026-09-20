@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, rs, openDocument, today, type SessionUser } from '../../lib/api'
+import { api, rs, today, type SessionUser } from '../../lib/api'
+import { ReportPreview } from '../../components/ReportPreview'
 import { Card, Empty, ErrorNote, Stat, Th, SkeletonRows } from '../../components/ui'
 import { t as tr } from '../../lib/prefs'
+import { FileText } from 'lucide-react'
 
 /**
  * Reports.
@@ -42,6 +44,7 @@ export function Reports({ me }: { me: SessionUser }) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [preview, setPreview] = useState(false)
 
   useEffect(() => {
     api.allReports().then((r) => {
@@ -110,12 +113,9 @@ export function Reports({ me }: { me: SessionUser }) {
       <div className="min-h-0 space-y-4 overflow-auto">
         <Card title={def ? tr(def.title) : tr('Reports')} hint={def ? tr(def.blurb) : undefined}
           action={
-            <button
-              onClick={() => openDocument(
-                `/reports/print/${selected}/pdf?from=${from}&to=${to}`)
-                .catch((e: any) => setErr(e.message))}
-              disabled={!data} className="btn-primary">
-              {tr('Print / PDF')}
+            <button onClick={() => setPreview(true)} disabled={!data}
+              className="btn-primary inline-flex items-center gap-1.5">
+              <FileText size={14} /> {tr('Print / PDF')}
             </button>
           }>
           <ErrorNote>{err}</ErrorNote>
@@ -164,6 +164,13 @@ export function Reports({ me }: { me: SessionUser }) {
               : <Table data={data} />}
         </Card>
       </div>
+
+      {preview && data && (
+        <ReportPreview data={data}
+          path={`/reports/print/${selected}/pdf?from=${from}&to=${to}`}
+          filename={`${selected}-${from}-to-${to}.pdf`}
+          onClose={() => setPreview(false)} />
+      )}
     </div>
   )
 }
@@ -214,41 +221,72 @@ function Headline({ stats }: { stats: any }) {
 /**
  * A plain bar chart.
  *
- * Drawn by hand rather than pulled from a charting library: the whole thing is
- * a row of divs, it themes with the rest of the application, and it adds
- * nothing to the bundle that a pharmacy PC has to load over a LAN.
+ * Drawn by hand rather than pulled from a charting library: it is a row of
+ * divs, it themes with the rest of the application, and it adds nothing to a
+ * bundle a pharmacy PC loads over a LAN.
+ *
+ * The bars are sized in pixels, not percentages. A percentage height inside a
+ * parent whose own height is decided by its content resolves to nothing, and
+ * that is exactly what happened here — the chart rendered, occupied its space,
+ * and every bar was zero tall.
  */
 function Chart({ rows, chart }: { rows: any[]; chart: any }) {
+  const H = 190
   const top = rows.slice(0, 14)
   const values = top.map((r) => Math.abs(Number(r[chart.value] ?? 0)))
   const peak = Math.max(...values, 1)
   const money = /paisa/.test(chart.value)
+  const show = (v: number) => (money ? rs(v) : v.toLocaleString('en-PK'))
 
   return (
     <div>
-      <div className="flex h-52 items-end gap-1.5">
-        {top.map((r, i) => {
-          const v = Number(r[chart.value] ?? 0)
-          const h = (Math.abs(v) / peak) * 100
-          return (
-            <div key={i} className="group relative flex flex-1 flex-col justify-end"
-              title={`${r[chart.label]} — ${money ? 'Rs ' + rs(v) : v}`}>
-              <span className="mb-1 text-center text-[0.6rem] text-muted opacity-0
-                               transition-opacity group-hover:opacity-100">
-                {money ? rs(v) : v}
-              </span>
-              <div className={`w-full rounded-t-lg transition-colors ${
-                v < 0 ? 'bg-bad/70 group-hover:bg-bad' : 'bg-primary/70 group-hover:bg-primary'}`}
-                style={{ height: `${Math.max(h, 2)}%` }} />
-            </div>
-          )
-        })}
+      <div className="relative" style={{ height: H }}>
+        {/* Quiet guides, so a bar can be read against a number. */}
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+          <div key={f} className="absolute inset-x-0 flex items-center gap-2"
+            style={{ bottom: f * H }}>
+            <span className="w-14 shrink-0 text-right num text-[0.6rem] text-muted">
+              {show(peak * f)}
+            </span>
+            <span className="h-px flex-1 bg-divide" />
+          </div>
+        ))}
+
+        <div className="absolute inset-y-0 left-16 right-0 flex items-end gap-1.5">
+          {top.map((r, i) => {
+            const v = Number(r[chart.value] ?? 0)
+            const h = Math.max((Math.abs(v) / peak) * H, 3)
+            return (
+              <div key={i} className="group relative flex-1"
+                title={`${r[chart.label]} — ${money ? 'Rs ' + show(v) : show(v)}`}>
+                <div
+                  className={`w-full rounded-t-lg transition-all duration-200 ${
+                    v < 0 ? 'bg-bad/70 group-hover:bg-bad' : 'group-hover:opacity-100'}`}
+                  style={{
+                    height: h,
+                    ...(v < 0 ? {} : {
+                      backgroundImage:
+                        'linear-gradient(180deg, rgb(var(--c-accent)) 0%, rgb(var(--c-primary)) 100%)',
+                      opacity: 0.85
+                    })
+                  }} />
+                <span className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2
+                                 whitespace-nowrap rounded-lg bg-heading px-1.5 py-0.5
+                                 text-[0.6rem] text-white opacity-0 transition-opacity
+                                 group-hover:opacity-100">
+                  {show(v)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
       </div>
-      <div className="mt-2 flex gap-1.5">
+
+      <div className="ml-16 mt-2 flex gap-1.5">
         {top.map((r, i) => (
           <div key={i} className="flex-1 truncate text-center text-[0.6rem] text-muted"
             title={String(r[chart.label])}>
-            {String(r[chart.label]).slice(0, 10)}
+            {String(r[chart.label]).slice(0, 12)}
           </div>
         ))}
       </div>

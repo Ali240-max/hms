@@ -27,7 +27,8 @@ ok('it is live, not held at registered', v.status==='ready', v.status)
 ok('marked as an emergency visit', v.visit_type==='emergency', v.visit_type)
 ok('the fee is unpaid but recorded', v.fee_paid===false && Number(v.consultation_fee_paisa)>0)
 ok('triage is kept', v.triage==='critical')
-ok('the visit number marks it out', /^E-/.test(v.visit_no), v.visit_no)
+ok('the visit number marks it out as emergency',
+  /^VIS-\d{6}-E\d{5}$/.test(v.visit_no), v.visit_no)
 
 console.log('\n— it does NOT wait behind the payment gate —')
 ok('the doctor can see it straight away',

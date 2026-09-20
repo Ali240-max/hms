@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, rs, type SessionUser, type SearchHit, newId} from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../components/ui'
 import { t as tr } from '../lib/prefs'
+import { Sidebar, type NavItem } from '../components/Sidebar'
+import { Reports } from './pharma/Reports'
+import { Siren, BarChart3 } from 'lucide-react'
 
 const TRIAGE: [string, string, string][] = [
   ['critical', 'Critical', 'bad'],
@@ -21,7 +24,7 @@ const TRIAGE: [string, string, string][] = [
  * the pharmacy for the medicines. Keeping collection off this screen is what
  * stops cash being handled on a trolley.
  */
-export function IpdCounter({ me }: { me: SessionUser }) {
+function IpdCounterWork({ me }: { me: SessionUser }) {
   const [rows, setRows] = useState<any[]>([])
   const [q, setQ] = useState('')
   const [admitting, setAdmitting] = useState(false)
@@ -532,5 +535,32 @@ function CloseVisit({ visit, onClose, onDone }: {
       )}
       <div className="mt-2"><ErrorNote>{err}</ErrorNote></div>
     </Modal>
+  )
+}
+
+/* ---------------------------------------------------------------- shell */
+
+/**
+ * The rail, so this desk looks like the rest of the system.
+ *
+ * Only two places to be — the work in front of them, and the figures someone
+ * asks for at the end of a day — but the shape is the same everywhere, and a
+ * person moved between counters should not have to relearn where things are.
+ */
+const NAV: NavItem[] = [
+  { id: 'work', label: 'Emergency floor', glyph: 'W', icon: Siren },
+  { id: 'reports', label: 'Reports', glyph: 'R', icon: BarChart3 }
+]
+
+export function IpdCounter({ me }: { me: SessionUser }) {
+  const [tab, setTab] = useState<'work' | 'reports'>('work')
+  return (
+    <div className="flex h-full min-h-0">
+      <Sidebar items={NAV} active={tab} onSelect={(id: string) => setTab(id as 'work' | 'reports')}
+        title="Emergency" subtitle={me.displayName} />
+      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+        {tab === 'work' ? <IpdCounterWork me={me} /> : <Reports me={me} />}
+      </div>
+    </div>
   )
 }

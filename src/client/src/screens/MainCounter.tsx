@@ -6,12 +6,25 @@ import { ChitPreview } from '../components/Chit'
 import { CounterBilling, type BillTarget } from './counter/Billing'
 import { PrinterSettingsCard } from '../components/PrinterSettings'
 import { t as tr } from '../lib/prefs'
+import { Sidebar, type NavItem } from '../components/Sidebar'
+import { Reports } from './pharma/Reports'
+import {
+  UserPlus, Banknote, Receipt, Users, LayoutDashboard, BarChart3, Printer,
+  Stethoscope, FlaskConical, Search, AlertTriangle
+} from 'lucide-react'
 
-type Tab = 'overview' | 'desk' | 'billing' | 'patients' | 'chits' | 'printing'
+type Tab = 'overview' | 'desk' | 'billing' | 'patients' | 'chits' | 'reports' | 'printing'
 
-const TABS: [Tab, string][] = [
-  ['desk', 'Registration'], ['billing', 'Billing'], ['chits', 'Chits and payments'],
-  ['patients', 'All patients'], ['overview', 'Overview'], ['printing', 'Printing']
+const NAV: (NavItem & { id: Tab })[] = [
+  { id: 'desk', label: 'Registration', glyph: 'R', icon: UserPlus, section: 'Front desk' },
+  { id: 'billing', label: 'Billing', glyph: 'B', icon: Banknote },
+  { id: 'chits', label: 'Chits and payments', glyph: 'C', icon: Receipt },
+
+  { id: 'patients', label: 'All patients', glyph: 'P', icon: Users, section: 'Records' },
+  { id: 'overview', label: 'Overview', glyph: 'O', icon: LayoutDashboard },
+  { id: 'reports', label: 'Reports', glyph: 'Rp', icon: BarChart3 },
+
+  { id: 'printing', label: 'Printing', glyph: 'Pr', icon: Printer, section: 'Setup' }
 ]
 
 /**
@@ -44,18 +57,10 @@ export function MainCounter({ me }: { me: SessionUser }) {
     setTab('billing')
   }
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <nav className="no-print flex gap-1 border-b border-line bg-card px-4 pt-3">
-        {TABS.map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`rounded-t-xl px-3 py-2 text-sm transition-colors ${
-              tab === id ? 'border-b-2 border-primary font-medium text-primary'
-                         : 'text-muted hover:text-body'}`}>
-            {tr(label)}
-          </button>
-        ))}
-      </nav>
-      <div className="min-h-0 flex-1 overflow-auto bg-screen">
+    <div className="flex h-full min-h-0">
+      <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
+        title="Main counter" subtitle={me.displayName} />
+      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'desk' && <Desk me={me} onBill={sendToTill} />}
         {tab === 'billing' && (
           <CounterBilling me={me} target={billing}
@@ -70,6 +75,7 @@ export function MainCounter({ me }: { me: SessionUser }) {
         )}
         {tab === 'patients' && <PatientDirectory />}
         {tab === 'chits' && <ChitCounter onBill={sendToTill} />}
+        {tab === 'reports' && <Reports me={me} />}
       </div>
     </div>
   )
@@ -284,19 +290,29 @@ function RegisterPatient({ onClose, onDone }: { onClose: () => void; onDone: (p:
     cnic: '', address: '', bloodGroup: '', allergies: ''
   })
   const [dupes, setDupes] = useState<any[]>([])
+  const [dismissed, setDismissed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // Check as they type, so the warning arrives before the work is done rather
-  // than after they press save.
+  /**
+   * Look for the same person while the name is still being typed.
+   *
+   * Two letters and 150ms, not four hundred. The old delay meant the warning
+   * arrived after the clerk had already moved to the phone field and stopped
+   * looking at the top of the form, so the same patient got registered twice
+   * and every visit, chit and result afterwards was split across two records.
+   * Cleaning that up later is far harder than showing the list early.
+   */
   useEffect(() => {
-    if (!f.name.trim() && !f.phone.trim()) { setDupes([]); return }
-    const t = setTimeout(() => {
-      api.checkDuplicates({ name: f.name || 'x', phone: f.phone || null, cnic: f.cnic || null })
+    const name = f.name.trim()
+    const phone = f.phone.trim()
+    if (name.length < 2 && phone.length < 4 && !f.cnic.trim()) { setDupes([]); return }
+    const timer = setTimeout(() => {
+      api.checkDuplicates({ name: name || 'x', phone: phone || null, cnic: f.cnic || null })
         .then(setDupes).catch(() => setDupes([]))
-    }, 400)
-    return () => clearTimeout(t)
-  }, [f.name, f.phone, f.cnic])
+    }, 150)
+    return () => clearTimeout(timer)
+  }, [f.name, f.phone, f.cnic, f.fatherName])
 
   async function save() {
     if (!f.name.trim()) { setErr('The patient needs a name'); return }
@@ -328,29 +344,63 @@ function RegisterPatient({ onClose, onDone }: { onClose: () => void; onDone: (p:
           </button>
         </>
       }>
-      {dupes.length > 0 && (
-        <div className="mb-4 rounded-lg border border-warn/30 bg-warn/5 p-3">
-          <p className="text-2xs font-medium text-warn">
-            {dupes.length === 1 ? 'Someone already registered looks like this person'
-              : `${dupes.length} people already registered look like this person`}
-          </p>
-          <ul className="mt-2 space-y-1">
+      {/*
+        Sits directly under the name, where the clerk is already looking,
+        rather than in a panel above the form they have scrolled past.
+      */}
+      {dupes.length > 0 && !dismissed && (
+        <div className="anim-in mb-4 overflow-hidden rounded-xl border-2 border-warn/45
+                        bg-warn/5">
+          <div className="flex items-center gap-2 border-b border-warn/30 px-3 py-2">
+            <AlertTriangle size={14} className="shrink-0 text-warn" />
+            <p className="flex-1 text-2xs font-medium text-warn">
+              {dupes.length === 1
+                ? tr('Someone already registered looks like this person')
+                : `${dupes.length} ${tr('people already registered look like this person')}`}
+            </p>
+            <button onClick={() => setDismissed(true)}
+              className="shrink-0 rounded-lg px-1.5 text-warn/70 hover:bg-warn/10">
+              &times;
+            </button>
+          </div>
+
+          <ul className="divide-y divide-warn/20">
             {dupes.map((d) => (
-              <li key={d.id} className="flex items-center justify-between gap-3 text-2xs">
-                <span>
-                  <span className="font-medium text-heading">{d.name}</span>{' '}
-                  <span className="num text-muted">{d.mrn} · {d.phone ?? 'no phone'}</span>{' '}
-                  <Badge>{d.why}</Badge>
-                </span>
-                <button onClick={() => onDone(d)} className="text-primary hover:underline">
-                  {tr('Use this record')}
+              <li key={d.id}>
+                <button onClick={() => onDone(d)}
+                  className="flex w-full items-center gap-3 px-3 py-2 text-left
+                             transition-colors hover:bg-warn/10">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full
+                                   bg-warn/15 text-2xs font-semibold text-warn">
+                    {String(d.name ?? '?').slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-heading">
+                      {d.name}
+                      {d.father_name && (
+                        <span className="ml-1 text-2xs font-normal text-muted">
+                          s/o {d.father_name}
+                        </span>
+                      )}
+                    </span>
+                    <span className="block num text-2xs text-muted">
+                      {d.mrn}
+                      {d.phone ? ` · ${d.phone}` : ''}
+                      {d.age_years != null ? ` · ${d.age_years}y` : ''}
+                      {d.last_visit ? ` · ${tr('last seen')} ${String(d.last_visit).slice(0, 10)}` : ''}
+                    </span>
+                  </span>
+                  <Badge tone="warn">{d.why}</Badge>
+                  <span className="shrink-0 text-2xs font-medium text-primary">
+                    {tr('Use this')}
+                  </span>
                 </button>
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-2xs text-muted">
-            Registering again anyway is fine if it really is a different person, which
-            happens with families sharing a phone.
+
+          <p className="border-t border-warn/20 px-3 py-2 text-2xs text-muted">
+            {tr('Registering again is fine if it really is a different person — families share a phone. Picking one above avoids splitting their history across two records.')}
           </p>
         </div>
       )}

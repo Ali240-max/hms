@@ -2,26 +2,37 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, rs, toPaisa, bpToPct, pctToBp, today, type SessionUser , newId} from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th } from '../components/ui'
 import { useT } from '../lib/prefs'
+import { Sidebar, type NavItem } from '../components/Sidebar'
+import { Reports } from './pharma/Reports'
+import {
+  LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
+  Building2, Settings, Database
+} from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
-const TABS = ['Overview', 'Staff', 'Services', 'Doctor shares', 'Departments', 'Demo data', 'Settings'] as const
+const TABS = ['Overview', 'Staff', 'Services', 'Doctor shares', 'Departments',
+  'Reports', 'Demo data', 'Settings'] as const
 type Tab = typeof TABS[number]
+
+const NAV: (NavItem & { id: Tab })[] = [
+  { id: 'Overview', label: 'Overview', glyph: 'O', icon: LayoutDashboard },
+  { id: 'Reports', label: 'Reports', glyph: 'R', icon: BarChart3 },
+  { id: 'Staff', label: 'Staff', glyph: 'S', icon: Users, section: 'People' },
+  { id: 'Doctor shares', label: 'Doctor shares', glyph: 'D', icon: Percent },
+  { id: 'Services', label: 'Services', glyph: 'Sv', icon: ClipboardList, section: 'Setup' },
+  { id: 'Departments', label: 'Departments', glyph: 'Dp', icon: Building2 },
+  { id: 'Settings', label: 'Settings', glyph: 'St', icon: Settings },
+  { id: 'Demo data', label: 'Demo data', glyph: 'Dm', icon: Database }
+]
 
 export function Admin({ me }: { me: SessionUser }) {
   const tr = useT()
   const [tab, setTab] = useState<Tab>('Overview')
   return (
-    <div className="space-y-5 p-5">
-      <div className="flex flex-wrap gap-2">
-        {TABS.map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`rounded-xl px-3 py-1.5 text-sm transition-colors ${
-              tab === t ? 'bg-brand text-white shadow-card'
-                        : 'border-2 border-line bg-card text-body hover:border-primary/40 hover:bg-screen'}`}>
-            {tr(t)}
-          </button>
-        ))}
-      </div>
+    <div className="flex h-full min-h-0">
+      <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
+        title="Administration" subtitle={me.displayName} />
+      <div key={tab} className="anim-fade min-h-0 flex-1 space-y-5 overflow-auto p-5">
       {tab === 'Overview' && <Overview />}
       {tab === 'Staff' && <StaffTab me={me} />}
       {tab === 'Services' && <ServicesTab />}
@@ -29,6 +40,8 @@ export function Admin({ me }: { me: SessionUser }) {
       {tab === 'Departments' && <DepartmentsTab />}
       {tab === 'Demo data' && <DemoTab />}
       {tab === 'Settings' && <SettingsTab />}
+      {tab === 'Reports' && <Reports me={me} />}
+      </div>
     </div>
   )
 }

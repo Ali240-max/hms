@@ -2,7 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, rs, today, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th } from '../components/ui'
 import { NuskhaPreview } from '../components/Nuskha'
+import { Sidebar, type NavItem } from '../components/Sidebar'
+import { Stethoscope, Wallet } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
+
+const DOCTOR_NAV: NavItem[] = [
+  { id: 'queue', label: 'My patients', glyph: 'Q', icon: Stethoscope },
+  { id: 'earnings', label: 'Earnings', glyph: 'E', icon: Wallet }
+]
 
 export function Doctor({ me }: { me: SessionUser }) {
   const [tab, setTab] = useState<'queue' | 'earnings'>('queue')
@@ -13,17 +20,12 @@ export function Doctor({ me }: { me: SessionUser }) {
   }
 
   return (
-    <div className="space-y-5 p-5">
-      <div className="flex gap-2">
-        {(['queue', 'earnings'] as const).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`rounded-lg px-3 py-1.5 text-sm ${
-              tab === t ? 'bg-brand text-white' : 'border-2 border-line bg-card text-body hover:bg-screen'}`}>
-            {t === 'queue' ? 'My patients' : 'My earnings'}
-          </button>
-        ))}
+    <div className="flex h-full min-h-0">
+      <Sidebar items={DOCTOR_NAV} active={tab} onSelect={(id: string) => setTab(id as 'queue' | 'earnings')}
+        title="Consultation" subtitle={me.displayName} />
+      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+        {tab === 'queue' ? <Queue onOpen={setOpenVisit} /> : <Earnings me={me} />}
       </div>
-      {tab === 'queue' ? <Queue onOpen={setOpenVisit} /> : <Earnings me={me} />}
     </div>
   )
 }

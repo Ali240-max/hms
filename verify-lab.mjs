@@ -61,7 +61,7 @@ const lo = r.body
 ok('consumables come off at sample time', (lo.used ?? []).length === recipe.length,
   JSON.stringify(lo.used))
 ok('nothing failed to deduct', (lo.problems ?? []).length === 0, JSON.stringify(lo.problems))
-ok('a report number was issued', /^LAB-\d{6}$/.test(lo.report_no), lo.report_no)
+ok('a report number was issued', /^LAB-\d{6}-L\d{5}$/.test(lo.report_no), lo.report_no)
 ok('it records who took it', lo.collected_by === 'Farhan Javed', lo.collected_by)
 
 r = await q(`/lab/orders/${lo.id}/start`,'lab',{method:'POST'})
@@ -98,7 +98,7 @@ const moves = (await q('/supplies/movements?kind=issue','st')).body
 // report it was drawn for, which is more use than "lab test" when a store
 // keeper is working out where a box of syringes went.
 ok('the movement names the lab and the report',
-  moves.some(m=>/Lab sample — LAB-\d{6}/.test(m.reason ?? '')),
+  moves.some(m=>/Lab sample — LAB-\d{6}-L\d{5}/.test(m.reason ?? '')),
   moves.slice(0,2).map(m=>m.reason).join(' | '))
 
 console.log('\n— re-saving does not deduct twice —')
@@ -299,7 +299,10 @@ console.log('\n— tests bought without a doctor —')
   ok('and no consultation fee', Number(visit.consultation_fee_paisa) === 0)
   ok('it is closed immediately', visit.status === 'completed', visit.status)
   ok('marked as a direct visit', visit.visit_type === 'direct', visit.visit_type)
-  ok('the visit number marks it out', /^D-/.test(visit.visit_no), visit.visit_no)
+  // Every document now carries the date and a letter for its kind, so the
+// sequence resets daily instead of running forever.
+ok('the visit number marks it out as walk-in',
+  /^VIS-\d{6}-D\d{5}$/.test(visit.visit_no), visit.visit_no)
   ok('one chit per department', chits.length === 2,
     chits.map(c=>c.category).join(','))
 

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 
 /**
  * Payment chits.
@@ -26,10 +27,16 @@ export class ChitError extends Error {
   }
 }
 
-/** CHIT-000123. Gapless, because unexplained gaps in a money document invite suspicion. */
+/**
+ * CHIT-260918-D00042.
+ *
+ * The sequence resets each morning, so it never has to be wide enough to hold
+ * a decade of trading — a single running number reaching 999999 is a problem
+ * a hospital meets mid-queue, on the day it happens.
+ */
 async function nextChitNo(tx: any): Promise<string> {
   const n = await nextCounter(tx, 'chit')
-  return `CHIT-${String(n).padStart(6, '0')}`
+  return documentNo(tx, { prefix: 'CHIT', letter: 'T' })
 }
 
 export const CATEGORY_LABEL: Record<string, string> = {
