@@ -4,9 +4,10 @@ import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th } from '../compon
 import { useT } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
+import { BackupLocationCard, DangerZoneCard } from './admin/DangerZone'
 import {
   LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
-  Building2, Settings, Database
+  Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle
 } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
@@ -40,6 +41,8 @@ export function Admin({ me }: { me: SessionUser }) {
       {tab === 'Departments' && <DepartmentsTab />}
       {tab === 'Demo data' && <DemoTab />}
       {tab === 'Settings' && <SettingsTab />}
+      {tab === 'Settings' && <BackupLocationCard />}
+      {tab === 'Settings' && <DangerZoneCard me={me} />}
       {tab === 'Reports' && <Reports me={me} />}
       </div>
     </div>
@@ -400,40 +403,110 @@ function ResetPassword({ user, onClose, onDone }: { user: any; onClose: () => vo
 
 /* -------------------------------------------------------------- services */
 
+/**
+ * Services, one department at a time.
+ *
+ * Everything in one list made it hard to find anything once the catalogue
+ * shipped with fifty entries: CBC sat between a dressing and an ultrasound.
+ * Split by department, each list is short enough to read, and the lab
+ * in-charge and the radiographer each see only their own.
+ */
+const SERVICE_GROUPS: { id: string; label: string; icon: any; blurb: string }[] = [
+  { id: 'lab', label: 'Laboratory tests', icon: FlaskConical,
+    blurb: 'Blood, urine and serology. Each has its reference ranges under Test setup.' },
+  { id: 'radiology', label: 'Radiology procedures', icon: ScanLine,
+    blurb: 'X-rays, ultrasounds and scans.' },
+  { id: 'procedure', label: 'Procedures', icon: Syringe,
+    blurb: 'Dressings, injections, ECG and other bedside work.' },
+  { id: 'other', label: 'Other', icon: ClipboardList,
+    blurb: 'Anything that fits none of the above.' }
+]
+
 function ServicesTab() {
   const [rows, setRows] = useState<any[]>([])
+  const [group, setGroup] = useState('lab')
   const [editing, setEditing] = useState<any | 'new' | null>(null)
   const [setup, setSetup] = useState<any | null>(null)
   const load = useCallback(() => { api.services(true).then(setRows).catch(() => {}) }, [])
   useEffect(() => { load() }, [load])
 
+  const shown = rows.filter((s) => s.category === group)
+  const current = SERVICE_GROUPS.find((g) => g.id === group)!
+  /*
+   * The shipped tests arrive unpriced, and an unpriced test is refused at the
+   * counter. Counting them here is what tells an administrator there is work
+   * to do before the lab can open.
+   */
+  const unpriced = shown.filter((s) => s.is_active && Number(s.price_paisa) <= 0)
+
   return (
     <Card title={tr('Tests, scans and procedures')}
       hint={tr('What a doctor can order, what it costs, and the default cut the ordering doctor gets')}
-      action={<button onClick={() => setEditing('new')} className="btn-primary">{tr('Add service')}</button>}>
-      {rows.length === 0 ? (
-        <Empty title={tr('No services yet')}
-          hint={tr('Add the tests and scans this hospital offers, with their prices.')}
-          action={<button onClick={() => setEditing('new')} className="btn-primary">{tr('Add the first one')}</button>} />
+      action={<button onClick={() => setEditing('new')}
+        className="btn-primary inline-flex items-center gap-1.5">
+        <Plus size={14} /> {tr('Add service')}
+      </button>}>
+
+      <div className="mb-4 flex flex-wrap gap-1.5">
+        {SERVICE_GROUPS.map((g) => {
+          const n = rows.filter((s) => s.category === g.id).length
+          const Icon = g.icon
+          return (
+            <button key={g.id} onClick={() => setGroup(g.id)}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-2xs
+                          transition-colors ${group === g.id
+                ? 'bg-brand text-white shadow-sm'
+                : 'border-2 border-line bg-card text-body hover:bg-raised'}`}>
+              <Icon size={13} /> {tr(g.label)}
+              <span className={`rounded-full px-1.5 num text-[0.6rem] ${
+                group === g.id ? 'bg-white/25' : 'bg-raised text-muted'}`}>{n}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      <p className="mb-3 text-2xs text-muted">{tr(current.blurb)}</p>
+
+      {unpriced.length > 0 && (
+        <div className="anim-in mb-3 flex items-start gap-2 rounded-xl border-2 border-warn/40
+                        bg-warn/5 p-3">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" />
+          <p className="text-2xs text-warn">
+            {unpriced.length} {tr('have no price yet and cannot be ordered until they do.')}{' '}
+            <span className="text-muted">
+              {tr('They ship unpriced because only the hospital knows what it charges.')}
+            </span>
+          </p>
+        </div>
+      )}
+
+      {shown.length === 0 ? (
+        <Empty title={tr('Nothing here yet')}
+          action={<button onClick={() => setEditing('new')} className="btn-primary">
+            {tr('Add the first one')}</button>} />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="thead-strip">
               <tr>
-                <Th>{tr('Service')}</Th><Th w="w-28">{tr('Category')}</Th><Th w="w-28" right>{tr('Price')}</Th>
-                <Th w="w-28" right>{tr('Doctor gets')}</Th><Th w="w-24" right>{tr('Ordered')}</Th><Th w="w-40" right />
+                <Th>{tr('Service')}</Th><Th w="w-28" right>{tr('Price')}</Th>
+                <Th w="w-28" right>{tr('Doctor gets')}</Th><Th w="w-24" right>{tr('Ordered')}</Th>
+                <Th w="w-40" right />
               </tr>
             </thead>
             <tbody className="divide-y divide-divide rows-striped anim-rows">
-              {rows.map((s) => (
+              {shown.map((s) => (
                 <tr key={s.id} className={s.is_active ? '' : 'opacity-50'}>
                   <td className="px-3 py-2">
                     <span className="text-sm text-heading">{s.name}</span>
                     {!s.is_active && <Badge>{tr('hidden')}</Badge>}
                     {s.code && <div className="text-2xs text-muted">{s.code}</div>}
                   </td>
-                  <td className="px-3 py-2"><Badge>{s.category}</Badge></td>
-                  <td className="px-3 py-2 text-right num font-medium text-primary">{rs(s.price_paisa)}</td>
+                  <td className="px-3 py-2 text-right num font-medium">
+                    {Number(s.price_paisa) > 0
+                      ? <span className="text-primary">{rs(s.price_paisa)}</span>
+                      : <Badge tone="warn">{tr('no price')}</Badge>}
+                  </td>
                   <td className="px-3 py-2 text-right num text-2xs text-accent">
                     {bpToPct(s.default_share_bp)}%
                     <div className="text-muted">
@@ -442,7 +515,9 @@ function ServicesTab() {
                   </td>
                   <td className="px-3 py-2 text-right num text-2xs text-muted">{s.times_ordered}</td>
                   <td className="px-3 py-2 text-right">
-                    <button onClick={() => setEditing(s)} className="btn-ghost px-2 py-1 text-2xs">{tr('Edit')}</button>
+                    <button onClick={() => setEditing(s)} className="btn-ghost px-2 py-1 text-2xs">
+                      {tr('Edit')}
+                    </button>
                     {/*
                       What the test reports and what it uses up. Kept behind
                       its own button because most services never need it and
@@ -460,19 +535,20 @@ function ServicesTab() {
       )}
       {setup && <TestSetup service={setup} onClose={() => setSetup(null)} />}
       {editing && (
-        <ServiceForm initial={editing === 'new' ? null : editing}
+        <ServiceForm initial={editing === 'new' ? null : editing} defaultCategory={group}
           onClose={() => setEditing(null)} onDone={() => { setEditing(null); load() }} />
       )}
     </Card>
   )
 }
 
-function ServiceForm({ initial, onClose, onDone }: {
-  initial: any | null; onClose: () => void; onDone: () => void
+function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
+  initial: any | null; defaultCategory?: string; onClose: () => void; onDone: () => void
 }) {
   const [f, setF] = useState({
     name: initial?.name ?? '', code: initial?.code ?? '',
-    category: initial?.category ?? 'lab',
+    // A new service starts in whichever department's list it was added from.
+    category: initial?.category ?? defaultCategory ?? 'lab',
     price: initial ? rs(initial.price_paisa) : '',
     share: initial ? bpToPct(initial.default_share_bp) : '0',
     isActive: initial ? initial.is_active : true

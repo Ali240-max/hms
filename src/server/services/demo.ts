@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db } from '../db/client'
+import { documentNo, dateSegment } from './numbering'
 import * as s from '../db/schema'
 import { createFirstAdmin, createStaff, needsSetup } from './auth'
 import { registerPatient, createVisit } from './patients'
@@ -59,9 +60,14 @@ export async function loadDemoData(
   if (opts.reset) {
     // Staff and departments go too: a demo reset should leave a clean slate,
     // and the admin account is recreated below so nobody is locked out.
+    //
+    // Services are deliberately NOT on this list. The common lab tests and
+    // x-rays ship with the software along with their reference ranges, and a
+    // TRUNCATE ... CASCADE here took them and every range with them on each
+    // reseed. The demo prices them by name instead of recreating them.
     await db.execute(sql`
       TRUNCATE doctor_earnings, service_orders, prescription_items, prescriptions,
-               visits, patients, doctor_service_shares, services, doctors, staff,
+               visits, patients, doctor_service_shares, doctors, staff,
                departments, sale_items, sales, stock_ledger, purchase_items, purchases,
                batches, products, suppliers, counters RESTART IDENTITY CASCADE`)
   }
@@ -126,16 +132,32 @@ export async function loadDemoData(
     ['Urine R/E', 'lab', 40000, 500], ['Lipid Profile', 'lab', 150000, 1200],
     ['Thyroid Profile', 'lab', 200000, 1200], ['HbA1c', 'lab', 180000, 1000],
     ['Dengue NS1', 'lab', 160000, 1000], ['Typhidot', 'lab', 90000, 800],
-    ['X-Ray Chest', 'radiology', 100000, 2000], ['X-Ray Limb', 'radiology', 90000, 2000],
-    ['X-Ray Spine', 'radiology', 120000, 2000], ['Ultrasound Abdomen', 'radiology', 180000, 2500],
+    ['X-Ray Chest PA', 'radiology', 100000, 2000], ['X-Ray Knee', 'radiology', 90000, 2000],
+    ['X-Ray Lumbar Spine', 'radiology', 120000, 2000], ['Ultrasound Abdomen', 'radiology', 180000, 2500],
     ['Ultrasound Pelvis', 'radiology', 180000, 2500], ['ECG', 'procedure', 60000, 1500],
     ['Nebulisation', 'procedure', 40000, 1000], ['Dressing', 'procedure', 35000, 1000],
     ['Injection (IM)', 'procedure', 20000, 500]
   ] as const
+  /*
+   * Price the tests that ship with the software, rather than creating a
+   * second CBC beside the first.
+   *
+   * The common lab tests and x-rays already exist on every install, unpriced.
+   * The demo gives them demo prices by name; only the procedures, which do not
+   * ship, are created here.
+   */
   for (const [name, cat, price, share] of SERVICES) {
-    await upsertService({ name, category: cat as any, pricePaisa: price, defaultShareBp: share })
+    const existing = ((await db.execute<any>(sql`
+      SELECT id FROM services WHERE lower(name) = lower(${name}) LIMIT 1`)).rows as any[])[0]
+    await upsertService({
+      id: existing?.id, name, category: cat as any, pricePaisa: price, defaultShareBp: share
+    })
   }
-  const serviceIds = ((await db.execute<any>(sql`SELECT id FROM services ORDER BY id`)).rows as any[])
+  // Only what the demo priced. The rest of the shipped catalogue stays
+  // unpriced, and ordering it is refused — which is exactly what a real
+  // hospital would see before setting its prices.
+  const serviceIds = ((await db.execute<any>(sql`
+    SELECT id FROM services WHERE price_paisa > 0 AND is_active ORDER BY id`)).rows as any[])
     .map((r) => Number(r.id))
 
   /* ---------------------------------------------------------- pharmacy */
@@ -287,7 +309,7 @@ export async function loadDemoData(
           INSERT INTO counter_bills
             (bill_no, kind, visit_id, patient_id, subtotal_paisa, total_paisa,
              tendered_paisa, change_paisa, pay_method, cashier_name, created_at)
-          SELECT ${'INV-D' + String(visitCount).padStart(6, '0')}, 'consultation', v.id, v.patient_id,
+          SELECT ${await documentNo(db, { prefix: 'INV', letter: 'C', when: at })}, 'consultation', v.id, v.patient_id,
                  v.consultation_fee_paisa, v.consultation_fee_paisa,
                  v.consultation_fee_paisa, 0, 'cash', 'Sana Tariq', ${at.toISOString()}::timestamptz
           FROM visits v WHERE v.id = ${visit.id}
@@ -498,6 +520,10 @@ export async function loadDemoData(
   for (const [name, rows] of Object.entries(PARAMS)) {
     const svc = svcByName.get(name)
     if (!svc) continue
+    // The shipped catalogue already gave the common tests their ranges.
+    const has = ((await db.execute<any>(sql`
+      SELECT 1 FROM service_parameters WHERE service_id = ${svc.id} LIMIT 1`)).rows as any[]).length
+    if (has) continue
     let order = 0
     for (const [pname, unit, low, high, text] of rows) {
       await db.execute(sql`
@@ -551,16 +577,32 @@ export async function loadDemoData(
     JOIN visits v ON v.id = so.visit_id
     -- Radiology too, or the x-ray room opens on an empty screen and every
     -- radiology report reads zero.
-    WHERE so.status = 'paid' AND sv.category IN ('lab', 'radiology')
-    ORDER BY so.id DESC LIMIT 90`)).rows as any[]
+    WHERE so.status IN ('paid', 'completed') AND sv.category IN ('lab', 'radiology')
+    /*
+     * Spread across the whole window, not just the newest ninety.
+     *
+     * Taking the most recent rows put every lab order inside three days, so
+     * the turnaround, by-technician and daily reports all had one bar and
+     * nothing to compare. Ordering by the visit date walks the period instead.
+     */
+    ORDER BY v.created_at LIMIT 400`)).rows as any[]
 
   let labSeq = 0
   for (const test of paidTests) {
     const stage = labSeq % 4
     labSeq++
-    const reportNo = `LAB-${String(labSeq).padStart(6, '0')}`
-    const ago = new Date()
-    ago.setHours(ago.getHours() - between(1, 70))
+    /*
+     * Dated from the visit it belongs to.
+     *
+     * A lab order timestamped a few hours ago on a visit from six weeks back
+     * is nonsense on a turnaround report, and it piled every test onto the
+     * same two days.
+     */
+    const visitAt = (await db.execute<any>(sql`
+      SELECT created_at FROM visits WHERE id = ${test.visit_id}`)).rows[0]
+    const ago = visitAt ? new Date(visitAt.created_at) : new Date()
+    ago.setHours(ago.getHours() + between(1, 6))
+    const reportNo = await documentNo(db, { prefix: 'LAB', letter: 'L', when: ago })
 
     if (stage === 0) continue   // still waiting for a sample
 
@@ -617,18 +659,15 @@ export async function loadDemoData(
       WHERE id = ${lo.id}`)
   }
 
-  /**
-   * Leave the counter where the seeded reports finished.
+  /*
+   * No counter fix-up here any more.
    *
-   * Without this the first real report asks for LAB-000001, which the demo
-   * already used, and the insert fails on the unique index. Any seed that
-   * writes numbered documents has to move the counter along with it.
+   * The seeder asks documentNo for its numbers, exactly as the running system
+   * does, so the counters are already where they should be. The previous
+   * version built the strings itself and then had to remember to push the
+   * counter along afterwards — and the day that was forgotten, the first real
+   * report of the day collided with a demo one on the unique index.
    */
-  if (labSeq > 0) {
-    await db.execute(sql`
-      INSERT INTO counters (key, value) VALUES ('lab_report', ${labSeq})
-      ON CONFLICT (key) DO UPDATE SET value = GREATEST(counters.value, ${labSeq})`)
-  }
 
   return {
     departments: r.d, staff: r.st, services: r.sv, products: r.pr,

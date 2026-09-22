@@ -3,6 +3,7 @@ import { api, rs, toPaisa } from '../../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Th } from '../../components/ui'
 import { ExpiryPill } from '../../components/Expiry'
 import { t as tr } from '../../lib/prefs'
+import { Combobox } from '../../components/Combobox'
 
 const FILTERS = [
   ['all', 'All'], ['low', 'Low stock'], ['out', 'Out of stock'],
@@ -157,23 +158,57 @@ function MedicineForm({ initial, onClose, onDone }: {
     // is shown rather than typed, because the two disagreeing is the classic
     // way a counter ends up charging the wrong amount for a half strip.
     purchase: initial?.purchase_paisa ? (initial.purchase_paisa / 100).toFixed(2) : '',
-    trade: initial?.trade_paisa ? (initial.trade_paisa / 100).toFixed(2) : '',
     retail: initial?.retail_paisa ? (initial.retail_paisa / 100).toFixed(2) : '',
     saltId: initial?.salt_id ?? 0,
+    manufacturerId: initial?.manufacturer_id ?? 0,
     groupId: initial?.group_id ?? 0
   })
-  const [salts, setSalts] = useState<any[]>([])
-  const [saltQuery, setSaltQuery] = useState('')
   const [groups, setGroups] = useState<any[]>([])
+  const [saltLabel, setSaltLabel] = useState<string>(initial?.salt_name ?? '')
+  const [makerLabel, setMakerLabel] = useState<string>(initial?.manufacturer_name ?? '')
+
+  /**
+   * Prices are typed one way or the other, never both.
+   *
+   * A pharmacy thinks in whichever unit its supplier quotes: a distributor
+   * invoices by the pack, the counter sells by the strip. Asking for the
+   * per-unit figure when the invoice says 1,620 for a box of ten means the
+   * clerk does the division in their head, and a wrong division is a wrong
+   * price on every sale until somebody notices.
+   *
+   * Only one of the two is stored — per unit, because it is the smallest
+   * thing that can be sold. The other is always derived, so they cannot
+   * disagree.
+   */
+  const [priceBy, setPriceBy] = useState<'unit' | 'pack'>(
+    Number(initial?.pack_size ?? 1) > 1 ? 'pack' : 'unit')
 
   useEffect(() => { api.pharmaGroups().then(setGroups).catch(() => {}) }, [])
-  useEffect(() => {
-    const timer = setTimeout(() =>
-      api.pharmaSalts(saltQuery).then(setSalts).catch(() => {}), 200)
-    return () => clearTimeout(timer)
-  }, [saltQuery])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const packSize = Math.max(1, Number(f.packSize) || 1)
+
+  /** What goes in the box: the stored per-unit figure, scaled if needed. */
+  const shown = (perUnit: string) => {
+    if (priceBy === 'unit' || packSize === 1) return perUnit
+    const n = toPaisa(perUnit)
+    return n ? (n * packSize / 100).toFixed(2) : ''
+  }
+
+  /** Always stored per unit, whichever way it was typed. */
+  const setPrice = (which: 'purchase' | 'retail', typed: string) => {
+    if (priceBy === 'unit' || packSize === 1) {
+      setF({ ...f, [which]: typed })
+      return
+    }
+    const perPack = toPaisa(typed)
+    // Rounded to the paisa: a pack of 3 at Rs 10 is 333 per unit, and the
+    // third of a paisa has to go somewhere. Losing it on the unit price is
+    // the only option that keeps the pack price exactly what was typed.
+    const perUnit = perPack ? (Math.round(perPack / packSize) / 100).toFixed(2) : ''
+    setF({ ...f, [which]: perUnit })
+  }
 
   async function save() {
     setBusy(true); setErr(null)
@@ -187,9 +222,12 @@ function MedicineForm({ initial, onClose, onDone }: {
       schedule: f.schedule, taxRateBp: Math.round((Number(f.taxRate) || 0) * 100),
       reorderLevel: Math.max(0, Number(f.reorderLevel) || 0),
       rackLocation: f.rackLocation.trim() || null,
-      purchasePaisa: toPaisa(f.purchase), tradePaisa: toPaisa(f.trade),
+      purchasePaisa: toPaisa(f.purchase),
+      // Trade rate is gone: nobody here priced from it, and a third number
+      // that has to agree with the other two is a third number to get wrong.
       retailPaisa: toPaisa(f.retail),
-      saltId: f.saltId || null, groupId: f.groupId || null
+      saltId: f.saltId || null, groupId: f.groupId || null,
+      manufacturerId: f.manufacturerId || null
     }
     try {
       initial ? await api.ph.updateProduct(initial.id, body) : await api.ph.createProduct(body)
@@ -251,46 +289,79 @@ function MedicineForm({ initial, onClose, onDone }: {
 
         {/* ------------------------------------------------------ pricing */}
         <div className="sm:col-span-2 mt-1 border-t border-divide pt-3">
-          <p className="label">{tr('Price, per single unit')}</p>
-          <p className="text-2xs text-muted">
-            {tr('Enter what one')} {f.subUnitLabel || tr('unit')} {tr('costs and sells for. The price of a whole pack is worked out from the pack size, so the two can never disagree.')}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="label mb-0">{tr('Pricing')}</p>
+            <div className="flex gap-1">
+              {([['unit', 'Per unit'], ['pack', 'Per pack']] as const).map(([id, lbl]) => (
+                <button key={id} type="button" onClick={() => setPriceBy(id)}
+                  disabled={packSize === 1}
+                  className={`rounded-xl px-3 py-1.5 text-2xs transition-colors ${
+                    priceBy === id ? 'bg-brand text-white'
+                      : 'border-2 border-line bg-card text-muted hover:bg-raised'} ${
+                    packSize === 1 ? 'opacity-40' : ''}`}>
+                  {tr(lbl)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="mt-1 text-2xs text-muted">
+            {packSize === 1
+              ? tr('One unit per pack, so the two are the same.')
+              : priceBy === 'pack'
+                ? `${tr('Enter what one')} ${f.unitLabel || tr('pack')} ${tr('of')} ${packSize} ${tr('costs. The per-unit price is worked out for you.')}`
+                : `${tr('Enter what one')} ${f.subUnitLabel || tr('unit')} ${tr('costs. The pack price is worked out for you.')}`}
           </p>
         </div>
 
-        <Field label={tr('Purchase rate')} hint={tr('What you pay, per unit')}>
-          <input value={f.purchase} onChange={(e) => setF({ ...f, purchase: e.target.value })}
+        <Field label={`${tr('Purchase rate')} — ${priceBy === 'pack' ? tr('per pack') : tr('per unit')}`}
+          hint={tr('What you pay')}>
+          <input value={shown(f.purchase)}
+            onChange={(e) => setPrice('purchase', e.target.value)}
             placeholder="0.00" className="field num text-right" />
         </Field>
-        <Field label={tr('Trade rate')} hint={tr('Optional — the printed trade price')}>
-          <input value={f.trade} onChange={(e) => setF({ ...f, trade: e.target.value })}
+
+        <Field label={`${tr('Retail rate')} — ${priceBy === 'pack' ? tr('per pack') : tr('per unit')}`}
+          hint={tr('What the customer pays')}>
+          <input value={shown(f.retail)}
+            onChange={(e) => setPrice('retail', e.target.value)}
             placeholder="0.00" className="field num text-right" />
         </Field>
-        <Field label={tr('Retail rate')} hint={tr('What the customer pays, per unit')}>
-          <input value={f.retail} onChange={(e) => setF({ ...f, retail: e.target.value })}
-            placeholder="0.00" className="field num text-right" />
-        </Field>
-        <div className="flex items-end">
-          <PackPrices f={f} />
+
+        <div className="sm:col-span-2">
+          <PriceSummary f={f} packSize={packSize} priceBy={priceBy} />
         </div>
 
         {/* ------------------------------------------------ classification */}
         <div className="sm:col-span-2 mt-1 border-t border-divide pt-3">
-          <p className="label">{tr('Formula and shelf')}</p>
+          <p className="label">{tr('Formula, company and shelf')}</p>
         </div>
+
+        {/*
+          Pick from the list only. A formula typed in freely here becomes
+          "Paracetamol", "paracetamol " and "Paracetamole" within a month, and
+          then the search for every brand of it finds a third of them.
+          New ones are added under Suppliers & formulas.
+        */}
         <Field label={tr('Formula')}
-          hint={tr('So a pharmacist asked for the generic finds every brand of it')}>
-          <input value={saltQuery} onChange={(e) => setSaltQuery(e.target.value)}
-            placeholder={tr('Search a formula')} className="field" />
-          <select value={f.saltId} onChange={(e) => setF({ ...f, saltId: Number(e.target.value) })}
-            className="field mt-1">
-            <option value={0}>{tr('Not linked')}</option>
-            {salts.map((s: any) => (
-              <option key={s.id} value={s.id}>
-                {s.name}{s.product_count ? ` (${s.product_count})` : ''}
-              </option>
-            ))}
-          </select>
+          hint={tr('Pick from the registered list. Add new ones under Suppliers & formulas.')}>
+          <Combobox value={f.saltId} label={saltLabel}
+            placeholder={tr('Search a formula')}
+            search={(q) => api.pharmaSalts(q)}
+            onPick={(id, name) => { setF({ ...f, saltId: id }); setSaltLabel(name) }} />
         </Field>
+
+        <Field label={tr('Company')}
+          hint={tr('Pick from the registered list. Add new ones under Suppliers & formulas.')}>
+          <Combobox value={f.manufacturerId} label={makerLabel}
+            placeholder={tr('Search a company')}
+            search={(q) => api.pharmaManufacturers(q)}
+            onPick={(id, name) => {
+              // The name is kept in the old text column too, so screens that
+              // still read it show the right company.
+              setF({ ...f, manufacturerId: id, manufacturer: name }); setMakerLabel(name)
+            }} />
+        </Field>
+
         <Field label={tr('Group')} hint={tr('Tablets, syrups, injections')}>
           <select value={f.groupId} onChange={(e) => setF({ ...f, groupId: Number(e.target.value) })}
             className="field">
@@ -325,39 +396,64 @@ function MedicineForm({ initial, onClose, onDone }: {
 }
 
 /**
- * What a whole pack comes to.
+ * Both prices and the margin, shown together.
  *
- * Shown, never typed. The price is held per unit because that is the smallest
- * thing that can be sold; multiplying is safe, while storing both and letting
- * them drift is how a half strip gets charged at the wrong rate.
+ * Whichever way the figures were typed, this is the other one — and the
+ * margin, which is the number that actually decides whether stocking the
+ * medicine is worth the shelf space. Reading it while setting the price beats
+ * discovering it in a report next month.
  */
-function PackPrices({ f }: { f: any }) {
-  const size = Math.max(1, Number(f.packSize) || 1)
-  if (size === 1) {
-    return (
-      <p className="text-2xs text-muted">
-        {tr('One unit per pack, so the pack price is the same.')}
-      </p>
-    )
-  }
-  const rows: [string, string][] = [
-    [tr('Purchase'), f.purchase], [tr('Trade'), f.trade], [tr('Retail'), f.retail]
-  ]
+function PriceSummary({ f, packSize, priceBy }: {
+  f: any; packSize: number; priceBy: 'unit' | 'pack'
+}) {
+  const purchase = toPaisa(f.purchase)
+  const retail = toPaisa(f.retail)
+  if (!purchase && !retail) return null
+
+  const margin = retail - purchase
+  const pct = purchase > 0 ? (margin / purchase) * 100 : 0
+  const other = priceBy === 'pack' ? tr('per unit') : tr('per pack')
+  const mul = priceBy === 'pack' ? 1 : packSize
+
   return (
-    <div className="w-full rounded-xl border-2 border-line bg-raised p-3">
-      <p className="text-2xs uppercase tracking-wide text-muted">
-        {tr('One')} {f.unitLabel || tr('pack')} {tr('of')} {size}
-      </p>
-      <ul className="mt-1 space-y-0.5">
-        {rows.map(([label, value]) => (
-          <li key={label} className="flex justify-between text-2xs">
-            <span className="text-muted">{label}</span>
-            <span className="num font-medium text-heading">
-              {toPaisa(value) ? `Rs ${rs(toPaisa(value) * size)}` : '—'}
-            </span>
-          </li>
-        ))}
-      </ul>
+    <div className="rounded-xl border-2 border-line bg-raised p-3">
+      <div className="grid gap-3 sm:grid-cols-3">
+        {packSize > 1 && (
+          <div>
+            <p className="text-2xs uppercase tracking-wide text-muted">
+              {tr('Works out at')} — {other}
+            </p>
+            <p className="num text-sm text-heading">
+              {tr('Cost')} {purchase ? rs(priceBy === 'pack' ? Math.round(purchase / packSize) : purchase * mul) : '—'}
+            </p>
+            <p className="num text-sm text-heading">
+              {tr('Sells')} {retail ? rs(priceBy === 'pack' ? Math.round(retail / packSize) : retail * mul) : '—'}
+            </p>
+          </div>
+        )}
+
+        <div>
+          <p className="text-2xs uppercase tracking-wide text-muted">{tr('Margin')}</p>
+          <p className={`num text-lg font-semibold ${
+            margin > 0 ? 'text-ok' : margin < 0 ? 'text-bad' : 'text-muted'}`}>
+            {rs(margin)}
+          </p>
+        </div>
+
+        <div>
+          <p className="text-2xs uppercase tracking-wide text-muted">{tr('Margin %')}</p>
+          <p className={`num text-lg font-semibold ${
+            pct >= 10 ? 'text-ok' : pct > 0 ? 'text-warn' : 'text-bad'}`}>
+            {purchase ? `${pct.toFixed(1)}%` : '—'}
+          </p>
+        </div>
+      </div>
+
+      {retail > 0 && purchase > 0 && retail < purchase && (
+        <p className="mt-2 text-2xs font-medium text-bad">
+          {tr('This sells for less than it costs. Check the two figures.')}
+        </p>
+      )}
     </div>
   )
 }

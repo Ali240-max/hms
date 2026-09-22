@@ -338,3 +338,86 @@ export async function discountMonitor(w: Window) {
     GROUP BY 1 ORDER BY discount_paisa DESC LIMIT 200`)
   return r.rows
 }
+
+/* ------------------------------------------------- goods received, in detail */
+
+/**
+ * Every delivery, line by line, the way a purchase register is actually read.
+ *
+ * One row per *product line*, carrying its supplier and its GRN, so the
+ * renderer can break on both: a heading per supplier, a block per delivery
+ * with its own total, then the supplier's total, then the grand total. A
+ * single row per invoice hides the only thing anyone opens this report for —
+ * what was in the box and at what rate.
+ */
+export async function purchaseDetail(w: Window, q: Record<string, string> = {}) {
+  let where = sql`${between('p.invoice_date', w)}`
+  if (q.supplier) where = sql`${where} AND p.supplier_id = ${Number(q.supplier)}`
+  /*
+   * A GRN range, given as the numbers a store keeper reads off two slips.
+   * Compared as text because the number carries its date: GRN-260901-G00004
+   * sorts correctly against GRN-260919-G00002 precisely because the date
+   * leads.
+   */
+  if (q.grnFrom) where = sql`${where} AND p.grn_no >= ${q.grnFrom}`
+  if (q.grnTo) where = sql`${where} AND p.grn_no <= ${q.grnTo}`
+
+  const r = await db.execute<any>(sql`
+    SELECT s.name AS supplier_name,
+           p.grn_no,
+           p.supplier_invoice_no,
+           to_char(p.invoice_date, 'DD/MM/YYYY') AS invoice_date,
+           pr.name AS product_name,
+           pr.pack_label,
+           b.batch_no,
+           b.expiry_date,
+           pi.unit_cost_paisa AS rate_paisa,
+           pi.qty,
+           pi.bonus_qty,
+           pi.discount_bp,
+           (pi.qty * pi.unit_cost_paisa)::bigint AS line_total_paisa
+    FROM purchase_items pi
+    JOIN purchases p ON p.id = pi.purchase_id
+    JOIN suppliers s ON s.id = p.supplier_id
+    JOIN batches b ON b.id = pi.batch_id
+    JOIN products pr ON pr.id = b.product_id
+    WHERE ${where}
+    ORDER BY s.name, p.invoice_date, p.grn_no, pr.name
+    LIMIT 2000`)
+
+  return (r.rows as any[]).map((x) => ({
+    ...x,
+    /* The block heading the renderer breaks on. */
+    grn_block: `${x.grn_no ?? 'no GRN'}   ${tr_date(x.invoice_date)}` +
+      (x.supplier_invoice_no ? `   Inv# ${x.supplier_invoice_no}` : ''),
+    expiry_date: x.expiry_date ? String(x.expiry_date).slice(0, 7) : '',
+    discount_pct: Number(x.discount_bp ?? 0) / 100
+  }))
+}
+
+const tr_date = (d: string) => d ?? ''
+
+/** One row per delivery, for a quick look down a period. */
+export async function purchaseRegister(w: Window, q: Record<string, string> = {}) {
+  let where = sql`${between('p.invoice_date', w)}`
+  if (q.supplier) where = sql`${where} AND p.supplier_id = ${Number(q.supplier)}`
+  if (q.grnFrom) where = sql`${where} AND p.grn_no >= ${q.grnFrom}`
+  if (q.grnTo) where = sql`${where} AND p.grn_no <= ${q.grnTo}`
+
+  const r = await db.execute<any>(sql`
+    SELECT p.grn_no, p.supplier_invoice_no,
+           to_char(p.invoice_date, 'DD/MM/YYYY') AS invoice_date,
+           s.name AS supplier_name,
+           COUNT(pi.id)::int AS lines,
+           COALESCE(SUM(pi.qty), 0)::int AS packs,
+           COALESCE(SUM(pi.bonus_qty), 0)::int AS bonus,
+           COALESCE(SUM(pi.qty * pi.unit_cost_paisa), 0)::bigint AS total_paisa
+    FROM purchases p
+    JOIN suppliers s ON s.id = p.supplier_id
+    LEFT JOIN purchase_items pi ON pi.purchase_id = p.id
+    WHERE ${where}
+    GROUP BY p.id, p.grn_no, p.supplier_invoice_no, p.invoice_date, s.name
+    ORDER BY p.invoice_date DESC, p.grn_no DESC
+    LIMIT 600`)
+  return r.rows
+}

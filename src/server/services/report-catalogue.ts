@@ -3,10 +3,12 @@ import {
   stockStatement, zeroSaleStock, profitByManufacturer, discountMonitor, type Window
 } from './pharma-reports'
 import { priceHistory, outstanding } from './pharma'
+import { purchaseDetail, purchaseRegister } from './pharma-reports'
 import {
   labRegister, labBy, labSummary, labOutstanding, labTurnaround, labAbnormal,
   counterSummary, counterBy, counterRegister, patientRegister, unpaidChits,
-  doctorEarnings, hospitalIncome, hospitalDaily
+  doctorEarnings, hospitalIncome, hospitalDaily,
+  goodsReceivedDetail, goodsReceivedSummary
 } from './hospital-reports'
 import type { Column } from './report-pdf'
 
@@ -42,6 +44,9 @@ export type ReportDef = {
   totalKeys?: string[]
   groupBy?: string
   groupLabel?: string
+  /** A second break inside each group — supplier, then delivery, then goods. */
+  subGroupBy?: string
+  subGroupLabel?: string
   /** Needs a date window. Stock reports are a snapshot and do not. */
   dated: boolean
   landscape?: boolean
@@ -578,7 +583,89 @@ const HOSPITAL: ReportDef[] = [
   }
 ]
 
+const GOODS_RECEIVED: ReportDef[] = [
+  {
+    id: 'purchase-grn-detail', group: 'Purchase', module: 'pharmacy',
+    title: 'Receiving Purchase Invoice With Pack',
+    blurb: 'Every delivery with the items inside it, each invoice totalled separately. This is the copy you check line by line against the supplier\'s paper.',
+    permission: 'report.purchase', dated: true, landscape: true,
+    /*
+     * Grouped, not summarised.
+     *
+     * A store keeper reconciling a delivery needs the lines — a single row per
+     * invoice cannot show where the supplier and the system disagree, which is
+     * the only reason anyone opens this report.
+     */
+    groupBy: 'group_key', groupLabel: 'Supplier',
+    columns: [text('product_name', 'Name of Product', 30), text('packing', 'Packing', 9),
+      text('batch_no', 'Batch No.', 12), text('expiry', 'Expiry', 10),
+      money('rate_paisa', 'Rate', 11), num('qty', 'Qty', 7), num('bonus', 'Bonus', 7),
+      money('line_total_paisa', 'Total Value')],
+    totalKeys: ['qty', 'bonus', 'line_total_paisa'],
+    run: (w, q) => goodsReceivedDetail(w, q),
+    stats: (w) => purchaseSummary(w)
+  },
+  {
+    id: 'purchase-grn-register', group: 'Purchase', module: 'pharmacy',
+    title: 'Goods Received Register',
+    blurb: 'One line per delivery — GRN number, supplier, their invoice number and the total. Narrow it to a range of GRNs when reconciling a batch of them.',
+    permission: 'report.purchase', dated: true, landscape: true,
+    columns: [text('grn_no', 'GRN No', 18), text('received_on', 'Received', 11),
+      text('supplier_name', 'Supplier', 26), text('supplier_invoice_no', 'Their Invoice', 14),
+      num('lines', 'Lines', 6), num('packs', 'Packs', 7), num('bonus', 'Bonus', 7),
+      money('discount_paisa', 'Discount', 11), money('total_paisa', 'Total Value')],
+    totalKeys: ['lines', 'packs', 'bonus', 'discount_paisa', 'total_paisa'],
+    run: (w, q) => goodsReceivedSummary(w, q),
+    stats: (w) => purchaseSummary(w)
+  }
+]
+
+/* ------------------------------------------------------- goods received */
+
+const PURCHASE_DETAIL: ReportDef[] = [
+  {
+    id: 'purchase-detail', group: 'Purchase', module: 'pharmacy',
+    title: 'Receiving Purchase Invoice With Pack',
+    blurb: 'Every delivery in full — supplier, GRN, and each medicine with its pack, rate, quantity and bonus. Totals per delivery, per supplier, then overall.',
+    permission: 'report.purchase', dated: true, landscape: true,
+    groupBy: 'supplier_name', groupLabel: 'Supplier',
+    subGroupBy: 'grn_block', subGroupLabel: 'Purchase Invoice Total',
+    columns: [
+      text('product_name', 'Name of Product', 30),
+      text('pack_label', 'Packing', 9),
+      text('batch_no', 'Batch No', 12),
+      money('rate_paisa', 'Rate', 11),
+      num('qty', 'Qty', 6),
+      num('bonus_qty', 'Bonus', 6),
+      num('discount_pct', 'Dis. %', 7),
+      money('line_total_paisa', 'Total Value', 13)
+    ],
+    totalKeys: ['qty', 'bonus_qty', 'line_total_paisa'],
+    run: (w, q) => purchaseDetail(w, q)
+  },
+  {
+    id: 'purchase-register', group: 'Purchase', module: 'pharmacy',
+    title: 'Goods Received Register',
+    blurb: 'One line per delivery: GRN, supplier, their invoice number and what it came to.',
+    permission: 'report.purchase', dated: true, landscape: true,
+    columns: [
+      text('grn_no', 'GRN No', 18),
+      text('invoice_date', 'Date', 11),
+      text('supplier_name', 'Supplier', 28),
+      text('supplier_invoice_no', 'Their Inv#', 13),
+      num('lines', 'Lines', 6),
+      num('packs', 'Packs', 7),
+      num('bonus', 'Bonus', 6),
+      money('total_paisa', 'Total Value', 13)
+    ],
+    totalKeys: ['lines', 'packs', 'bonus', 'total_paisa'],
+    run: (w, q) => purchaseRegister(w, q)
+  }
+]
+
 REPORTS.push(
+  ...PURCHASE_DETAIL,
+  ...GOODS_RECEIVED,
   ...departmentReports('laboratory', 'Laboratory', 'lab', 'test'),
   ...LAB_ONLY,
   ...departmentReports('radiology', 'Radiology', 'radiology', 'scan'),

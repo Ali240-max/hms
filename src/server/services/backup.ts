@@ -1,6 +1,6 @@
 import { createGzip } from 'node:zlib'
 import { createWriteStream } from 'node:fs'
-import { mkdir, readdir, stat, unlink } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
@@ -33,8 +33,48 @@ async function tableNames(): Promise<string[]> {
   return (r.rows as any[]).map((t) => t.tablename).filter((n) => n !== '_migrations')
 }
 
+/**
+ * Where backups always go.
+ *
+ * Beside the application unless BACKUP_DIR says otherwise. This copy is never
+ * skipped, whatever else is configured: a second drive can be unplugged, a
+ * network share can be unreachable, and a hospital that quietly stopped
+ * backing up months ago discovers it on the worst possible day.
+ */
 export function backupDir(): string {
   return process.env.BACKUP_DIR?.trim() || join(process.cwd(), 'backups')
+}
+
+/**
+ * An extra copy, somewhere the administrator chose.
+ *
+ * A USB drive, a second disk, a mapped network folder. Optional, and its
+ * failure is recorded rather than thrown — a missing USB stick must not stop
+ * the local backup from being written.
+ */
+export async function extraBackupDir(): Promise<string | null> {
+  const v = (await getSetting('backup.extraDir'))?.trim()
+  return v ? v : null
+}
+
+export async function setExtraBackupDir(dir: string | null) {
+  await setSetting('backup.extraDir', dir?.trim() ?? '')
+  return extraBackupDir()
+}
+
+/** Is the chosen folder actually writable right now? */
+export async function checkExtraDir(dir: string) {
+  const target = dir.trim()
+  if (!target) return { ok: false, error: 'No folder given' }
+  try {
+    await mkdir(target, { recursive: true })
+    const probe = join(target, '.hms-write-test')
+    await writeFile(probe, 'ok')
+    await unlink(probe)
+    return { ok: true as const, dir: target }
+  } catch (e: any) {
+    return { ok: false as const, error: e?.message ?? String(e) }
+  }
 }
 
 export async function runBackup(reason: 'scheduled' | 'manual' = 'manual') {
@@ -60,7 +100,35 @@ export async function runBackup(reason: 'scheduled' | 'manual' = 'manual') {
   await setSetting('backup.lastFile', file)
 
   await prune(dir)
-  return { file, size, tables: tables.length, takenAt: new Date().toISOString() }
+
+  /*
+   * The second copy, if one is configured.
+   *
+   * Written after the local one and never allowed to fail the backup: a
+   * detached USB drive is a reason to warn somebody, not a reason to have no
+   * backup at all.
+   */
+  let copiedTo: string | null = null
+  let copyError: string | null = null
+  const extra = await extraBackupDir()
+  if (extra) {
+    try {
+      await mkdir(extra, { recursive: true })
+      await copyFile(file, join(extra, `hms-${stamp}.ndjson.gz`))
+      copiedTo = join(extra, `hms-${stamp}.ndjson.gz`)
+      await prune(extra)
+      await setSetting('backup.lastCopyAt', new Date().toISOString())
+      await setSetting('backup.lastCopyError', '')
+    } catch (e: any) {
+      copyError = e?.message ?? String(e)
+      await setSetting('backup.lastCopyError', copyError ?? 'unknown error')
+    }
+  }
+
+  return {
+    file, size, tables: tables.length, takenAt: new Date().toISOString(),
+    copiedTo, copyError
+  }
 }
 
 /** Keep the most recent few; a disk that fills up takes the hospital down. */

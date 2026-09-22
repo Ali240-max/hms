@@ -3,6 +3,7 @@ import { X, Download, Printer } from 'lucide-react'
 import { api, rs } from '../lib/api'
 import { Modal } from './ui'
 import { t as tr } from '../lib/prefs'
+import { printSheet } from '../lib/printer'
 
 /**
  * A report, on screen, before anyone commits it to paper.
@@ -63,7 +64,7 @@ export function ReportPreview({ data, path, filename, onClose }: {
         <button onClick={onClose} className="btn-ghost inline-flex items-center gap-1.5">
           <X size={14} /> {tr('Close')}
         </button>
-        <button onClick={() => window.print()}
+        <button onClick={printSheet}
           className="btn-ghost inline-flex items-center gap-1.5">
           <Printer size={14} /> {tr('Print')}
         </button>
@@ -81,8 +82,12 @@ export function ReportPreview({ data, path, filename, onClose }: {
         Laid out like the printed copy so what is on screen is what comes out:
         same columns, same order, same totals.
       */}
-      <div className="print-area max-h-[65vh] overflow-auto rounded-xl border-2 border-line
-                      bg-white p-6 text-black">
+      {/*
+        print-sheet, not the receipt-roll rules: a report is an A4 document and
+        printing it at 72mm sliced the right-hand columns off.
+      */}
+      <div className="print-area print-sheet max-h-[65vh] overflow-auto rounded-xl
+                      border-2 border-line bg-white p-6 text-black">
         <header className="border-b-2 border-black pb-2 text-center">
           <h1 className="text-lg font-bold uppercase">{hospital?.name ?? 'Hospital'}</h1>
           <p className="text-[11pt]">{data.title}</p>

@@ -31,7 +31,8 @@
     "verify:returns": "node verify-returns.mjs",
     "verify:modules": "node verify-modules.mjs",
     "verify:reports": "node verify-reports.mjs",
-    "verify:numbering": "node verify-numbering.mjs"
+    "verify:numbering": "node verify-numbering.mjs",
+    "verify:wipe": "node verify-wipe.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

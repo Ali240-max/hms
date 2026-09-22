@@ -26,8 +26,10 @@ import {
   createChitsForVisit, chitForPrint, chitsForVisit, payChit, completeChit,
   listChits, ChitError, CATEGORY_LABEL
 } from '../services/chits'
-import { getModules, saveModules, getHospitalInfo, saveHospitalInfo, setSetting } from '../services/settings'
+import { getModules, saveModules, getHospitalInfo, saveHospitalInfo, setSetting, getSetting } from '../services/settings'
 import { createTicket, checkTicket } from '../services/tickets'
+import { wipePreview, wipeTradingData, WipeError } from '../services/wipe'
+import { extraBackupDir, setExtraBackupDir, checkExtraDir, backupDir } from '../services/backup'
 import {
   labQueue, parametersFor, saveParameters, consumablesFor, saveConsumables,
   collectSample, startTest, saveResults, verifyResult, reportFor, labStats,
@@ -1011,6 +1013,55 @@ api.put('/settings/hospital', adminOnly, async (c) => {
 })
 
 api.get('/admin/backups', adminOnly, async (c) => c.json(await listBackups()))
+
+/* ------------------------------------------------ where backups are kept */
+
+api.get('/admin/backup-location', adminOnly, async (c) => c.json({
+  defaultDir: backupDir(),
+  extraDir: await extraBackupDir(),
+  lastCopyAt: await getSetting('backup.lastCopyAt'),
+  lastCopyError: await getSetting('backup.lastCopyError')
+}))
+
+api.put('/admin/backup-location', adminOnly, async (c) => {
+  const b = z.object({ extraDir: z.string().nullable() }).parse(await c.req.json())
+  const dir = (b.extraDir ?? '').trim()
+
+  /*
+   * Checked before it is saved.
+   *
+   * A path that looks right and is not writable is worse than no second copy
+   * at all, because the screen would say a copy is being taken when none is.
+   */
+  if (dir) {
+    const check = await checkExtraDir(dir)
+    if (!check.ok) {
+      return c.json({ error: `Cannot write there: ${check.error}`, code: 'BAD_FOLDER' }, 400)
+    }
+  }
+  return c.json({ extraDir: await setExtraBackupDir(dir || null) })
+})
+
+/* ---------------------------------------------------------- start again */
+
+api.get('/admin/wipe-preview', adminOnly, async (c) => c.json(await wipePreview()))
+
+api.post('/admin/wipe', adminOnly, async (c) => {
+  const b = z.object({
+    password: z.string().min(1),
+    typedName: z.string().min(1)
+  }).parse(await c.req.json())
+  const hospital = await getHospitalInfo()
+  try {
+    return c.json(await wipeTradingData({
+      staffId: me(c).id, password: b.password,
+      hospitalName: hospital.name, typedName: b.typedName
+    }))
+  } catch (e: any) {
+    if (e instanceof WipeError) return c.json({ error: e.message, code: e.code }, 409)
+    throw e
+  }
+})
 api.post('/admin/backups', adminOnly, async (c) => c.json(await runBackup('manual'), 201))
 
 /**

@@ -1,9 +1,10 @@
 import { sql, eq } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 import * as s from '../db/schema'
 
 export class ClinicalError extends Error {
-  constructor(msg: string, public code: 'NOT_FOUND' | 'NO_ITEMS' | 'CLOSED') { super(msg) }
+  constructor(msg: string, public code: 'NOT_FOUND' | 'NO_ITEMS' | 'CLOSED' | 'NO_PRICE') { super(msg) }
 }
 
 /* ========================================================= prescriptions */
@@ -104,6 +105,13 @@ export async function saveConsultation(input: {
         WHERE sv.id = ${so.serviceId}`)
       const svc = (svcRes.rows as any[])[0]
       if (!svc) continue
+      // Same rule as the counter: an unpriced test is refused rather than
+      // quietly ordered at zero.
+      if (Number(svc.price_paisa) <= 0) {
+        throw new ClinicalError(
+          `No price set for ${svc.name}. An administrator sets it under Administration, Services.`,
+          'NO_PRICE')
+      }
 
       // Price and share are both snapshotted. Changing either next month must
       // never rewrite what a doctor already earned.
@@ -186,7 +194,7 @@ export async function saveConsultation(input: {
 
     for (const [category, ids] of byCategory) {
       const n = await nextCounter(tx, 'chit')
-      const chitNo = `CHIT-${String(n).padStart(6, '0')}`
+      const chitNo = await documentNo(tx, { prefix: 'CHIT', letter: 'T' })
       const chit = (await tx.execute<any>(sql`
         INSERT INTO chits (chit_no, visit_id, patient_id, category, total_paisa, created_by)
         SELECT ${chitNo}, ${input.visitId}, v.patient_id, ${category}::service_category,
@@ -378,12 +386,24 @@ export async function allDoctorEarnings(from: string, to: string) {
 
 /* =============================================================== services */
 
+/**
+ * The services list.
+ *
+ * Everyone except the administrator's own screen sees only what can actually
+ * be ordered: active, and priced. The catalogue ships unpriced, and a test in
+ * the doctor's picker that is refused the moment it is chosen is a trap — the
+ * doctor learns to distrust the list. Until a price is set it simply is not
+ * offered.
+ *
+ * The administrator's screen passes `all`, and sees everything, unpriced
+ * tests included, because that is where the price gets set.
+ */
 export async function listServices(includeInactive = false) {
   return (await db.execute<any>(sql`
     SELECT sv.*, COUNT(so.id)::int AS times_ordered
     FROM services sv
     LEFT JOIN service_orders so ON so.service_id = sv.id
-    WHERE ${includeInactive ? sql`true` : sql`sv.is_active`}
+    WHERE ${includeInactive ? sql`true` : sql`sv.is_active AND sv.price_paisa > 0`}
     GROUP BY sv.id ORDER BY sv.category, sv.name`)).rows
 }
 

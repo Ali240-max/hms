@@ -131,14 +131,30 @@ export function Sidebar({ items, active, onSelect, title, subtitle, footer }: {
 
       {footer && open && <div className="anim-fade px-3 pb-2">{footer}</div>}
 
-      <button onClick={() => setOpen((v) => !v)}
-        title={open ? tr('Collapse') : tr('Expand')}
-        className="flex items-center justify-center gap-2 border-t-2 border-line/70 py-2
-                   text-2xs text-muted transition-colors hover:bg-card/70 hover:text-primary">
-        <ChevronLeft size={14}
-          className={`transition-transform duration-200 ${open ? '' : 'rotate-180'}`} />
-        {open && tr('Collapse')}
-      </button>
+      {/*
+        A round handle on the edge of the rail rather than a bar across the
+        foot. It reads as something to grab, sits where the eye already is when
+        the rail is in the way, and stops the rail ending in a grey slab.
+      */}
+      <div className="relative h-3">
+        <button onClick={() => setOpen((v) => !v)}
+          title={open ? tr('Collapse') : tr('Expand')}
+          aria-label={open ? tr('Collapse') : tr('Expand')}
+          className="group absolute -top-4 right-2 grid h-8 w-8 place-items-center
+                     rounded-full border-2 border-line bg-card text-muted shadow-sm
+                     transition-all duration-200 hover:scale-110 hover:border-primary
+                     hover:text-white active:scale-95">
+          <span className="absolute inset-0 rounded-full opacity-0 transition-opacity
+                           duration-200 group-hover:opacity-100"
+            style={{
+              backgroundImage:
+                'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
+            }} />
+          <ChevronLeft size={15}
+            className={`relative transition-transform duration-300
+                        ${open ? '' : 'rotate-180'}`} />
+        </button>
+      </div>
     </nav>
   )
 }

@@ -154,8 +154,14 @@ pharmacy.get('/inventory', async (c) => {
     SELECT p.*, COALESCE(st.live_qty,0) AS in_stock, COALESCE(st.dead_qty,0) AS expired_qty,
            COALESCE(st.batch_count,0) AS batch_count, st.nearest_expiry,
            COALESCE(st.stock_value_paisa,0) AS stock_value_paisa,
-           latest.price_paisa
+           latest.price_paisa,
+           -- The names, so the edit form can show what was chosen without a
+           -- second round trip per medicine.
+           slt.name AS salt_name, mf.name AS manufacturer_name, grp.name AS group_name
     FROM products p
+    LEFT JOIN salts slt ON slt.id = p.salt_id
+    LEFT JOIN manufacturers mf ON mf.id = p.manufacturer_id
+    LEFT JOIN product_groups grp ON grp.id = p.group_id
     LEFT JOIN stock st ON st.product_id = p.id
     LEFT JOIN LATERAL (SELECT price_paisa FROM batches WHERE product_id = p.id
                        ORDER BY received_at DESC LIMIT 1) latest ON true
@@ -314,7 +320,16 @@ pharmacy.post('/purchases', async (c) => {
     lines: z.array(z.object({
       productId: z.number().int(), batchNo: z.string().min(1), expiryDate: z.string(),
       qty: z.number().int().min(1), bonusQty: z.number().int().min(0).optional(),
-      costPaisa: z.number().int().min(0), pricePaisa: z.number().int().min(0)
+      costPaisa: z.number().int().min(0),
+      /**
+       * Optional, and normally left out.
+       *
+       * A batch is stamped with whatever the medicine sells for on the day it
+       * arrives, and keeps that price for its whole life. Passing one here is
+       * for the rare case where a delivery carries a different printed price
+       * from the current one.
+       */
+      pricePaisa: z.number().int().min(0).optional()
     })).min(1)
   }).parse(await c.req.json())
   return c.json(await receiveGoods(db, { ...b, receivedBy: me(c).displayName }), 201)

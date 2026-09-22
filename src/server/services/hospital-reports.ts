@@ -397,3 +397,73 @@ export async function hospitalDaily(w: Window) {
     total_paisa: Number(x.counter_paisa) + Number(x.pharmacy_paisa)
   }))
 }
+
+/* ------------------------------------------------------ goods received */
+
+/**
+ * Every delivery, item by item, grouped under its own invoice.
+ *
+ * Not one row per delivery. The report a store keeper checks against the
+ * paper invoice has to show what actually arrived — each medicine, its pack,
+ * its rate, the quantity and any bonus — then that invoice's total, then the
+ * next invoice, and a grand total at the end. A single summary line per
+ * delivery is useless for the job it is used for, which is finding the line
+ * where the supplier and the system disagree.
+ *
+ * The renderer groups on `group_key`, so the rows arrive flat and come out
+ * blocked by invoice with a subtotal under each.
+ */
+export async function goodsReceivedDetail(w: Window, q: Record<string, string>) {
+  let where = sql`${between('p.invoice_date', w)}`
+  if (q.supplier) where = sql`${where} AND p.supplier_id = ${Number(q.supplier)}`
+  if (q.grnFrom) where = sql`${where} AND p.grn_no >= ${q.grnFrom}`
+  if (q.grnTo) where = sql`${where} AND p.grn_no <= ${q.grnTo}`
+
+  const r = await db.execute<any>(sql`
+    SELECT
+      -- What each block is headed with.
+      s.name || '   ·   GRN ' || COALESCE(p.grn_no, '—') ||
+        '   ·   Invoice ' || COALESCE(p.supplier_invoice_no, '—') ||
+        '   ·   ' || to_char(p.invoice_date, 'DD/MM/YYYY') AS group_key,
+      pr.name AS product_name,
+      COALESCE(pr.pack_label, '1x' || pr.pack_size::text) AS packing,
+      b.batch_no,
+      COALESCE(b.expiry_date::text, '') AS expiry,
+      pi.unit_cost_paisa AS rate_paisa,
+      pi.qty, COALESCE(pi.bonus_qty, 0) AS bonus,
+      (pi.qty * pi.unit_cost_paisa)::bigint AS line_total_paisa
+    FROM purchase_items pi
+    JOIN purchases p ON p.id = pi.purchase_id
+    JOIN suppliers s ON s.id = p.supplier_id
+    JOIN batches b ON b.id = pi.batch_id
+    JOIN products pr ON pr.id = b.product_id
+    WHERE ${where}
+    ORDER BY p.invoice_date, p.id, pr.name
+    LIMIT 2000`)
+  return r.rows
+}
+
+/** One line per delivery, for when the detail is not what is wanted. */
+export async function goodsReceivedSummary(w: Window, q: Record<string, string>) {
+  let where = sql`${between('p.invoice_date', w)}`
+  if (q.supplier) where = sql`${where} AND p.supplier_id = ${Number(q.supplier)}`
+  if (q.grnFrom) where = sql`${where} AND p.grn_no >= ${q.grnFrom}`
+  if (q.grnTo) where = sql`${where} AND p.grn_no <= ${q.grnTo}`
+
+  const r = await db.execute<any>(sql`
+    SELECT COALESCE(p.grn_no, '—') AS grn_no,
+           to_char(p.invoice_date, 'DD/MM/YYYY') AS received_on,
+           s.name AS supplier_name,
+           COALESCE(p.supplier_invoice_no, '—') AS supplier_invoice_no,
+           (SELECT COUNT(*)::int FROM purchase_items pi WHERE pi.purchase_id = p.id) AS lines,
+           COALESCE((SELECT SUM(pi.qty)::int FROM purchase_items pi
+                     WHERE pi.purchase_id = p.id), 0) AS packs,
+           COALESCE((SELECT SUM(pi.bonus_qty)::int FROM purchase_items pi
+                     WHERE pi.purchase_id = p.id), 0) AS bonus,
+           p.total_paisa, p.discount_paisa, p.received_by
+    FROM purchases p
+    JOIN suppliers s ON s.id = p.supplier_id
+    WHERE ${where}
+    ORDER BY p.invoice_date DESC, p.id DESC LIMIT 600`)
+  return r.rows
+}

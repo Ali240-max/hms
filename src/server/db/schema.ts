@@ -599,6 +599,14 @@ export const purchases = pgTable(
     id: serial('id').primaryKey(),
     supplierId: integer('supplier_id').notNull().references(() => suppliers.id),
     supplierInvoiceNo: text('supplier_invoice_no').notNull(),
+    /**
+     * Our own reference for the act of receiving: GRN-260919-G00007.
+     *
+     * The supplier's invoice number belongs to them — two suppliers reuse the
+     * same one and some send none at all — so it cannot identify a delivery
+     * on our side.
+     */
+    grnNo: text('grn_no'),
     invoiceDate: date('invoice_date').notNull(),
     totalPaisa: bigint('total_paisa', { mode: 'number' }).notNull().default(0),
     note: text('note'),

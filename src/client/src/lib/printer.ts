@@ -75,3 +75,36 @@ export function printNow(module: string) {
   applyPaper(s.paper)
   for (let i = 0; i < Math.max(1, s.copies); i++) window.print()
 }
+
+/**
+ * Print a full-page document rather than a till slip.
+ *
+ * The receipt roll width is held in CSS variables and applies to everything
+ * printable, so a report came out 72mm wide with its right-hand columns cut
+ * off. This swaps the page to A4 for the duration of the print and puts the
+ * roll settings back afterwards, so the next receipt is unaffected.
+ *
+ * Done in JavaScript rather than with a named @page rule because support for
+ * those is uneven, and a report that prints wrongly on one machine in the
+ * hospital is worse than one that prints the same everywhere.
+ */
+export function printSheet() {
+  const root = document.documentElement
+  const paper = root.style.getPropertyValue('--print-paper')
+  const width = root.style.getPropertyValue('--print-width')
+
+  root.style.setProperty('--print-paper', 'A4')
+  root.style.setProperty('--print-width', 'auto')
+
+  const restore = () => {
+    root.style.setProperty('--print-paper', paper || '80mm')
+    root.style.setProperty('--print-width', width || '72mm')
+    window.removeEventListener('afterprint', restore)
+  }
+  window.addEventListener('afterprint', restore)
+
+  window.print()
+  // Safari never fires afterprint from a programmatic print, so put the roll
+  // settings back regardless once the dialog has had time to open.
+  setTimeout(restore, 1500)
+}

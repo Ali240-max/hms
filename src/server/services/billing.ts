@@ -19,7 +19,7 @@ import { documentNo } from './numbering'
 
 export class BillError extends Error {
   constructor(msg: string, public code:
-    'NOT_FOUND' | 'ALREADY_BILLED' | 'SHORT_PAYMENT' | 'NOTHING_TO_BILL') {
+    'NOT_FOUND' | 'ALREADY_BILLED' | 'SHORT_PAYMENT' | 'NOTHING_TO_BILL' | 'NO_PRICE') {
     super(msg)
   }
 }
@@ -210,6 +210,20 @@ export async function directServiceVisit(input: {
       WHERE id IN (${sql.join(input.serviceIds.map((i) => sql`${i}`), sql`, `)})
         AND is_active`)).rows as any[]
     if (services.length === 0) throw new BillError('Those tests are not available', 'NOT_FOUND')
+
+    /*
+     * A test with no price is refused, not billed at nothing.
+     *
+     * The common tests ship with the software unpriced, because only the
+     * hospital knows what it charges. Billing one at zero would hand out a
+     * free CBC and nobody would notice until the month's takings were short.
+     */
+    const unpriced = services.filter((sv) => Number(sv.price_paisa) <= 0)
+    if (unpriced.length) {
+      throw new BillError(
+        `No price set for ${unpriced.map((sv) => sv.name).join(', ')}. ` +
+        'An administrator sets it under Administration, Services.', 'NO_PRICE')
+    }
 
     const today = new Date().toISOString().slice(0, 10)
     const tokenNo = await nextCounter(tx, `token:direct:${today}`)

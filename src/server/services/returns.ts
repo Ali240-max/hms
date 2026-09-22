@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 import { postLedger } from './pharma'
 
 /**
@@ -78,8 +79,7 @@ export async function createReturn(input: {
     if (!sale) throw new ReturnError('Invoice not found', 'NOT_FOUND')
     if (sale.cancelled_at) throw new ReturnError('That invoice was cancelled', 'CANCELLED')
 
-    const n = await nextCounter(tx, 'sale_return')
-    const returnNo = `SR-${String(n).padStart(6, '0')}`
+    const returnNo = await documentNo(tx, { prefix: 'SR', letter: 'R' })
 
     const ret = (await tx.execute<any>(sql`
       INSERT INTO sale_returns (return_no, sale_id, party_id, customer_name,

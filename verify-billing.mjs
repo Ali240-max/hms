@@ -50,7 +50,7 @@ r = await q('/counter/bills','mc',{method:'POST',body:JSON.stringify({
   kind:'consultation', visitId:visit.id, payMethod:'cash', tenderedPaisa: fee + 50000 })})
 ok('bill completes', r.status===201, JSON.stringify(r.body).slice(0,140))
 const bill = r.body.bill
-ok('invoice number issued', /^INV-\d{6}$/.test(bill.bill_no), bill.bill_no)
+ok('invoice number issued', /^INV-\d{6}-C\d{5}$/.test(bill.bill_no), bill.bill_no)
 ok('change calculated', Number(bill.change_paisa)===50000, String(bill.change_paisa))
 ok('bill has its line items', r.body.items.length===1)
 after = (await q(`/visits/${visit.id}`,'mc')).body
@@ -90,7 +90,13 @@ if (chit) {
   r = await q('/counter/bills','mc',{method:'POST',body:JSON.stringify({
     kind:'chit', chitId:chit.id, payMethod:'cash', tenderedPaisa: Number(chit.total_paisa) })})
   ok('chit bill completes', r.status===201, JSON.stringify(r.body).slice(0,120))
-  ok('chit invoice shares the series', /^INV-\d{6}$/.test(r.body.bill.bill_no))
+  /*
+   * A chit bill carries D, a consultation bill C. Same series, same day, but
+   * the letter says what was paid for — which is the whole reason for having
+   * one, since a patient holding two slips can tell them apart.
+   */
+  ok('chit invoice shares the series but is marked D',
+    /^INV-\d{6}-D\d{5}$/.test(r.body.bill.bill_no), r.body.bill.bill_no)
   const c2 = (await q(`/chits/${chit.id}`,'mc')).body
   ok('chit now reads paid', c2.chit.status==='paid', c2.chit?.status)
   ok('its service orders followed', c2.lines.every(l=>l.status==='paid'))

@@ -92,6 +92,7 @@ reports.get('/print/:id/pdf', async (c) => {
     to: def.dated ? w.to : undefined,
     columns: def.columns, rows, totalKeys: def.totalKeys,
     groupBy: def.groupBy, groupLabel: def.groupLabel,
+    subGroupBy: def.subGroupBy, subGroupLabel: def.subGroupLabel,
     landscape: def.landscape, notes,
     user: me(c).displayName
   })

@@ -5,6 +5,7 @@ import { Pharmacy } from '../src/client/src/screens/Pharmacy'
 import { MainCounter } from '../src/client/src/screens/MainCounter'
 import { OpdCounter } from '../src/client/src/screens/OpdCounter'
 import { Admin } from '../src/client/src/screens/Admin'
+import { BackupLocationCard, DangerZoneCard } from '../src/client/src/screens/admin/DangerZone'
 import { IpdCounter } from '../src/client/src/screens/IpdCounter'
 import { Stores } from '../src/client/src/screens/Stores'
 import { Lab } from '../src/client/src/screens/Lab'
@@ -88,6 +89,8 @@ const cases: [string, () => any][] = [
       frequency: 'SOS', instructions: 'When needed' }
   ]} />],
   ['Admin', () => <Admin me={user('admin')} />],
+  ['Backup location', () => <BackupLocationCard />],
+  ['Danger zone', () => <DangerZoneCard me={user('admin')} />],
   ['Pharmacy', () => <Pharmacy me={user('pharmacist')} />],
   ['Pharmacy billing', () => <Billing me={user('pharmacist')} pending={null} onConsumed={noop} />],
   ['Pharmacy bills', () => <Bills />],

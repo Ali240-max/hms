@@ -1,5 +1,6 @@
 import { sql, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { dateSegment } from './numbering'
 import * as s from '../db/schema'
 
 export type CartLine = {
@@ -168,20 +169,29 @@ async function allocateFefo(
   return out
 }
 
-/** Gapless invoice numbers. Row lock held until the transaction commits. */
+/**
+ * PH-260618-S00123.
+ *
+ * Dated and reset daily, the same as every other document. `invoiceSeq` is
+ * kept because the till and the day's reports sort on it; it is the day's
+ * sequence now rather than an all-time one, which is what makes the printed
+ * number short enough to read down a phone.
+ *
+ * The row lock inside the counter is what keeps two cashiers from taking the
+ * same number, and it is held until the transaction commits.
+ */
 async function nextInvoiceNo(
   tx: NodePgDatabase<typeof s>
 ): Promise<{ invoiceNo: string; invoiceSeq: number }> {
+  const day = dateSegment()
   const r = await tx.execute<{ value: number }>(sql`
-    INSERT INTO counters (key, value) VALUES ('invoice', 1)
+    INSERT INTO counters (key, value) VALUES (${'ph:' + day}, 1)
     ON CONFLICT (key) DO UPDATE SET value = counters.value + 1
     RETURNING value
   `)
   const rows = r.rows ?? (r as unknown as any[])
   const n = Number(rows[0].value)
-  const d = new Date()
-  const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`
-  return { invoiceNo: `INV-${ym}-${String(n).padStart(5, '0')}`, invoiceSeq: n }
+  return { invoiceNo: `PH-${day}-S${String(n).padStart(5, '0')}`, invoiceSeq: n }
 }
 
 /**

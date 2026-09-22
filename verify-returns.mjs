@@ -59,7 +59,7 @@ r = await q('/pharma/returns','ph',{method:'POST',body:JSON.stringify({
   reason:'Patient did not need it' })})
 ok('the return is accepted', r.status===201, JSON.stringify(r.body).slice(0,110))
 const ret = r.body
-ok('it gets a return number', /^SR-\d{6}$/.test(ret.return_no), ret.return_no)
+ok('it gets a return number', /^SR-\d{6}-R\d{5}$/.test(ret.return_no), ret.return_no)
 ok('the refund matches what those units cost',
   Number(ret.total_paisa) === Number(line.unit_refund_paisa)*FIRST,
   `${ret.total_paisa} vs ${Number(line.unit_refund_paisa)*FIRST}`)

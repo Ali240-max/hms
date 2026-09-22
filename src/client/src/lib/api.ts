@@ -199,6 +199,11 @@ export const api = {
     req<any>(`/pharma/reports/run/${id}?${new URLSearchParams(o)}`),
 
   pharmaSalts: (q = '') => req<any[]>(`/pharma/salts?q=${encodeURIComponent(q)}`),
+  createSalt: (name: string) =>
+    req<any>('/pharma/salts', { method: 'POST', body: JSON.stringify({ name }) }),
+  createManufacturer: (b: any) =>
+    req<any>('/pharma/manufacturers', { method: 'POST', body: JSON.stringify(b) }),
+  pharmaSuppliers: (q = '') => req<any[]>(`/pharmacy/suppliers?q=${encodeURIComponent(q)}`),
   saltBrands: (id: number) => req<any[]>(`/pharma/salts/${id}/brands`),
   pharmaManufacturers: (q = '') => req<any[]>(`/pharma/manufacturers?q=${encodeURIComponent(q)}`),
   pharmaGroups: () => req<any[]>('/pharma/groups'),
@@ -306,6 +311,12 @@ export const api = {
     req<Record<string, boolean>>('/modules', { method: 'PUT', body: JSON.stringify(b) }),
   hospital: () => req<any>('/settings/hospital'),
   saveHospital: (b: any) => req<any>('/settings/hospital', { method: 'PUT', body: JSON.stringify(b) }),
+  backupLocation: () => req<any>('/admin/backup-location'),
+  saveBackupLocation: (extraDir: string | null) =>
+    req<any>('/admin/backup-location', { method: 'PUT', body: JSON.stringify({ extraDir }) }),
+  wipePreview: () => req<any>('/admin/wipe-preview'),
+  wipeAll: (password: string, typedName: string) =>
+    req<any>('/admin/wipe', { method: 'POST', body: JSON.stringify({ password, typedName }) }),
   backups: () => req<any[]>('/admin/backups'),
   runBackup: () => req<any>('/admin/backups', { method: 'POST' }),
 

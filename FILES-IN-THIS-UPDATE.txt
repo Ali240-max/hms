@@ -1,0 +1,20 @@
+Changes since the hms-v9-complete update. 7 files.
+
+New:
+  drizzle/0015_service_catalogue.sql
+
+Changed:
+  src/server/services/billing.ts
+  src/server/services/clinical.ts
+  src/server/services/demo.ts
+  src/client/src/screens/Admin.tsx
+  src/client/src/lib/prefs.tsx
+  verify-lab.mjs
+
+Nothing to delete.
+
+After unzipping, in PowerShell:
+
+  npm run typecheck
+
+and start the server only when that prints nothing.

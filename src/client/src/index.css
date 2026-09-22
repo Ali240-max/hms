@@ -297,6 +297,32 @@ html.lang-ur .num { @apply font-sans; }
   .print-area * { background: transparent !important; color: #000 !important; }
   .no-print { display: none !important; }
 
+  /*
+   * A report is an A4 document, not a till slip.
+   *
+   * Everything printable shared one rule sized to the receipt roll, so a
+   * report came out 72mm wide with its right-hand columns sliced off. Paper
+   * width belongs to the kind of document, not to the printer someone last
+   * configured.
+   */
+  .print-sheet {
+    position: static !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    font-size: 9.5pt !important;
+  }
+  /* The scroll box on screen must not clip the printed copy. */
+  .print-sheet, .print-sheet * {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+  .print-sheet table { width: 100% !important; table-layout: auto !important; }
+  .print-sheet thead { display: table-header-group; }
+  .print-sheet tr { break-inside: avoid; page-break-inside: avoid; }
+
   /* A prescription goes on A5, not on a till roll. */
   .print-area:has(.nuskha), .print-area.nuskha { width: 148mm !important; }
 

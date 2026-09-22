@@ -310,7 +310,10 @@ ok('the visit number marks it out as walk-in',
   ok('it is not in anyone\'s queue',
     !(await q('/visits/queue','opd')).body.some(x => x.id === visit.id))
 
-  const chit = chits[0]
+  // The lab's chit specifically. Taking the first one relied on the order the
+  // chits came back in, which changed once the catalogue shipped with the
+  // software and passed only by luck before.
+  const chit = chits.find(c => c.category === 'lab')
   r3 = await q('/counter/bills','mc',{method:'POST',body:JSON.stringify({
     kind:'chit', chitId: chit.id, payMethod:'cash', tenderedPaisa: Number(chit.total_paisa) })})
   ok('the chit bills like any other', r3.status===201, JSON.stringify(r3.body).slice(0,100))

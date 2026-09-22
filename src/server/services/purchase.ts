@@ -1,6 +1,7 @@
 import { sql, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as s from '../db/schema'
+import { documentNo } from './numbering'
 
 /**
  * Receiving a delivery.
@@ -22,7 +23,7 @@ export type ReceiptLine = {
   /** Free packs, the "10+1" that distributors here give. Stock, but no cost. */
   bonusQty?: number
   costPaisa: number
-  pricePaisa: number
+  pricePaisa?: number
 }
 
 export type GoodsReceipt = {
@@ -83,6 +84,13 @@ export async function receiveGoods(db: NodePgDatabase<typeof s>, input: GoodsRec
       .insert(s.purchases)
       .values({
         supplierId: input.supplierId,
+        /*
+         * Our own reference for this delivery, issued here.
+         *
+         * The supplier's number is theirs: two of them reuse the same one and
+         * some send none at all, so it cannot identify a delivery on our side.
+         */
+        grnNo: await documentNo(tx, { prefix: 'GRN', letter: 'G' }),
         supplierInvoiceNo: input.supplierInvoiceNo.trim(),
         invoiceDate: input.invoiceDate,
         note: input.note,
@@ -109,13 +117,31 @@ export async function receiveGoods(db: NodePgDatabase<typeof s>, input: GoodsRec
       const baseQty = basePacks * packSize
 
       const r = await tx.execute<{ id: number; qty_on_hand: number }>(sql`
+        /*
+         * The batch is stamped with the medicine's price on the day it lands.
+         *
+         * This is the whole answer to "what happens to old stock when the
+         * price changes". A pack carries a printed price, and selling above
+         * the price printed on the box is not allowed — so a batch keeps the
+         * price it arrived with for its entire life, and repricing the
+         * medicine only affects deliveries that come afterwards.
+         *
+         * The counter sells whichever batch FEFO reaches, at that batch's
+         * price. Old stock therefore sells at the old price and clears at the
+         * old margin, which is what actually happens behind a counter.
+         */
         INSERT INTO batches (product_id, batch_no, expiry_date, cost_paisa, price_paisa, qty_on_hand, supplier_id)
         VALUES (${line.productId}, ${line.batchNo.trim()}, ${line.expiryDate}::date,
-                ${line.costPaisa}, ${line.pricePaisa}, ${baseQty}, ${input.supplierId})
+                ${line.costPaisa},
+                COALESCE(${line.pricePaisa ?? null},
+                         (SELECT retail_paisa FROM products WHERE id = ${line.productId}), 0),
+                ${baseQty}, ${input.supplierId})
         ON CONFLICT (product_id, batch_no) DO UPDATE
           SET qty_on_hand = batches.qty_on_hand + EXCLUDED.qty_on_hand,
               cost_paisa  = EXCLUDED.cost_paisa,
-              price_paisa = EXCLUDED.price_paisa,
+              -- The price stays as the batch was first stamped. Topping up an
+              -- existing batch number must not silently reprice what is
+              -- already on the shelf.
               supplier_id = EXCLUDED.supplier_id
         RETURNING id, qty_on_hand`)
       const batch = ((r as any).rows ?? [])[0]

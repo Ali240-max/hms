@@ -15,7 +15,10 @@ loadEnv()
 async function main() {
   await runMigrations()
   console.log('\n  Loading pharmacy demo data — this takes a minute.\n')
-  const r = await loadPharmacyDemo({ days: Number(process.argv[2] ?? 60) })
+  const r = await loadPharmacyDemo({
+    days: Number(process.argv[2] ?? 60),
+    futureDays: Number(process.argv[3] ?? 45)
+  })
   console.log(`  ${r.salts} salts, ${r.manufacturers} manufacturers`)
   console.log(`  ${r.products} medicines, ${r.suppliers} suppliers, ${r.batches} batches`)
   console.log(`  ${r.invoices} invoices, ${r.returns} returns, ${r.cancelled} cancelled\n`)

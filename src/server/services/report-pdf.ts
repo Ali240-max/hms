@@ -39,6 +39,16 @@ export type ReportSpec = {
   /** Column key to break on. Each group gets a heading and a sub-total. */
   groupBy?: string
   groupLabel?: string
+  /**
+   * A second break inside each group.
+   *
+   * A purchase register reads as supplier, then delivery, then the goods in
+   * it: three levels, each with its own total. One level is enough for a
+   * sales summary and not enough for this, and the alternative — a row per
+   * delivery — hides the only thing anyone opens the report for.
+   */
+  subGroupBy?: string
+  subGroupLabel?: string
   /** Column keys to add up, per group and overall. */
   totalKeys?: string[]
   user: string
@@ -140,13 +150,24 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
     doc.y += 1
     rule()
     doc.font(bold ? MONO_BOLD : MONO).fontSize(SIZE)
-    const line = spec.columns.map((c, i) => {
-      if (spec.totalKeys?.includes(c.key)) return cell(from[c.key] ?? 0, c)
-      // The label sits in the last column before the first total.
-      const firstTotal = spec.columns.findIndex((x) => spec.totalKeys?.includes(x.key))
-      if (i === Math.max(0, firstTotal - 1)) return cell(label, { ...c, align: 'right' })
-      return ' '.repeat(c.width)
-    }).join(' ')
+    const firstTotal = spec.columns.findIndex((x) => spec.totalKeys?.includes(x.key))
+    const cut = firstTotal <= 0 ? spec.columns.length : firstTotal
+
+    /*
+     * The label spans every column to the left of the first total.
+     *
+     * Putting it in one column truncated it to that column's width — "Total
+     * of Al-Noor Distributors" printed as "Total of Al". It must also not go
+     * through the money formatter, which turned a word into NaN.
+     */
+    const leftWidth = spec.columns.slice(0, cut)
+      .reduce((n, c) => n + c.width, 0) + Math.max(0, cut - 1)
+    const head = (label.length > leftWidth ? label.slice(0, leftWidth) : label)
+      .padStart(leftWidth)
+    const rest = spec.columns.slice(cut)
+      .map((c) => spec.totalKeys?.includes(c.key)
+        ? cell(from[c.key] ?? 0, c) : ' '.repeat(c.width))
+    const line = [head, ...rest].join(' ')
     doc.text(line, MARGIN, doc.y, { lineBreak: false })
     doc.y += LINE - 2
     rule(bold)
@@ -155,6 +176,17 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
 
   let currentGroup: string | null = null
   let groupRows = 0
+  let currentSub: string | null = null
+  let subRows = 0
+  const subTotals: Record<string, number> = {}
+
+  const closeSub = () => {
+    if (spec.subGroupBy && currentSub !== null && subRows > 0) {
+      totalLine(`${spec.subGroupLabel ?? 'Total'}`, subTotals, false)
+      for (const k of Object.keys(subTotals)) delete subTotals[k]
+      subRows = 0
+    }
+  }
 
   if (spec.rows.length === 0) {
     ensure()
@@ -166,6 +198,8 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
     if (spec.groupBy) {
       const g = String(row[spec.groupBy] ?? '—')
       if (g !== currentGroup) {
+        closeSub()
+        currentSub = null
         if (currentGroup !== null && groupRows > 0) {
           totalLine(`Total of ${currentGroup}`, groupTotals, false)
         }
@@ -181,13 +215,30 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
       }
     }
 
+    /* The second break: a new delivery inside the same supplier. */
+    if (spec.subGroupBy) {
+      const s = String(row[spec.subGroupBy] ?? '—')
+      if (s !== currentSub) {
+        closeSub()
+        currentSub = s
+        ensure(2)
+        doc.y += 1
+        doc.font(MONO_BOLD).fontSize(SIZE)
+           .text(`  ${s}`, MARGIN, doc.y, { lineBreak: false })
+        doc.y += LINE
+        doc.font(MONO).fontSize(SIZE)
+      }
+    }
+
     ensure()
     doc.text(spec.columns.map((c) => cell(row[c.key], c)).join(' '),
       MARGIN, doc.y, { lineBreak: false })
     doc.y += LINE
-    add(totals, row); add(groupTotals, row); groupRows++
+    add(totals, row); add(groupTotals, row); add(subTotals, row)
+    groupRows++; subRows++
   }
 
+  closeSub()
   if (spec.groupBy && currentGroup !== null && groupRows > 0) {
     totalLine(`Total of ${currentGroup}`, groupTotals, false)
   }

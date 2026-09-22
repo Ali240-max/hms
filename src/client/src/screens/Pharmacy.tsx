@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Sidebar, type NavItem } from '../components/Sidebar'
+import { Settings2 } from 'lucide-react'
 import { api, type SessionUser } from '../lib/api'
 import { useT } from '../lib/prefs'
 import { Billing } from './pharmacy/Billing'
@@ -11,12 +12,13 @@ import { Bills } from './pharmacy/Bills'
 import { Overview } from './pharmacy/Overview'
 import { PrinterSettingsCard } from '../components/PrinterSettings'
 import { Reports } from './pharma/Reports'
+import { PharmacySetup } from './pharma/Setup'
 import { Ledgers } from './pharma/Ledgers'
 import { Access } from './pharma/Access'
 import { Returns } from './pharma/Returns'
 
 type Tab = 'billing' | 'prescriptions' | 'medicines' | 'receive' | 'stock' | 'bills'
-  | 'returns' | 'overview' | 'reports' | 'ledgers' | 'access' | 'printing'
+  | 'returns' | 'overview' | 'reports' | 'ledgers' | 'access' | 'setup' | 'printing'
 
 /**
  * The rail, grouped by what a person is doing rather than alphabetically.
@@ -39,7 +41,9 @@ const NAV: (NavItem & { id: Tab })[] = [
   { id: 'ledgers', label: 'Ledgers', glyph: 'L' },
   { id: 'reports', label: 'Reports', glyph: 'Rp' },
 
-  { id: 'access', label: 'Access', glyph: 'A', section: 'Setup' },
+  { id: 'setup', label: 'Suppliers & formulas', glyph: 'Su', icon: Settings2,
+    section: 'Setup' },
+  { id: 'access', label: 'Access', glyph: 'A' },
   { id: 'printing', label: 'Printing', glyph: 'P' }
 ]
 
@@ -73,7 +77,9 @@ const TAB_PERMISSION: Partial<Record<Tab, string>> = {
   overview: 'report.sales',
   reports: 'report.sales',
   ledgers: 'ledger.view',
-  access: 'staff.access'
+
+  access: 'staff.access',
+  setup: 'product.edit'
 }
 
 export function Pharmacy({ me }: { me: SessionUser }) {
@@ -124,6 +130,7 @@ export function Pharmacy({ me }: { me: SessionUser }) {
         {tab === 'reports' && <Reports me={me} />}
         {tab === 'ledgers' && <Ledgers me={me} />}
         {tab === 'access' && <Access me={me} />}
+        {tab === 'setup' && <PharmacySetup />}
         {tab === 'printing' && (
           <div className="p-4">
             <PrinterSettingsCard module="pharmacy" label={tr('Pharmacy till')} />

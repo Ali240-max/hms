@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 
 /**
  * Demo data for the rebuilt pharmacy.
@@ -64,8 +65,18 @@ function saltFor(name: string, salts: string[], fallbackIndex: number): string |
   return salts.length ? salts[fallbackIndex % salts.length] : null
 }
 
-export async function loadPharmacyDemo(opts: { days?: number } = {}) {
+export async function loadPharmacyDemo(opts: { days?: number; futureDays?: number } = {}) {
   const days = opts.days ?? 60
+  /**
+   * The pharmacy also trades into the future.
+   *
+   * Backdated-only data goes stale the moment you stop looking at it: come
+   * back in a month and every "today" screen is empty, every daily report
+   * reads zero, and the system looks broken when it is merely out of date.
+   * Running forward means a demo installed in September still shows a busy
+   * counter in November.
+   */
+  const futureDays = opts.futureDays ?? 45
   const ref: Ref = JSON.parse(
     readFileSync(join(process.cwd(), 'scripts', 'vfp-reference.json'), 'utf8'))
 
@@ -93,7 +104,10 @@ export async function loadPharmacyDemo(opts: { days?: number } = {}) {
     ON CONFLICT (lower(name)) DO NOTHING`)
 
   const salts = (await db.execute<any>(sql`SELECT id, name FROM salts`)).rows as any[]
-  const makers = (await db.execute<any>(sql`SELECT id, name FROM manufacturers`)).rows as any[]
+  // Only the companies still offered in the dropdown, so demo medicines point
+  // at a properly named company rather than a retired capital-case duplicate.
+  const makers = (await db.execute<any>(sql`
+    SELECT id, name FROM manufacturers WHERE is_active`)).rows as any[]
   const groups = (await db.execute<any>(sql`SELECT id, name FROM product_groups`)).rows as any[]
   const saltByName = new Map(salts.map((s) => [s.name, s.id]))
   const groupByName = new Map(groups.map((g) => [g.name, g.id]))
@@ -306,14 +320,25 @@ export async function loadPharmacyDemo(opts: { days?: number } = {}) {
    * A demo that sells out halfway through the period reports zero revenue for
    * the recent days, which reads as a broken system rather than a quiet week.
    */
-  for (let d = days; d >= 0; d -= between(1, 2)) {
+  for (let d = days; d >= -futureDays; d -= between(1, 2)) {
     const when = new Date(); when.setDate(when.getDate() - d)
     const supplierId = pick(supplierIds)
     const lines = between(10, 22)
     const seq = await nextCounter(db as any, 'purchase')
+    /*
+     * Deliveries carry a GRN, the same as a real one.
+     *
+     * The demo used to insert purchases straight into the table, so every row
+     * on a purchase report read "no GRN" — which made the GRN-range filter
+     * impossible to try.
+     */
+    const grnNo = await documentNo(db as any, {
+      prefix: 'GRN', letter: 'G', when
+    })
     const purchase = (await db.execute<any>(sql`
-      INSERT INTO purchases (supplier_id, supplier_invoice_no, invoice_date, total_paisa, received_by)
-      VALUES (${supplierId}, ${'INV-' + between(1000, 99999)},
+      INSERT INTO purchases (supplier_id, supplier_invoice_no, grn_no, invoice_date,
+                             total_paisa, received_by)
+      VALUES (${supplierId}, ${'INV-' + between(1000, 99999)}, ${grnNo},
               ${when.toISOString().slice(0, 10)}::date, 0, 'Demo')
       RETURNING *`)).rows[0]
 
@@ -360,7 +385,7 @@ export async function loadPharmacyDemo(opts: { days?: number } = {}) {
 
   let invoices = 0, returns = 0, cancelled = 0
   const cashiers = ['Bilal', 'Awais', 'Idrees']
-  for (let d = days; d >= 0; d--) {
+  for (let d = days; d >= -futureDays; d--) {
     const when = new Date(); when.setDate(when.getDate() - d)
     const busy = when.getDay() === 5 ? between(15, 35) : between(40, 90)
 
@@ -381,7 +406,7 @@ export async function loadPharmacyDemo(opts: { days?: number } = {}) {
         INSERT INTO sales (invoice_no, invoice_seq, sold_at, cashier, pay_method,
                            sale_kind, party_id, customer_name, salesman,
                            subtotal_paisa, discount_paisa, tax_paisa, total_paisa, paid_paisa)
-        VALUES (${'S-' + String(n).padStart(6, '0')}, ${n}, ${at.toISOString()}::timestamptz,
+        VALUES (${await documentNo(db, { prefix: 'PH', letter: 'S', when: at })}, ${n}, ${at.toISOString()}::timestamptz,
                 ${pick(cashiers)}, ${credit ? 'credit' : pick(['cash','cash','cash','easypaisa','card'])},
                 ${credit ? 'credit' : 'counter'}, ${partyIds[party]},
                 ${credit ? party : pick(['Walk-in customer','Muhammad Aslam','Fatima Bibi',
@@ -442,7 +467,7 @@ export async function loadPharmacyDemo(opts: { days?: number } = {}) {
           const ret = (await db.execute<any>(sql`
             INSERT INTO sale_returns (return_no, sale_id, party_id, customer_name,
                                       total_paisa, reason, returned_by, returned_at)
-            VALUES (${'SR-' + String(rn).padStart(6, '0')}, ${sale.id}, ${partyIds[party]},
+            VALUES (${await documentNo(db, { prefix: 'SR', letter: 'R', when: at })}, ${sale.id}, ${partyIds[party]},
                     ${sale.customer_name}, ${item.line_total_paisa},
                     ${pick(['Wrong medicine', 'Patient did not need it', 'Damaged strip'])},
                     'Bilal', ${at.toISOString()}::timestamptz)
@@ -470,7 +495,7 @@ export async function loadPharmacyDemo(opts: { days?: number } = {}) {
       const v = (await db.execute<any>(sql`
         INSERT INTO payments (voucher_no, kind, party_kind, party_ref, amount_paisa,
                               method, created_by, created_at)
-        VALUES (${'RV-' + String(n).padStart(6, '0')}, 'receipt', 'customer',
+        VALUES (${await documentNo(db, { prefix: 'RV', letter: 'R', when })}, 'receipt', 'customer',
                 ${partyIds[name]}, ${amount}, 'cash', 'Demo',
                 ${when.toISOString()}::timestamptz)
         RETURNING *`)).rows[0]
@@ -490,7 +515,7 @@ export async function loadPharmacyDemo(opts: { days?: number } = {}) {
       const v = (await db.execute<any>(sql`
         INSERT INTO payments (voucher_no, kind, party_kind, party_ref, amount_paisa,
                               method, created_by, created_at)
-        VALUES (${'PV-' + String(n).padStart(6, '0')}, 'payment', 'supplier',
+        VALUES (${await documentNo(db, { prefix: 'PV', letter: 'P', when })}, 'payment', 'supplier',
                 ${supplierId}, ${amount}, ${pick(['cash', 'cheque'])}, 'Demo',
                 ${when.toISOString()}::timestamptz)
         RETURNING *`)).rows[0]

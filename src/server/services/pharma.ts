@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { documentNo } from './numbering'
 
 /**
  * The pharmacy's own masters and money.
@@ -25,13 +26,31 @@ export class PharmaError extends Error {
 
 /* ---------------------------------------------------------------- salts */
 
+/**
+ * Closest first, not alphabetical.
+ *
+ * Someone typing "cet" wants Cetirizine, not every formula with "cet" buried
+ * in the middle sorted from A. So a name that starts with what was typed comes
+ * first, then one where a later word does, then anything containing it.
+ * Empty search returns the most used, which is what a blank dropdown should
+ * offer.
+ */
 export async function listSalts(q = '') {
-  const like = `%${q}%`
+  const term = q.trim()
   const r = await db.execute<any>(sql`
     SELECT s.*, (SELECT COUNT(*)::int FROM products p WHERE p.salt_id = s.id) AS product_count
     FROM salts s
-    WHERE s.is_active AND (${q} = '' OR s.name ILIKE ${like})
-    ORDER BY s.name LIMIT 300`)
+    WHERE s.is_active AND (${term} = '' OR s.name ILIKE ${'%' + term + '%'})
+    ORDER BY
+      CASE
+        WHEN ${term} = '' THEN 0
+        WHEN s.name ILIKE ${term + '%'} THEN 0
+        WHEN s.name ILIKE ${'% ' + term + '%'} THEN 1
+        ELSE 2
+      END,
+      (SELECT COUNT(*) FROM products p WHERE p.salt_id = s.id) DESC,
+      length(s.name), s.name
+    LIMIT ${term === '' ? 40 : 60}`)
   return r.rows
 }
 
@@ -59,13 +78,24 @@ export async function brandsOfSalt(saltId: number) {
 
 /* ------------------------------------------------- manufacturers, groups */
 
+/** Same ranking as formulas: what you are typing the start of, first. */
 export async function listManufacturers(q = '') {
-  const like = `%${q}%`
+  const term = q.trim()
   const r = await db.execute<any>(sql`
     SELECT m.*, (SELECT COUNT(*)::int FROM products p WHERE p.manufacturer_id = m.id) AS product_count
     FROM manufacturers m
-    WHERE m.is_active AND (${q} = '' OR m.name ILIKE ${like})
-    ORDER BY m.name LIMIT 400`)
+    WHERE m.is_active AND (${term} = '' OR m.name ILIKE ${'%' + term + '%'}
+                           OR m.short_name ILIKE ${'%' + term + '%'})
+    ORDER BY
+      CASE
+        WHEN ${term} = '' THEN 0
+        WHEN m.name ILIKE ${term + '%'} OR m.short_name ILIKE ${term + '%'} THEN 0
+        WHEN m.name ILIKE ${'% ' + term + '%'} THEN 1
+        ELSE 2
+      END,
+      (SELECT COUNT(*) FROM products p WHERE p.manufacturer_id = m.id) DESC,
+      m.name
+    LIMIT ${term === '' ? 60 : 80}`)
   return r.rows
 }
 
@@ -242,8 +272,11 @@ export async function recordPayment(input: {
 }) {
   if (input.amountPaisa <= 0) throw new PharmaError('Amount must be above zero', 'BAD_INPUT')
   return db.transaction(async (tx) => {
-    const n = await nextCounter(tx, input.kind === 'receipt' ? 'receipt_vou' : 'payment_vou')
-    const voucherNo = `${input.kind === 'receipt' ? 'RV' : 'PV'}-${String(n).padStart(6, '0')}`
+    // RV money in, PV money out. Both dated, both reset daily.
+    const voucherNo = await documentNo(tx, {
+      prefix: input.kind === 'receipt' ? 'RV' : 'PV',
+      letter: input.kind === 'receipt' ? 'R' : 'P'
+    })
 
     const v = (await tx.execute<any>(sql`
       INSERT INTO payments (voucher_no, kind, party_kind, party_ref, amount_paisa,
