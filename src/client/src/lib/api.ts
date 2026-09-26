@@ -314,6 +314,14 @@ export const api = {
   backupLocation: () => req<any>('/admin/backup-location'),
   saveBackupLocation: (extraDir: string | null) =>
     req<any>('/admin/backup-location', { method: 'PUT', body: JSON.stringify({ extraDir }) }),
+  adminPermissionCatalogue: () => req<any[]>('/admin/permissions'),
+  myAdminPermissions: () => req<any>('/admin/permissions/me'),
+  adminAccounts: () => req<any[]>('/admin/accounts'),
+  adminPermissionsFor: (staffId: number) => req<any>(`/admin/permissions/${staffId}`),
+  saveAdminPermissions: (staffId: number, allowed: string[]) =>
+    req<any>(`/admin/permissions/${staffId}`, {
+      method: 'PUT', body: JSON.stringify({ allowed })
+    }),
   wipePreview: () => req<any>('/admin/wipe-preview'),
   wipeAll: (password: string, typedName: string) =>
     req<any>('/admin/wipe', { method: 'POST', body: JSON.stringify({ password, typedName }) }),

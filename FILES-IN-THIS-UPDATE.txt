@@ -1,21 +1,21 @@
-9 files. No migration, no new dependencies.
-
-DELETE this file after unzipping (it was replaced by northbyte-mark.png):
-
-  src/client/src/assets/northbyte.png
+12 files. No migration, no new dependencies.
 
 New:
-  src/client/src/assets/northbyte-mark.png   the NB mark, cropped, 72 kB
-  verify-tabs.mjs                            catches the blank-module bug
+  src/server/services/admin-perms.ts          what each administrator may change
+  src/client/src/screens/admin/AdminAccess.tsx  the checklist screen
+  verify-admin-access.mjs                     26 assertions on the above
 
 Changed:
-  src/client/src/screens/MainCounter.tsx     removed the wedge
-  src/client/src/screens/Pharmacy.tsx        removed the wedge
-  src/client/src/screens/Admin.tsx           removed the wedge
-  src/client/src/screens/Stores.tsx          removed the wedge
-  src/client/src/screens/SignIn.tsx          logo on a white tile, better points
-  src/client/src/lib/prefs.tsx               translations
-  package.json                               npm run verify:tabs
+  src/server/api/index.ts          enforces the permissions; label route tickets
+  src/server/services/patients.ts  returns last_visit_id for ward labels
+  src/client/src/components/Slip.tsx        SlipTopBar, token boxed on the right
+  src/client/src/components/Chit.tsx        uses it
+  src/client/src/components/CounterBill.tsx uses it, token on consultations too
+  src/client/src/screens/Admin.tsx          Access tab, rail gated by permission
+  src/client/src/screens/MainCounter.tsx    label button on directory rows
+  src/client/src/lib/api.ts, lib/prefs.tsx
+
+Nothing to delete.
 
   npm run typecheck
-  npm run verify:tabs
+  npm run verify:admin      (needs the server running)

@@ -400,7 +400,11 @@ export async function allDoctorEarnings(from: string, to: string) {
  */
 export async function listServices(includeInactive = false) {
   return (await db.execute<any>(sql`
-    SELECT sv.*, COUNT(so.id)::int AS times_ordered
+    SELECT sv.*, COUNT(so.id)::int AS times_ordered,
+           -- So the laboratory can see at a glance which tests still have no
+           -- reference ranges set against them.
+           (SELECT COUNT(*)::int FROM service_parameters sp
+            WHERE sp.service_id = sv.id AND sp.is_active) AS parameter_count
     FROM services sv
     LEFT JOIN service_orders so ON so.service_id = sv.id
     WHERE ${includeInactive ? sql`true` : sql`sv.is_active AND sv.price_paisa > 0`}

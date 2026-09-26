@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, rs } from '../lib/api'
 import { Modal, ErrorNote } from './ui'
-import { Slip, SlipHeader, SlipRow, SlipTotal, SlipFooter, Rule } from './Slip'
+import { Slip, SlipHeader, SlipRow, SlipTotal, SlipFooter, Rule, SlipTopBar } from './Slip'
 import { loadPrinter, printNow, applyPaper } from '../lib/printer'
 import { t as tr } from '../lib/prefs'
 
@@ -49,10 +49,17 @@ export function CounterBillSlip({ bill, items, hospital }: {
           title={isConsult ? tr('Consultation fee') : tr('Tests and scans')} />
       )}
 
+      {/*
+        The token goes on the consultation bill too. This is the slip a patient
+        carries to the doctor's door, and the token is the number the door
+        calls out, so leaving it off a consultation bill and printing it on a
+        lab chit was backwards.
+      */}
       <div className="mt-1">
-        <SlipRow k={tr('Bill')} v={bill.bill_no} bold />
-        <SlipRow k={tr('Date')} v={new Date(bill.created_at).toLocaleString('en-GB',
-          { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })} />
+        <SlipTopBar label={tr('Bill')} value={bill.bill_no} token={bill.token_no}
+          date={new Date(bill.created_at).toLocaleString('en-GB',
+            { day: '2-digit', month: 'short', year: '2-digit',
+              hour: '2-digit', minute: '2-digit' })} />
         <SlipRow k={tr('Cashier')} v={bill.cashier_name ?? '—'} />
       </div>
 
@@ -61,7 +68,6 @@ export function CounterBillSlip({ bill, items, hospital }: {
       <div>
         <SlipRow k={tr('Patient')} v={bill.patient_name ?? '—'} />
         <SlipRow k={tr('MRN')} v={bill.mrn ?? '—'} />
-        {bill.token_no != null && <SlipRow k={tr('Token')} v={String(bill.token_no)} />}
         {bill.doctor_name && <SlipRow k={tr('Doctor')} v={bill.doctor_name} />}
       </div>
 

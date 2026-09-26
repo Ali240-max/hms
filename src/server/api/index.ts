@@ -29,6 +29,11 @@ import {
 import { getModules, saveModules, getHospitalInfo, saveHospitalInfo, setSetting, getSetting } from '../services/settings'
 import { createTicket, checkTicket } from '../services/tickets'
 import { wipePreview, wipeTradingData, WipeError } from '../services/wipe'
+import { patientStickers, wardLabels } from '../services/labels-pdf'
+import {
+  ADMIN_PERMISSIONS, adminPermissionsFor, saveAdminPermissions, adminAccounts,
+  hasAdminPermission
+} from '../services/admin-perms'
 import { extraBackupDir, setExtraBackupDir, checkExtraDir, backupDir } from '../services/backup'
 import {
   labQueue, parametersFor, saveParameters, consumablesFor, saveConsumables,
@@ -198,7 +203,7 @@ api.use('*', async (c, next) => {
  */
 api.post('/tickets', async (c) => {
   const b = z.object({ path: z.string().min(1) }).parse(await c.req.json())
-  if (!/^\/(lab|pharma|reports)\/[\w/-]+\/pdf$/.test(b.path)) {
+  if (!/^\/(lab|pharma|reports|patients|visits)\/[\w/-]+\/pdf$/.test(b.path)) {
     return c.json({ error: 'That is not a downloadable document', code: 'NOT_A_FILE' }, 400)
   }
   return c.json({ ticket: createTicket(b.path, me(c).id), path: b.path })
@@ -215,6 +220,28 @@ const allow = (...roles: Role[]) => async (c: any, next: any) => {
 }
 const adminOnly = allow('admin')
 
+/**
+ * An administrator holding one particular power.
+ *
+ * Checked on the server, not only hidden in the interface. A second
+ * administrator who is not allowed to change prices must be refused when the
+ * request arrives, or the restriction is decoration: the screen is the easy
+ * part to work around.
+ */
+const adminCan = (key: string) => async (c: any, next: any) => {
+  const u = me(c)
+  if (u.role !== 'admin') {
+    return c.json({ error: 'Administrators only', code: 'NOT_ALLOWED' }, 403)
+  }
+  if (!(await hasAdminPermission(u.id, key))) {
+    return c.json({
+      error: 'Your account is not set up to do that. The main administrator can allow it.',
+      code: 'NOT_ALLOWED'
+    }, 403)
+  }
+  return next()
+}
+
 api.get('/auth/me', (c) => c.json(me(c)))
 
 /* ----------------------------------------------------------- departments */
@@ -225,13 +252,13 @@ api.get('/departments', async (c) =>
     FROM departments d LEFT JOIN staff st ON st.department_id = d.id AND st.is_active
     WHERE d.is_active GROUP BY d.id ORDER BY d.name`)).rows))
 
-api.post('/departments', adminOnly, async (c) => {
+api.post('/departments', adminCan('admin.departments'), async (c) => {
   const b = z.object({ name: z.string().min(1), code: z.string().min(1) }).parse(await c.req.json())
   const [row] = await db.insert(s.departments).values(b).returning()
   return c.json(row, 201)
 })
 
-api.patch('/departments/:id', adminOnly, async (c) => {
+api.patch('/departments/:id', adminCan('admin.departments'), async (c) => {
   const b = z.object({
     name: z.string().optional(), code: z.string().optional(), isActive: z.boolean().optional()
   }).parse(await c.req.json())
@@ -244,7 +271,7 @@ api.patch('/departments/:id', adminOnly, async (c) => {
 
 api.get('/staff', adminOnly, async (c) => c.json(await listStaff()))
 
-api.post('/staff', adminOnly, async (c) => {
+api.post('/staff', adminCan('admin.staff.edit'), async (c) => {
   const b = z.object({
     username: z.string().min(1), displayName: z.string().default(''), password: z.string(),
     role: z.enum(['admin', 'main_counter', 'receptionist', 'ipd_counter',
@@ -264,13 +291,13 @@ api.post('/staff', adminOnly, async (c) => {
   return c.json(await createStaff(b), 201)
 })
 
-api.post('/staff/:id/password', adminOnly, async (c) => {
+api.post('/staff/:id/password', adminCan('admin.staff.password'), async (c) => {
   const b = z.object({ password: z.string() }).parse(await c.req.json())
   await setStaffPassword(Number(c.req.param('id')), b.password)
   return c.json({ ok: true })
 })
 
-api.post('/staff/:id/archive', adminOnly, async (c) => {
+api.post('/staff/:id/archive', adminCan('admin.staff.edit'), async (c) => {
   await archiveStaff(Number(c.req.param('id')))
   return c.json({ ok: true })
 })
@@ -656,6 +683,46 @@ api.get('/lab/visits/:id/pdf', async (c) => {
   })
 })
 
+/* ------------------------------------------------------------- labels */
+
+/**
+ * 21 stickers for one patient, three across and seven down on plain A4.
+ *
+ * `from` starts part way down a sheet that has already had some peeled off.
+ */
+api.get('/patients/:id/stickers/pdf',
+  allow('admin', 'main_counter', 'receptionist', 'ipd_counter'), async (c) => {
+  const pdf = await patientStickers(Number(c.req.param('id')), {
+    from: Number(c.req.query('from') ?? 1),
+    count: c.req.query('count') ? Number(c.req.query('count')) : undefined
+  })
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="stickers-${c.req.param('id')}.pdf"`
+    }
+  })
+})
+
+/** Bed, door and file labels for one visit, three to a sheet. */
+api.get('/visits/:id/ward-labels/pdf',
+  allow('admin', 'main_counter', 'receptionist', 'ipd_counter'), async (c) => {
+  const pdf = await wardLabels(Number(c.req.param('id')), {
+    diagnosis: c.req.query('diagnosis') || null,
+    admittedOn: c.req.query('admittedOn') || null
+  })
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="ward-labels-${c.req.param('id')}.pdf"`
+    }
+  })
+})
+
 api.get('/lab/footer', async (c) => c.json(await getLabFooter()))
 
 api.put('/lab/footer', adminOnly, async (c) => {
@@ -673,7 +740,16 @@ api.put('/lab/footer', adminOnly, async (c) => {
 api.get('/services/:id/parameters', async (c) =>
   c.json(await parametersFor(Number(c.req.param('id')))))
 
-api.put('/services/:id/parameters', adminOnly, async (c) => {
+/*
+ * The laboratory sets its own reference ranges.
+ *
+ * An administrator decides what a test is called and what it costs. What it
+ * reports, in what units, against which ranges, is the laboratory's own
+ * business: they are the ones who know what their analyser produces, and
+ * routing every range change through an administrator means the ranges are
+ * wrong until somebody gets round to it.
+ */
+api.put('/services/:id/parameters', allow('admin', 'lab_tech', 'radiology'), async (c) => {
   const b = z.object({
     parameters: z.array(z.object({
       name: z.string().min(1),
@@ -1007,7 +1083,7 @@ api.post('/chits/:id/complete', async (c) => {
 
 api.get('/settings/hospital', async (c) => c.json(await getHospitalInfo()))
 
-api.put('/modules', adminOnly, async (c) => {
+api.put('/modules', adminCan('admin.modules'), async (c) => {
   const b = z.object({
     doctor: z.boolean().optional(), opdCounter: z.boolean().optional(),
     pharmacy: z.boolean().optional(), laboratory: z.boolean().optional(),
@@ -1017,7 +1093,7 @@ api.put('/modules', adminOnly, async (c) => {
   return c.json(await saveModules(b))
 })
 
-api.put('/settings/hospital', adminOnly, async (c) => {
+api.put('/settings/hospital', adminCan('admin.settings'), async (c) => {
   const b = z.object({
     name: z.string().optional(), tagline: z.string().optional(),
     address: z.string().optional(), phone: z.string().optional(),
@@ -1030,18 +1106,18 @@ api.put('/settings/hospital', adminOnly, async (c) => {
   return c.json(await saveHospitalInfo(b))
 })
 
-api.get('/admin/backups', adminOnly, async (c) => c.json(await listBackups()))
+api.get('/admin/backups', adminCan('admin.backup'), async (c) => c.json(await listBackups()))
 
 /* ------------------------------------------------ where backups are kept */
 
-api.get('/admin/backup-location', adminOnly, async (c) => c.json({
+api.get('/admin/backup-location', adminCan('admin.backup'), async (c) => c.json({
   defaultDir: backupDir(),
   extraDir: await extraBackupDir(),
   lastCopyAt: await getSetting('backup.lastCopyAt'),
   lastCopyError: await getSetting('backup.lastCopyError')
 }))
 
-api.put('/admin/backup-location', adminOnly, async (c) => {
+api.put('/admin/backup-location', adminCan('admin.backup'), async (c) => {
   const b = z.object({ extraDir: z.string().nullable() }).parse(await c.req.json())
   const dir = (b.extraDir ?? '').trim()
 
@@ -1062,9 +1138,32 @@ api.put('/admin/backup-location', adminOnly, async (c) => {
 
 /* ---------------------------------------------------------- start again */
 
-api.get('/admin/wipe-preview', adminOnly, async (c) => c.json(await wipePreview()))
+/* -------------------------------------------- what an administrator may do */
 
-api.post('/admin/wipe', adminOnly, async (c) => {
+api.get('/admin/permissions', adminOnly, (c) => c.json(ADMIN_PERMISSIONS))
+
+/** Own permissions, so the screen knows which tabs to draw. */
+api.get('/admin/permissions/me', adminOnly, async (c) =>
+  c.json(await adminPermissionsFor(me(c).id)))
+
+api.get('/admin/accounts', adminCan('admin.access'), async (c) =>
+  c.json(await adminAccounts()))
+
+api.get('/admin/permissions/:staffId', adminCan('admin.access'), async (c) =>
+  c.json(await adminPermissionsFor(Number(c.req.param('staffId')))))
+
+api.put('/admin/permissions/:staffId', adminCan('admin.access'), async (c) => {
+  const b = z.object({ allowed: z.array(z.string()) }).parse(await c.req.json())
+  try {
+    return c.json(await saveAdminPermissions(Number(c.req.param('staffId')), b.allowed))
+  } catch (e: any) {
+    return c.json({ error: e.message, code: 'NOT_ALLOWED' }, 409)
+  }
+})
+
+api.get('/admin/wipe-preview', adminCan('admin.wipe'), async (c) => c.json(await wipePreview()))
+
+api.post('/admin/wipe', adminCan('admin.wipe'), async (c) => {
   const b = z.object({
     password: z.string().min(1),
     typedName: z.string().min(1)
@@ -1080,7 +1179,7 @@ api.post('/admin/wipe', adminOnly, async (c) => {
     throw e
   }
 })
-api.post('/admin/backups', adminOnly, async (c) => c.json(await runBackup('manual'), 201))
+api.post('/admin/backups', adminCan('admin.backup'), async (c) => c.json(await runBackup('manual'), 201))
 
 /**
  * The reception day, for closing the counter.
@@ -1283,7 +1382,7 @@ api.get('/admin/demo-status', adminOnly, async (c) => c.json({ hasData: await ha
  * typed confirmation. Refuses to add on top of existing data, because two
  * overlapping sets of demo patients is worse than none.
  */
-api.post('/admin/demo-data', adminOnly, async (c) => {
+api.post('/admin/demo-data', adminCan('admin.demo'), async (c) => {
   const b = z.object({
     reset: z.boolean().default(false),
     days: z.number().int().min(1).max(180).default(45)

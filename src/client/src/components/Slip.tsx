@@ -29,6 +29,48 @@ export function Slip({ children }: { children: ReactNode }) {
 }
 
 /** Letterhead. Centred, name slightly larger, everything else small. */
+/**
+ * A token, printed big in the top right corner.
+ *
+ * It used to be one row among a dozen, in the same small type as the MRN, and
+ * a waiting room full of people cannot read it from a chair. It is the one
+ * number called out loud, so it is the one number set in large type where a
+ * thumb does not cover it.
+ */
+/**
+ * The document reference on the left, the token boxed on the right.
+ *
+ * The token was absolutely positioned before, inside a container that had no
+ * height of its own, so it floated over the patient name and the amount. A
+ * flex row instead: the two halves reserve their own space and nothing can
+ * land on top of anything.
+ *
+ * It is the one number called out across a waiting room, so it is set large
+ * and boxed, where a thumb holding the slip does not cover it.
+ */
+export function SlipTopBar({ label, value, token, date }: {
+  label: string
+  value: string
+  token?: number | string | null
+  date?: string | null
+}) {
+  return (
+    <div className="flex items-start justify-between gap-2">
+      <div className="min-w-0 flex-1">
+        <SlipRow k={label} v={value} bold />
+        {date && <SlipRow k="Date" v={date} />}
+      </div>
+
+      {token != null && token !== '' && (
+        <div className="shrink-0 border border-black px-2 py-0.5 text-center leading-none">
+          <div className="text-[8px] uppercase tracking-wide">Token</div>
+          <div className="text-[26px] font-bold leading-none">{token}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function SlipHeader({ hospital, title }: { hospital: any; title?: string }) {
   return (
     <header className="text-center">

@@ -7,14 +7,16 @@ import { useT } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
 import { BackupLocationCard, DangerZoneCard } from './admin/DangerZone'
+import { AdminAccess } from './admin/AdminAccess'
 import {
   LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
-  Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle
+  Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle,
+  ShieldCheck
 } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
 const TABS = ['Overview', 'Staff', 'Services', 'Doctor shares', 'Departments',
-  'Reports', 'Demo data', 'Settings'] as const
+  'Reports', 'Access', 'Demo data', 'Settings'] as const
 type Tab = typeof TABS[number]
 
 const NAV: (NavItem & { id: Tab })[] = [
@@ -24,6 +26,7 @@ const NAV: (NavItem & { id: Tab })[] = [
   { id: 'Doctor shares', label: 'Doctor shares', glyph: 'D', icon: Percent },
   { id: 'Services', label: 'Services', glyph: 'Sv', icon: ClipboardList, section: 'Setup' },
   { id: 'Departments', label: 'Departments', glyph: 'Dp', icon: Building2 },
+  { id: 'Access', label: 'Access', glyph: 'Ac', icon: ShieldCheck },
   { id: 'Settings', label: 'Settings', glyph: 'St', icon: Settings },
   { id: 'Demo data', label: 'Demo data', glyph: 'Dm', icon: Database }
 ]
@@ -31,9 +34,37 @@ const NAV: (NavItem & { id: Tab })[] = [
 export function Admin({ me }: { me: SessionUser }) {
   const tr = useT()
   const [tab, setTab] = useState<Tab>('Overview')
+
+  /**
+   * What this administrator is allowed to change.
+   *
+   * Until it loads, every tab is shown. That is deliberate: a slow answer
+   * should not flash a stripped-down panel at the person who owns the
+   * hospital. Pressing something they cannot do is refused by the server
+   * anyway, so the worst case is a message rather than a wrong action.
+   */
+  const [allowed, setAllowed] = useState<Set<string> | null>(null)
+  useEffect(() => {
+    api.myAdminPermissions()
+      .then((r: any) => setAllowed(new Set(r.allowed)))
+      .catch(() => setAllowed(null))
+  }, [])
+
+  const can = (t: string) => {
+    const key = TAB_PERMISSION[t]
+    return !key || !allowed || allowed.has(key)
+  }
+  const items = NAV.filter((n) => can(n.id))
+
+  // If the tab we are on becomes one this account cannot use, move somewhere
+  // it can rather than showing an empty panel.
+  useEffect(() => {
+    if (allowed && !can(tab)) setTab((items[0]?.id as Tab) ?? 'Overview')
+  }, [allowed])
+
   return (
     <div className="flex h-full min-h-0">
-      <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
+      <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as Tab)}
         title="Administration" subtitle={me.displayName} />
       {/*
         A keyed panel that animates in, with no exit and no AnimatePresence.
@@ -63,6 +94,7 @@ export function Admin({ me }: { me: SessionUser }) {
       {tab === 'Settings' && <BackupLocationCard />}
       {tab === 'Settings' && <DangerZoneCard me={me} />}
       {tab === 'Reports' && <Reports me={me} />}
+      {tab === 'Access' && <AdminAccess me={me} />}
       </motion.div>
     </div>
   )
@@ -446,6 +478,25 @@ const SERVICE_GROUPS: { id: string; label: string; icon: any; blurb: string }[] 
   { id: 'other', label: 'Other', icon: ClipboardList,
     blurb: 'Anything that fits none of the above.' }
 ]
+
+/**
+ * The permission each tab needs to be worth showing.
+ *
+ * Hiding a tab is a courtesy, not the control: the server refuses the request
+ * whatever the screen draws. A tab whose every action would be refused is
+ * simply not offered.
+ */
+const TAB_PERMISSION: Record<string, string> = {
+  'Overview': 'admin.overview',
+  'Reports': 'admin.reports',
+  'Staff': 'admin.staff.view',
+  'Services': 'admin.services.view',
+  'Doctor shares': 'admin.shares',
+  'Departments': 'admin.departments',
+  'Access': 'admin.access',
+  'Demo data': 'admin.demo',
+  'Settings': 'admin.settings'
+}
 
 function ServicesTab() {
   const [rows, setRows] = useState<any[]>([])
@@ -1098,7 +1149,7 @@ function SettingsTab() {
  * recipe is what lets the store see consumption without anyone issuing by
  * hand against every test.
  */
-function TestSetup({ service, onClose }: { service: any; onClose: () => void }) {
+export function TestSetup({ service, onClose }: { service: any; onClose: () => void }) {
   const [params, setParams] = useState<any[]>([])
   const [recipe, setRecipe] = useState<any[]>([])
   const [items, setItems] = useState<any[]>([])

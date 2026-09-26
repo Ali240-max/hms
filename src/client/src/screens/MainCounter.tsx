@@ -10,12 +10,14 @@ import { PrinterSettingsCard } from '../components/PrinterSettings'
 import { t as tr } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
+import { CounterHistory, PatientLabels } from './counter/History'
 import {
   UserPlus, Banknote, Receipt, Users, LayoutDashboard, BarChart3, Printer,
-  Stethoscope, FlaskConical, Search, AlertTriangle
+  Stethoscope, FlaskConical, Search, AlertTriangle, History, Tags
 } from 'lucide-react'
 
-type Tab = 'overview' | 'desk' | 'billing' | 'patients' | 'chits' | 'reports' | 'printing'
+type Tab = 'overview' | 'desk' | 'billing' | 'patients' | 'chits' | 'history'
+  | 'reports' | 'printing'
 
 const NAV: (NavItem & { id: Tab })[] = [
   { id: 'desk', label: 'Registration', glyph: 'R', icon: UserPlus, section: 'Front desk' },
@@ -23,6 +25,7 @@ const NAV: (NavItem & { id: Tab })[] = [
   { id: 'chits', label: 'Chits and payments', glyph: 'C', icon: Receipt },
 
   { id: 'patients', label: 'All patients', glyph: 'P', icon: Users, section: 'Records' },
+  { id: 'history', label: 'Bills and chits', glyph: 'H', icon: History },
   { id: 'overview', label: 'Overview', glyph: 'O', icon: LayoutDashboard },
   { id: 'reports', label: 'Reports', glyph: 'Rp', icon: BarChart3 },
 
@@ -94,6 +97,7 @@ export function MainCounter({ me }: { me: SessionUser }) {
         )}
         {tab === 'patients' && <PatientDirectory />}
         {tab === 'chits' && <ChitCounter onBill={sendToTill} />}
+        {tab === 'history' && <CounterHistory me={me} />}
         {tab === 'reports' && <Reports me={me} />}
       </motion.div>
     </div>
@@ -110,6 +114,7 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
   const [editing, setEditing] = useState<any | null>(null)
   const [direct, setDirect] = useState<any | null>(null)
   const [next, setNext] = useState<any | null>(null)
+  const [labels, setLabels] = useState<any | null>(null)
   const search = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(() => {
@@ -181,6 +186,10 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
                 */}
                 <button onClick={() => setBooking(p)} className="btn-ghost shrink-0">
                   {tr('Send to doctor')}
+                </button>
+                <button onClick={() => setLabels(p)} title={tr('Print labels')}
+                  className="btn-ghost shrink-0 px-2">
+                  <Tags size={14} />
                 </button>
               </li>
             ))}
@@ -289,6 +298,10 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
           onClose={() => setNext(null)}
           onDoctor={() => { const p = next; setNext(null); setBooking(p) }}
           onTests={() => { const p = next; setNext(null); setDirect(p) }} />
+      )}
+      {labels && (
+        <PatientLabels patient={labels} visitId={labels.last_visit_id ?? null}
+          onClose={() => setLabels(null)} />
       )}
       {direct && (
         <DirectTests patient={direct} onClose={() => setDirect(null)}
@@ -694,6 +707,7 @@ const BUCKETS: [string, string][] = [
 ]
 
 function PatientDirectory() {
+  const [labels, setLabels] = useState<any | null>(null)
   const [bucket, setBucket] = useState('today')
   const [q, setQ] = useState('')
   const [data, setData] = useState<{ rows: any[]; counts: any }>({ rows: [], counts: {} })
@@ -755,7 +769,18 @@ function PatientDirectory() {
                     </td>
                     <td className="px-3 py-2 text-right num text-2xs">{p.visits ?? 0}</td>
                     <td className="px-3 py-2 text-right">
-                      <button onClick={() => setEditing(p)} className="btn-ghost px-2 py-1 text-2xs">{tr('Edit')}</button>
+                      {/*
+                        Labels from the directory as well as from the search
+                        results. A ward clerk asked for a fresh sheet of
+                        stickers is looking somebody up by name, not
+                        registering them again.
+                      */}
+                      <button onClick={() => setLabels(p)} title={tr('Print labels')}
+                        className="btn-ghost px-2 py-1 text-2xs">
+                        <Tags size={13} />
+                      </button>
+                      <button onClick={() => setEditing(p)}
+                        className="ml-1 btn-ghost px-2 py-1 text-2xs">{tr('Edit')}</button>
                     </td>
                   </tr>
                 ))}
@@ -765,6 +790,10 @@ function PatientDirectory() {
         )}
       </Card>
 
+      {labels && (
+        <PatientLabels patient={labels} visitId={labels.last_visit_id ?? null}
+          onClose={() => setLabels(null)} />
+      )}
       {editing && (
         <EditPatient patientId={editing.id} onClose={() => setEditing(null)}
           onDone={() => { setEditing(null); load() }} />

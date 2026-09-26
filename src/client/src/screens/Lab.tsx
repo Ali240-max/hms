@@ -7,8 +7,9 @@ import { t as tr } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 
 import { Reports } from './pharma/Reports'
+import { TestSetupTab } from './lab/TestSetupTab'
 import {
-  ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2,
+  ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2, Sliders,
   Clock, AlertTriangle, FileText, ArrowLeft, Save
 } from 'lucide-react'
 
@@ -750,11 +751,12 @@ function trim(v: any) {
  */
 export function Lab({ me }: { me: SessionUser }) {
   const isRadiology = me.role === 'radiology'
-  const [tab, setTab] = useState<'queue' | 'reports'>('queue')
+  const [tab, setTab] = useState<'queue' | 'setup' | 'reports'>('queue')
 
   const items: NavItem[] = [
     { id: 'queue', label: isRadiology ? 'Imaging list' : 'Work list',
       glyph: isRadiology ? 'X' : 'L', icon: isRadiology ? ScanLine : FlaskConical },
+    { id: 'setup', label: 'Test setup', glyph: 'S', icon: Sliders },
     { id: 'reports', label: 'Reports', glyph: 'R', icon: BarChart3 }
   ]
 
@@ -763,7 +765,9 @@ export function Lab({ me }: { me: SessionUser }) {
       <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as any)}
         title={isRadiology ? 'Radiology' : 'Laboratory'} subtitle={me.displayName} />
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
-        {tab === 'queue' ? <LabQueue me={me} /> : <Reports me={me} />}
+        {tab === 'queue' ? <LabQueue me={me} />
+          : tab === 'setup' ? <TestSetupTab me={me} />
+          : <Reports me={me} />}
       </div>
     </div>
   )

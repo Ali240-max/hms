@@ -178,14 +178,22 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
 
   doc.y += 4
   const bandY = doc.y
+  /*
+   * When the sample was taken and when it was reported, not when the patient
+   * registered.
+   *
+   * A doctor reading a result wants to know how old the sample is. The visit
+   * date answers a different question — it can be days earlier than the draw,
+   * and on a repeat visit it is not even the right day.
+   */
   doc.font('Helvetica').fontSize(8.5).fillColor(INK)
-  doc.text(`Visit Date: ${when(report.visit_at)}`, MARGIN, bandY,
+  doc.text(`Sample Taken: ${when(report.collected_at)}`, MARGIN, bandY,
     { width: width * 0.36, lineBreak: false })
   doc.font('Helvetica-Bold')
      .text(report.verified_at ? 'Final Report' : 'Provisional Report',
        MARGIN + width * 0.36, bandY, { width: width * 0.28, align: 'center', lineBreak: false })
   doc.font('Helvetica')
-     .text(`Report Date: ${when(report.resulted_at)}`,
+     .text(`Reported: ${when(report.resulted_at)}`,
        MARGIN + width * 0.64, bandY, { width: width * 0.36, align: 'right', lineBreak: false })
   doc.y = bandY + 14
   rule(doc, width, 1)
@@ -313,6 +321,10 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
 
   const sigY = doc.page.height - FOOT - SIG
   signature(doc, MARGIN, sigY, width * 0.30, report.resulted_by ?? '', 'Performed by')
+  if (report.collected_by) {
+    signature(doc, MARGIN + width * 0.33, sigY, width * 0.28,
+      report.collected_by, 'Sample taken by')
+  }
   if (report.verified_by || footer.inCharge) {
     signature(doc, MARGIN + width * 0.64, sigY, width * 0.36,
       report.verified_by || footer.inCharge,

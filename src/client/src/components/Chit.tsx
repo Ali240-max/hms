@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, rs } from '../lib/api'
 import { Modal, Badge, ErrorNote } from './ui'
-import { Slip, SlipHeader, SlipRow, SlipItems, SlipTotal, SlipFooter, Rule } from './Slip'
+import { Slip, SlipHeader, SlipTopBar, SlipRow, SlipItems, SlipTotal, SlipFooter, Rule } from './Slip'
 import { printNow, applyPaper, loadPrinter } from '../lib/printer'
 import { t as tr } from '../lib/prefs'
 
@@ -88,23 +88,27 @@ export function ChitSlip({ chit, lines, hospital, categoryLabel }: {
         {paid ? tr('PAID') : tr('NOT PAID — DO NOT PROCEED')}
       </div>
 
-      <div>
-        <SlipRow k={tr('Chit')} v={chit.chit_no} bold />
-        <SlipRow k={tr('Date')} v={new Date(chit.paid_at ?? chit.created_at).toLocaleString('en-GB',
+      <SlipTopBar label={tr('Chit')} value={chit.chit_no} token={chit.token_no}
+        date={new Date(chit.paid_at ?? chit.created_at).toLocaleString('en-GB',
           { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })} />
-      </div>
 
       <Rule />
 
       <div>
         <SlipRow k={tr('Patient')} v={chit.patient_name} />
         <SlipRow k={tr('MRN')} v={chit.mrn} />
-        <SlipRow k={tr('Token')} v={String(chit.token_no)} />
         {(chit.age_years != null || chit.gender) && (
           <SlipRow k={tr('Age/Sex')} v={[chit.age_years && `${chit.age_years}y`, chit.gender]
             .filter(Boolean).join(' / ')} />
         )}
         {chit.doctor_name && <SlipRow k={tr('Referred by')} v={chit.doctor_name} />}
+        {/*
+          Who raised it, separate from who took the money.
+          A chit queried at the department is queried with whoever wrote it,
+          and on a busy counter with two people that is not always the person
+          who later took the payment.
+        */}
+        {chit.created_by && <SlipRow k={tr('Raised by')} v={chit.created_by} />}
       </div>
 
       <Rule />

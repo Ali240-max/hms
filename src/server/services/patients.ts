@@ -55,6 +55,10 @@ export async function findPossibleDuplicates(input: NewPatient) {
     SELECT p.*,
            (SELECT COUNT(*)::int FROM visits v WHERE v.patient_id = p.id) AS visit_count,
            (SELECT MAX(v.created_at) FROM visits v WHERE v.patient_id = p.id) AS last_visit,
+           -- The latest visit's id, so ward labels can be printed for it
+           -- straight from a patient row without looking the visit up first.
+           (SELECT v.id FROM visits v WHERE v.patient_id = p.id
+            ORDER BY v.created_at DESC LIMIT 1) AS last_visit_id,
            CASE
              WHEN ${phone} <> '' AND regexp_replace(COALESCE(p.phone,''), '\\D', '', 'g') = ${phone}
                THEN 'same phone'
