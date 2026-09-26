@@ -1,230 +1,390 @@
-import { useEffect, useRef, useState } from 'react'
-import { api, setToken, type SessionUser } from '../lib/api'
-import { ErrorNote, Field } from '../components/ui'
+import { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import {
-  Banknote, ListChecks, Siren, Stethoscope, Pill, Boxes,
-  FlaskConical, ScanLine, BarChart3, Settings, type LucideIcon
-} from 'lucide-react'
-import { t as tr } from '../lib/prefs'
-
-const DEPTS = [
-  { role: 'main_counter', label: 'Main counter', desc: 'Register patients, take fees and settle chits' },
-  { role: 'receptionist', label: 'OPD counter', desc: 'Hold the queue and record vitals' },
-  { role: 'ipd_counter', label: 'Emergency', desc: 'Admit arrivals and record bedside medicines' },
-  { role: 'doctor', label: 'Doctor', desc: 'See your patients and prescribe' },
-  { role: 'pharmacist', label: 'Pharmacy', desc: 'Counter, stock, reports and ledgers' },
-  { role: 'store_keeper', label: 'Stores', desc: 'Hospital consumables and supplies' },
-  { role: 'lab_tech', label: 'Laboratory', desc: 'Samples, results and reports' },
-  { role: 'radiology', label: 'Radiology', desc: 'X-ray, ultrasound and imaging reports' },
-  { role: 'reports', label: 'Reports', desc: 'Every report in the hospital, read only' },
-  { role: 'admin', label: 'Administration', desc: 'Staff, services, prices and reports' }
-] as const
+  Eye,
+  EyeOff,
+  LogIn,
+  ShieldCheck,
+  Banknote,
+  FileBarChart,
+  FlaskConical,
+  WifiOff,
+} from "lucide-react";
+import { api, setToken, type SessionUser } from "../lib/api";
+import { ErrorNote } from "../components/ui";
+import { t as tr } from "../lib/prefs";
+import { EASE } from "../lib/motion";
+import mark from "../assets/northbyte-mark.png";
 
 /**
- * Which module a cell belongs to, so a hospital that is not using one does not
- * have to look at its button. Administration and the main counter have no
- * entry because they are always on: without them nobody can sign in or be
- * registered.
- */
-/** The face of each desk on the home screen. */
-const CELL_ICON: Record<string, LucideIcon> = {
-  main_counter: Banknote,
-  receptionist: ListChecks,
-  ipd_counter: Siren,
-  doctor: Stethoscope,
-  pharmacist: Pill,
-  store_keeper: Boxes,
-  lab_tech: FlaskConical,
-  radiology: ScanLine,
-  reports: BarChart3,
-  admin: Settings
-}
-
-const CELL_MODULE: Record<string, string> = {
-  receptionist: 'opdCounter',
-  ipd_counter: 'emergency',
-  doctor: 'doctor',
-  pharmacist: 'pharmacy',
-  store_keeper: 'stores',
-  lab_tech: 'laboratory',
-  radiology: 'radiology'
-}
-
-/**
- * The department buttons are a signpost, not a permission.
+ * Signing in.
  *
- * What a person can do is decided by the role on their account, checked on the
- * server. Picking "Pharmacy" here only sets where they land after signing in.
- * If it granted access, anyone could click Administration.
+ * The department buttons are gone. A grid of them told anybody standing at an
+ * unattended counter exactly which departments exist, how many there are and
+ * what each is called, and it bought nothing: a username already knows which
+ * department it belongs to. Whoever types their own name gets their own
+ * screen.
+ *
+ * Two columns, the hospital's panel on the left and the form on the right. On
+ * a phone the panel becomes a short header, because a sign-in screen that
+ * makes somebody scroll past artwork to reach the password field was designed
+ * for a screenshot rather than for a morning shift.
  */
-export function SignIn({ onSignedIn }: { onSignedIn: (u: SessionUser) => void }) {
-  const [mode, setMode] = useState<'loading' | 'login' | 'setup'>('loading')
-  const [modules, setModules] = useState<Record<string, boolean> | null>(null)
-  const [dept, setDept] = useState<string | null>(null)
-  const [username, setUsername] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const [err, setErr] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const first = useRef<HTMLInputElement>(null)
+
+/** Drawn rather than dropped in as an image, so they scale and follow the theme. */
+const RINGS = [
+  { size: 460, opacity: 0.1, delay: 0 },
+  { size: 360, opacity: 0.14, delay: 0.08 },
+  { size: 260, opacity: 0.18, delay: 0.16 },
+  { size: 170, opacity: 0.24, delay: 0.24 },
+];
+
+/** Each point gets its own mark. Four bullet dots in a column read as filler. */
+const POINTS = [
+  {
+    icon: Banknote,
+    title: "Every rupee accounted for",
+    line: "Traced to the counter that took it",
+  },
+  {
+    icon: FlaskConical,
+    title: "Lab and radiology built in",
+    line: "Reference ranges and formulas included",
+  },
+  {
+    icon: FileBarChart,
+    title: "Reports for every department",
+    line: "On screen, or as a PDF to keep",
+  },
+  {
+    icon: WifiOff,
+    title: "Runs on the hospital's own server",
+    line: "Keeps working when the internet does not",
+  },
+];
+
+export function SignIn({
+  onSignedIn,
+}: {
+  onSignedIn: (u: SessionUser) => void;
+}) {
+  const [mode, setMode] = useState<"loading" | "login" | "setup">("loading");
+  const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const first = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    // Read before anyone signs in, so the cells are right on first paint.
-    api.modules().then(setModules).catch(() => setModules(null))
-  }, [])
+    api
+      .authStatus()
+      .then((st) => setMode(st.needsSetup ? "setup" : "login"))
+      .catch(() => setMode("login"));
+  }, []);
 
   useEffect(() => {
-    api.authStatus()
-      .then((st) => setMode(st.needsSetup ? 'setup' : 'login'))
-      .catch(() => setMode('login'))
-  }, [])
-  useEffect(() => { if (dept || mode === 'setup') first.current?.focus() }, [dept, mode])
+    if (mode !== "loading") first.current?.focus();
+  }, [mode]);
 
-  async function submit() {
-    setErr(null)
-    if (mode === 'setup' && password !== confirm) { setErr('The two passwords do not match'); return }
-    setBusy(true)
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!username.trim() || !password) {
+      setErr(tr("Enter your username and password"));
+      return;
+    }
+    if (mode === "setup" && password !== confirm) {
+      setErr(tr("The two passwords do not match"));
+      return;
+    }
+    setBusy(true);
+    setErr(null);
     try {
-      const r = mode === 'setup'
-        ? await api.setup({ username: username.trim(), displayName: displayName.trim(), password })
-        : await api.login(username.trim(), password)
-      setToken(r.token)
-      onSignedIn(r.user)
+      const r =
+        mode === "setup"
+          ? await api.setup({
+              username: username.trim(),
+              displayName: displayName.trim() || username.trim(),
+              password,
+            })
+          : await api.login(username.trim(), password);
+      setToken(r.token);
+      onSignedIn(r.user);
     } catch (e: any) {
-      setErr(e.message ?? 'Could not sign in')
-      setPassword('')
-    } finally { setBusy(false) }
+      setErr(e.message ?? tr("That did not work"));
+      setBusy(false);
+    }
   }
 
-  if (mode === 'loading') {
-    return <div className="flex h-full items-center justify-center text-sm text-muted">{tr('Starting…')}</div>
-  }
-
-  /* -------------------------------------------------------------- setup */
-  if (mode === 'setup') {
-    return (
-      <Shell>
-        <h1 className="text-lg font-semibold">{tr('Set up this hospital')}</h1>
-        <p className="mt-1 text-2xs text-muted">
-          Create the administrator account. Only this account can add staff, set prices
-          and change doctor shares.
-        </p>
-        <div className="mt-5 space-y-3">
-          <Field label={tr('Username')}>
-            <input ref={first} value={username} onChange={(e) => setUsername(e.target.value)}
-              autoCapitalize="off" spellCheck={false} placeholder={tr('admin')} className="field" />
-          </Field>
-          <Field label={tr('Your name')}>
-            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)}
-              placeholder={tr('Administrator')} className="field" />
-          </Field>
-          <Field label={tr('Password')} hint={tr('At least 8 characters')}>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-              className="field" />
-          </Field>
-          <Field label={tr('Confirm password')}>
-            <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && submit()} className="field" />
-          </Field>
-          <ErrorNote>{err}</ErrorNote>
-          <button onClick={submit} disabled={busy || !username.trim() || !password}
-            className="btn-primary w-full">
-            {busy ? 'Please wait…' : 'Create administrator account'}
-          </button>
-          <p className="text-2xs text-muted">
-            Write this password down somewhere safe. It cannot be recovered from inside
-            the system, and without it nobody can manage staff or prices.
-          </p>
-        </div>
-      </Shell>
-    )
-  }
-
-  /* ------------------------------------------------------ pick a station */
-  if (!dept) {
-    return (
-      <Shell wide>
-        <h1 className="text-lg font-semibold">{tr('Where are you working?')}</h1>
-        <p className="mt-1 text-2xs text-muted">
-          {tr('This chooses your starting screen. What you can actually do comes from your account.')}
-        </p>
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          {DEPTS.filter((d) => {
-            const key = CELL_MODULE[d.role]
-            // Unknown modules, and a failed read, show everything rather than
-            // locking someone out of a module that is switched on.
-            return !key || !modules || modules[key] !== false
-          }).map((d) => (
-            <button key={d.role} onClick={() => setDept(d.role)}
-              className="card-tint flex items-start gap-3 p-4 text-left transition-shadow hover:shadow-md">
-              <span className="tile shrink-0 transition-transform group-hover:scale-105"
-                style={{
-                  backgroundImage:
-                    'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
-                }}>
-                {(() => { const I = CELL_ICON[d.role]; return I ? <I size={17} /> : d.label[0] })()}
-              </span>
-              <span>
-                <span className="block text-sm font-medium text-heading">{tr(d.label)}</span>
-                <span className="block text-2xs text-muted">{tr(d.desc)}</span>
-              </span>
-            </button>
+  return (
+    <div className="grid h-full min-h-0 grid-cols-1 overflow-auto bg-screen lg:grid-cols-[1.05fr_1fr]">
+      {/* ------------------------------------------------------ the panel */}
+      <aside
+        className="relative flex min-h-[220px] flex-col justify-between overflow-hidden
+                        px-8 py-8 text-white lg:min-h-0 lg:px-14 lg:py-12"
+        style={{
+          backgroundImage:
+            "linear-gradient(145deg, rgb(var(--c-heading)) 0%, rgb(var(--c-primary)) 58%," +
+            " rgb(var(--c-accent)) 135%)",
+        }}
+      >
+        {/*
+          Rings that assemble as the page loads, with a monitor trace through
+          them. SVG, so it stays crisp on a 4K counter screen and costs
+          nothing to download.
+        */}
+        <svg
+          className="pointer-events-none absolute -right-28 -top-28 h-[580px] w-[580px]
+                        lg:-right-20"
+          viewBox="0 0 560 560"
+          fill="none"
+          aria-hidden
+        >
+          {RINGS.map((r, i) => (
+            <motion.circle
+              key={r.size}
+              cx="280"
+              cy="280"
+              r={r.size / 2}
+              stroke="white"
+              strokeWidth={i === 3 ? 26 : 18}
+              strokeOpacity={r.opacity}
+              fill="none"
+              initial={{ scale: 0.6, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 1.1, delay: r.delay, ease: EASE }}
+              style={{ transformOrigin: "280px 280px" }}
+            />
           ))}
-        </div>
-      </Shell>
-    )
-  }
+          <motion.path
+            d="M20 300 H140 L164 244 L196 356 L226 262 L248 300 H320"
+            stroke="white"
+            strokeWidth="6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeOpacity="0.5"
+            fill="none"
+            initial={{ pathLength: 0 }}
+            animate={{ pathLength: 1 }}
+            transition={{ duration: 1.6, delay: 0.35, ease: EASE }}
+          />
+        </svg>
 
-  /* -------------------------------------------------------------- login */
-  const chosen = DEPTS.find((d) => d.role === dept)!
-  return (
-    <Shell>
-      <button onClick={() => { setDept(null); setErr(null) }}
-        className="mb-4 text-2xs text-muted hover:text-primary">
-        &larr; Choose a different station
-      </button>
-      <div className="flex items-center gap-3">
-        <span className="tile"
-          style={{
-            backgroundImage:
-              'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
-          }}>
-          {(() => { const I = CELL_ICON[chosen.role]; return I ? <I size={17} /> : chosen.label[0] })()}
-        </span>
-        <div>
-          <h1 className="text-lg font-semibold">{chosen.label}</h1>
-          <p className="text-2xs text-muted">{tr('Sign in with your own account')}</p>
-        </div>
-      </div>
-      <div className="mt-5 space-y-3">
-        <Field label={tr('Username')}>
-          <input ref={first} value={username} onChange={(e) => setUsername(e.target.value)}
-            autoCapitalize="off" spellCheck={false} className="field" />
-        </Field>
-        <Field label={tr('Password')}>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()} className="field" />
-        </Field>
-        <ErrorNote>{err}</ErrorNote>
-        <button onClick={submit} disabled={busy || !username.trim() || !password}
-          className="btn-primary w-full">
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-      </div>
-    </Shell>
-  )
-}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: EASE }}
+          className="relative"
+        >
+          <span
+            className="inline-flex items-center gap-2 rounded-full border border-white/25
+                           bg-white/10 px-3 py-1 text-2xs backdrop-blur-sm"
+          >
+            <ShieldCheck size={13} /> {tr("Hospital Management System")}
+          </span>
+        </motion.div>
 
-function Shell({ children, wide }: { children: React.ReactNode; wide?: boolean }) {
-  return (
-    <div className="flex min-h-full items-center justify-center bg-screen p-6">
-      <div className={`w-full ${wide ? 'max-w-2xl' : 'max-w-sm'}`}>
-        <div className="card p-6">{children}</div>
-        <p className="mt-4 text-center text-2xs text-muted">
-          {tr('Software by Ali Farooqi &middot; 0332 4471592')}
-        </p>
-      </div>
+        <motion.div
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.2, ease: EASE }}
+          className="relative my-6 max-w-lg lg:my-0"
+        >
+          <h1 className="text-3xl font-bold leading-tight lg:text-[2.6rem]">
+            {tr("One counter, one record,")}
+            <br className="hidden lg:block" />{" "}
+            <span className="text-white/75">
+              {tr("from the front desk to the ward.")}
+            </span>
+          </h1>
+          <p className="mt-4 max-w-md text-sm leading-relaxed text-white/70">
+            {tr(
+              "Registration, billing, laboratory, radiology, pharmacy and stores, on one server the hospital owns."
+            )}
+          </p>
+
+          <ul className="mt-8 hidden gap-x-6 gap-y-3 lg:grid lg:grid-cols-2">
+            {POINTS.map((p, i) => {
+              const Icon = p.icon;
+              return (
+                <motion.li
+                  key={p.title}
+                  className="flex items-start gap-3 rounded-xl border border-white/15
+                             bg-white/[0.07] px-3.5 py-3 backdrop-blur-sm"
+                  initial={{ opacity: 0, x: -12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{
+                    duration: 0.45,
+                    delay: 0.35 + i * 0.07,
+                    ease: EASE,
+                  }}
+                >
+                  <span
+                    className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg
+                                   bg-white/15 text-white"
+                  >
+                    <Icon size={16} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-2xs font-semibold text-white">
+                      {tr(p.title)}
+                    </span>
+                    <span className="mt-0.5 block text-[0.7rem] leading-snug text-white/65">
+                      {tr(p.line)}
+                    </span>
+                  </span>
+                </motion.li>
+              );
+            })}
+          </ul>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.6, ease: EASE }}
+          className="relative flex items-center gap-4 rounded-2xl border border-white/15
+                     bg-white/[0.07] px-4 py-3.5 backdrop-blur-sm"
+        >
+          {/*
+            On a white tile, in its own colours.
+            The mark is mostly mid-tone teal and navy. Flattened to a white
+            silhouette it all but vanished against this gradient, and a logo
+            nobody can read is not a logo.
+          */}
+          <span
+            className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-white
+                           p-2 shadow-lg "
+          >
+            <img
+              src={mark}
+              alt="NorthByte Technologies"
+              className="h-full w-full mb-3"
+            />
+          </span>
+          <span className="leading-tight">
+            <span className="block text-[0.7rem] uppercase tracking-wider text-white/55">
+              {tr("Developed by")}
+            </span>
+            <span className="block text-base font-semibold text-white">
+              NorthByte Technologies
+            </span>
+            <span className="mt-0.5 block text-[0.7rem] text-white/55">
+              {tr("Licensed to this hospital")} · v1.0
+            </span>
+          </span>
+        </motion.div>
+      </aside>
+
+      {/* ------------------------------------------------------- the form */}
+      <main className="flex items-center justify-center px-6 py-10 lg:px-12">
+        <motion.div
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.15, ease: EASE }}
+          className="w-full max-w-sm"
+        >
+          <h2 className="text-2xl font-semibold text-heading">
+            {mode === "setup" ? tr("Set up the first account") : tr("Sign in")}
+          </h2>
+          <p className="mt-1.5 text-2xs text-muted">
+            {mode === "setup"
+              ? tr(
+                  "This one is the administrator. Everybody else is added afterwards."
+                )
+              : tr("Use the username the hospital gave you.")}
+          </p>
+
+          <form onSubmit={submit} className="mt-7 space-y-4">
+            <label className="block">
+              <span className="label">{tr("Username")}</span>
+              <input
+                ref={first}
+                value={username}
+                autoComplete="username"
+                onChange={(e) => setUsername(e.target.value)}
+                className="field mt-1.5 py-2.5"
+              />
+            </label>
+
+            {mode === "setup" && (
+              <label className="block">
+                <span className="label">{tr("Your name")}</span>
+                <input
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  className="field mt-1.5 py-2.5"
+                  placeholder={tr("Printed on everything you do")}
+                />
+              </label>
+            )}
+
+            <label className="block">
+              <span className="label">{tr("Password")}</span>
+              <div className="relative mt-1.5">
+                <input
+                  type={show ? "text" : "password"}
+                  value={password}
+                  autoComplete={
+                    mode === "setup" ? "new-password" : "current-password"
+                  }
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="field py-2.5 pr-11"
+                />
+                {/*
+                  Off until asked for: a counter screen is usually in view of a
+                  queue.
+                */}
+                <button
+                  type="button"
+                  onClick={() => setShow((v) => !v)}
+                  aria-label={show ? tr("Hide password") : tr("Show password")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-muted
+                             transition-colors hover:text-primary"
+                >
+                  {show ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </label>
+
+            {mode === "setup" && (
+              <label className="block">
+                <span className="label">{tr("Password again")}</span>
+                <input
+                  type="password"
+                  value={confirm}
+                  autoComplete="new-password"
+                  onChange={(e) => setConfirm(e.target.value)}
+                  className="field mt-1.5 py-2.5"
+                />
+              </label>
+            )}
+
+            <ErrorNote>{err}</ErrorNote>
+
+            <button
+              type="submit"
+              disabled={busy || mode === "loading"}
+              className="btn-primary flex w-full items-center justify-center gap-2 py-2.5"
+            >
+              <LogIn size={16} />
+              {busy
+                ? tr("Signing in…")
+                : mode === "setup"
+                ? tr("Create the account")
+                : tr("Sign in")}
+            </button>
+          </form>
+
+          <p className="mt-6 text-2xs leading-relaxed text-muted">
+            {tr(
+              "Forgotten your password? An administrator can reset it under Administration, Staff. Nobody can read the old one, including them."
+            )}
+          </p>
+        </motion.div>
+      </main>
     </div>
-  )
+  );
 }

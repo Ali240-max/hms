@@ -1,3 +1,5 @@
+import { motion } from 'framer-motion'
+import { DUR, EASE } from '../lib/motion'
 import { useCallback, useEffect, useState } from 'react'
 import { api, rs, toPaisa, today, newId, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../components/ui'
@@ -34,13 +36,30 @@ export function Stores({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
         title="Stores" subtitle={me.displayName} />
-      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+      {/*
+        A keyed panel that animates in, with no exit and no AnimatePresence.
+
+        This was `AnimatePresence mode="wait"`, which holds the incoming tab
+        until the outgoing one has finished animating away. When that exit
+        never completed — an interrupted transition, a child unmounting with
+        its own exit animation partway through — the new tab was never mounted
+        and every screen in the module stayed blank until the whole app was
+        remounted by signing in again.
+
+        Waiting buys a slightly tidier crossfade and costs a module that can
+        wedge itself. Not a trade worth making on a counter.
+      */}
+        <motion.div key={tab}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: DUR.page, ease: EASE }}
+          className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'stock' && <StockTab />}
         {tab === 'issue' && <IssueTab me={me} />}
         {tab === 'receive' && <ReceiveTab onAddItem={() => setTab('stock')} />}
         {tab === 'movements' && <MovementsTab />}
         {tab === 'reports' && <ReportsTab />}
-      </div>
+      </motion.div>
     </div>
   )
 }

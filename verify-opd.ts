@@ -207,7 +207,7 @@ async function main() {
   check('doctor signs in', sess.user.role === 'doctor')
   check('their doctorId is attached so the queue can be filtered',
     sess.user.doctorId === F.doctorId, String(sess.user.doctorId))
-  check('session resolves', sessionFor(sess.token)?.username === 'dr.yasir')
+  check('session resolves', (await sessionFor(sess.token))?.username === 'dr.yasir')
   let bad = false
   try { await login('dr.yasir', 'wrong') } catch { bad = true }
   check('wrong password refused', bad)

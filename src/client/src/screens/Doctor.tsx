@@ -23,7 +23,7 @@ export function Doctor({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={DOCTOR_NAV} active={tab} onSelect={(id: string) => setTab(id as 'queue' | 'earnings')}
         title="Consultation" subtitle={me.displayName} />
-      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+      <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'queue' ? <Queue onOpen={setOpenVisit} /> : <Earnings me={me} />}
       </div>
     </div>
@@ -107,7 +107,7 @@ function Queue({ onOpen }: { onOpen: (id: number) => void }) {
                   <Th w="w-28">{tr('Status')}</Th><Th w="w-32" right />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-divide rows-striped anim-rows">
+              <tbody className="divide-y divide-divide rows-striped">
                 {shownReady.map((v) => (
                   <tr key={v.id}>
                     <td className="px-3 py-2">
@@ -161,7 +161,7 @@ function Queue({ onOpen }: { onOpen: (id: number) => void }) {
                   <Th>{tr('Complaint')}</Th><Th w="w-40">{tr('Status')}</Th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-divide rows-striped anim-rows">
+              <tbody className="divide-y divide-divide rows-striped">
                 {shownLater.map((v) => (
                   <tr key={v.id} className="opacity-80">
                     <td className="px-3 py-2">
@@ -772,7 +772,7 @@ export function Earnings({ me }: { me: SessionUser }) {
                   <Th w="w-28" right>{tr('Total')}</Th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-divide rows-striped anim-rows">
+              <tbody className="divide-y divide-divide rows-striped">
                 {data.byPatient.map((r: any) => (
                   <tr key={r.patient_id}>
                     <td className="px-3 py-2 num text-2xs text-primary">{r.mrn}</td>

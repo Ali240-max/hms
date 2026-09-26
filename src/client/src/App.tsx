@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { api, setToken, setSignedOutHandler, type SessionUser } from './lib/api'
 import { SignIn } from './screens/SignIn'
 import { MainCounter } from './screens/MainCounter'
@@ -11,7 +11,7 @@ import { Pharmacy } from './screens/Pharmacy'
 import { Admin } from './screens/Admin'
 import { ReportsDesk } from './screens/reports/ReportsDesk'
 import { AppearanceToggle, useT } from './lib/prefs'
-import { ModulesProvider } from './lib/modules'
+import { ModulesProvider, useModules } from './lib/modules'
 import { t as tr } from './lib/prefs'
 
 const HOME: Record<string, string> = {
@@ -68,6 +68,13 @@ export default function App() {
       </header>
 
       <main className="min-h-0 flex-1 overflow-auto">
+        {/*
+          A module that is switched off used to be hidden by leaving its button
+          off the sign-in screen. There are no buttons now, so the check moved
+          here: somebody whose department is not in use signs in and is told
+          so, rather than working in a module the hospital has not started.
+        */}
+        <ModuleGate role={me.role}>
         {me.role === 'main_counter' && <MainCounter me={me} />}
         {me.role === 'receptionist' && <OpdCounter me={me} />}
         {me.role === 'ipd_counter' && <IpdCounter me={me} />}
@@ -84,9 +91,42 @@ export default function App() {
         {(me.role as string) === 'pharmacy_admin' && <Pharmacy me={me} />}
         {me.role === 'reports' && <ReportsDesk me={me} />}
         {me.role === 'admin' && <Admin me={me} />}
+        </ModuleGate>
       </main>
       <AppearanceToggle />
     </div>
     </ModulesProvider>
+  )
+}
+
+/** Which module each role belongs to. Administration and the counter always run. */
+const ROLE_MODULE: Record<string, string> = {
+  receptionist: 'opdCounter',
+  ipd_counter: 'emergency',
+  doctor: 'doctor',
+  pharmacist: 'pharmacy',
+  pharmacy_admin: 'pharmacy',
+  store_keeper: 'stores',
+  lab_tech: 'laboratory',
+  radiology: 'radiology'
+}
+
+function ModuleGate({ role, children }: { role: string; children: ReactNode }) {
+  const modules = useModules()
+  const key = ROLE_MODULE[role]
+  // Unknown roles and a failed read both pass: locking someone out of a
+  // module that is switched on would be far worse than showing one that is off.
+  if (!key || (modules as any)[key] !== false) return <>{children}</>
+
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-10 text-center">
+      <p className="text-sm font-medium text-heading">
+        This part of the system is not in use yet
+      </p>
+      <p className="max-w-sm text-2xs text-muted">
+        An administrator can switch it on under Administration, Settings, Modules in use.
+        Nothing has been lost; the screens come back exactly as they were.
+      </p>
+    </div>
   )
 }

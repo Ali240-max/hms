@@ -34,7 +34,19 @@ export type SessionUser = {
  * demands that an admin be created.
  */
 const SESSION_HOURS = 12
-const sessions = new Map<string, { user: SessionUser; expires: number }>()
+
+/**
+ * Sessions live in the database, not in this process.
+ *
+ * They used to be a Map here, which meant a restart signed out everyone who
+ * was logged in: in development on every file save, and in a hospital
+ * whenever the service is restarted for an upgrade. A cashier halfway through
+ * a bill got a blank screen and a 401 with nothing explaining it.
+ *
+ * The in-memory copy stays as a cache so the common case is not a query per
+ * request; the database is the truth, and a cache miss falls back to it.
+ */
+const cache = new Map<string, { user: SessionUser; expires: number }>()
 
 export async function hashPassword(pw: string) {
   const salt = randomBytes(16)
@@ -117,18 +129,61 @@ export async function login(username: string, password: string) {
     doctorId: row.doctor_id ? Number(row.doctor_id) : null
   }
   const token = randomBytes(32).toString('hex')
-  sessions.set(token, { user, expires: Date.now() + SESSION_HOURS * 3600_000 })
+  const expires = Date.now() + SESSION_HOURS * 3600_000
+
+  await db.execute(sql`
+    INSERT INTO sessions (token, staff_id, expires_at)
+    VALUES (${token}, ${user.id}, ${new Date(expires).toISOString()})`)
+  cache.set(token, { user, expires })
+
+  // Old rows are cleared on the way past rather than by a scheduled job.
+  await db.execute(sql`DELETE FROM sessions WHERE expires_at < now()`)
+
   return { token, user }
 }
 
-export const logout = (token: string) => sessions.delete(token)
+export async function logout(token: string) {
+  cache.delete(token)
+  await db.execute(sql`DELETE FROM sessions WHERE token = ${token}`)
+}
 
-export function sessionFor(token?: string): SessionUser | null {
+/**
+ * Who a token belongs to.
+ *
+ * Asynchronous now, because a cache miss reads the database. That is what
+ * makes a session survive a restart: the first request after one misses the
+ * empty cache, finds the row, and carries on.
+ */
+export async function sessionFor(token?: string): Promise<SessionUser | null> {
   if (!token) return null
-  const found = sessions.get(token)
-  if (!found) return null
-  if (found.expires < Date.now()) { sessions.delete(token); return null }
-  return found.user
+
+  const hit = cache.get(token)
+  if (hit) {
+    if (hit.expires >= Date.now()) return hit.user
+    cache.delete(token)
+  }
+
+  const row = ((await db.execute<any>(sql`
+    SELECT s.expires_at, st.id, st.username, st.display_name, st.role, st.department_id,
+           d.name AS department_name,
+           (SELECT doc.id FROM doctors doc WHERE doc.staff_id = st.id) AS doctor_id
+    FROM sessions s
+    JOIN staff st ON st.id = s.staff_id AND st.is_active
+    LEFT JOIN departments d ON d.id = st.department_id
+    WHERE s.token = ${token} AND s.expires_at > now()`)).rows as any[])[0]
+  if (!row) return null
+
+  const user: SessionUser = {
+    id: Number(row.id),
+    username: row.username,
+    displayName: row.display_name,
+    role: row.role,
+    departmentId: row.department_id ?? null,
+    departmentName: row.department_name ?? null,
+    doctorId: row.doctor_id ? Number(row.doctor_id) : null
+  }
+  cache.set(token, { user, expires: new Date(row.expires_at).getTime() })
+  return user
 }
 
 /**
@@ -138,16 +193,24 @@ export function sessionFor(token?: string): SessionUser | null {
  * turns that back into the same permissions they signed in with. Returns null
  * once they sign out, so a ticket cannot outlive the session it came from.
  */
-export function sessionForUser(staffId: number): SessionUser | null {
-  const now = Date.now()
-  for (const sess of sessions.values()) {
-    if (sess.user.id === staffId && sess.expires > now) return sess.user
-  }
-  return null
+export async function sessionForUser(staffId: number): Promise<SessionUser | null> {
+  const row = ((await db.execute<any>(sql`
+    SELECT token FROM sessions
+    WHERE staff_id = ${staffId} AND expires_at > now()
+    ORDER BY last_seen_at DESC LIMIT 1`)).rows as any[])[0]
+  return row ? sessionFor(row.token) : null
 }
 
-function dropSessionsFor(staffId: number) {
-  for (const [t, sess] of sessions) if (sess.user.id === staffId) sessions.delete(t)
+/**
+ * Sign somebody out everywhere.
+ *
+ * Used when an account is archived or its password is changed: a session that
+ * outlives either of those is a person still working under credentials that
+ * were deliberately taken away.
+ */
+async function dropSessionsFor(staffId: number) {
+  for (const [token, sess] of cache) if (sess.user.id === staffId) cache.delete(token)
+  await db.execute(sql`DELETE FROM sessions WHERE staff_id = ${staffId}`)
 }
 
 export async function listStaff() {
@@ -223,7 +286,7 @@ export async function setStaffPassword(staffId: number, password: string) {
   await db.update(s.staff).set({ passwordHash: await hashPassword(password) })
     .where(eq(s.staff.id, staffId))
   // A password change ends any session opened with the old one.
-  dropSessionsFor(staffId)
+  await dropSessionsFor(staffId)
 }
 
 /** Archive, never delete: visits and prescriptions reference staff. */
@@ -243,7 +306,7 @@ export async function archiveStaff(staffId: number) {
     await tx.update(s.staff).set({ isActive: false }).where(eq(s.staff.id, staffId))
     await tx.update(s.doctors).set({ isActive: false }).where(eq(s.doctors.staffId, staffId))
   })
-  dropSessionsFor(staffId)
+  await dropSessionsFor(staffId)
 }
 
 export async function restoreStaff(staffId: number) {

@@ -15,5 +15,6 @@ await esbuild.build({
   jsx: 'automatic', external: ['react', 'react-dom', 'react-dom/server'],
   mainFields: ['module', 'main'],
   conditions: ['import', 'module'],
-  loader: { '.css': 'empty' }
+  // Images are imported for their URL; the harness only needs a string back.
+  loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl', '.jpg': 'dataurl' }
 })

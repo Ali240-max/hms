@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, rs, today, type SessionUser } from '../../lib/api'
-import { ReportPreview } from '../../components/ReportPreview'
+
 import { Card, Empty, ErrorNote, Stat, Th, SkeletonRows } from '../../components/ui'
 import { t as tr } from '../../lib/prefs'
-import { FileText } from 'lucide-react'
+import { Download } from 'lucide-react'
+import { lazy, Suspense } from 'react'
+
+/*
+ * Loaded on demand.
+ *
+ * The charting library is about a third of the whole application once
+ * compressed, and only this screen draws a chart. Over a hospital LAN that is
+ * a second of loading that a receptionist who never opens a report should not
+ * have to wait through.
+ */
+const ReportBars = lazy(() =>
+  import('../../components/charts').then((m) => ({ default: m.ReportBars })))
 
 /**
  * Reports.
@@ -44,7 +56,30 @@ export function Reports({ me }: { me: SessionUser }) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [preview, setPreview] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  /**
+   * Straight to a file.
+   *
+   * There was a preview step in between. It was a nuisance to build and a
+   * nuisance to use: a browser set to download PDFs rather than display them
+   * showed an empty frame, printing the frame printed the viewer instead of
+   * the document, and the whole thing stood between somebody and the file
+   * they asked for. A PDF opens perfectly well once it is on the disk.
+   */
+  async function download() {
+    if (!def) return
+    setSaving(true); setErr(null)
+    try {
+      const path = `/reports/print/${selected}/pdf?from=${from}&to=${to}`
+      const [pathname, query] = path.split('?')
+      const { ticket } = await api.documentTicket(pathname)
+      const a = document.createElement('a')
+      a.href = `/api${pathname}?${query}&download=1&ticket=${encodeURIComponent(ticket)}`
+      a.download = `${selected}-${from}-to-${to}.pdf`
+      document.body.appendChild(a); a.click(); a.remove()
+    } catch (e: any) { setErr(e.message) } finally { setSaving(false) }
+  }
 
   useEffect(() => {
     api.allReports().then((r) => {
@@ -113,9 +148,9 @@ export function Reports({ me }: { me: SessionUser }) {
       <div className="min-h-0 space-y-4 overflow-auto">
         <Card title={def ? tr(def.title) : tr('Reports')} hint={def ? tr(def.blurb) : undefined}
           action={
-            <button onClick={() => setPreview(true)} disabled={!data}
+            <button onClick={download} disabled={!data || saving}
               className="btn-primary inline-flex items-center gap-1.5">
-              <FileText size={14} /> {tr('Print / PDF')}
+              <Download size={14} /> {saving ? tr('Preparing…') : tr('Download PDF')}
             </button>
           }>
           <ErrorNote>{err}</ErrorNote>
@@ -150,9 +185,15 @@ export function Reports({ me }: { me: SessionUser }) {
 
         {data?.chart && data.rows.length > 0 && (
           <Card title={tr('At a glance')}
-            hint={`${tr('Top')} ${Math.min(data.rows.length, 14)} ${tr('by')} ${
-              tr(columnLabel(data, data.chart.value))}`}>
-            <Chart rows={data.rows} chart={data.chart} />
+            hint={`${tr(columnLabel(data, data.chart.value))} · ${
+              data.rows.length > 14
+                ? `${tr('first')} 14 ${tr('of')} ${data.rows.length}`
+                : `${data.rows.length} ${data.rows.length === 1 ? tr('row') : tr('rows')}`}${
+              /paisa/.test(data.chart.value) ? ` · ${tr('rupees')}` : ''}`}>
+            <Suspense fallback={<div className="loading-bar my-6" />}>
+              <ReportBars rows={data.rows} labelKey={data.chart.label} valueKey={data.chart.value}
+                money={/paisa/.test(data.chart.value)} speed="report" />
+            </Suspense>
           </Card>
         )}
 
@@ -165,12 +206,7 @@ export function Reports({ me }: { me: SessionUser }) {
         </Card>
       </div>
 
-      {preview && data && (
-        <ReportPreview data={data}
-          path={`/reports/print/${selected}/pdf?from=${from}&to=${to}`}
-          filename={`${selected}-${from}-to-${to}.pdf`}
-          onClose={() => setPreview(false)} />
-      )}
+
     </div>
   )
 }
@@ -214,82 +250,6 @@ function Headline({ stats }: { stats: any }) {
       {cards.slice(0, 4).map(([label, value, sub]) => (
         <Stat key={label} label={label} value={value} sub={sub} tone="accent" />
       ))}
-    </div>
-  )
-}
-
-/**
- * A plain bar chart.
- *
- * Drawn by hand rather than pulled from a charting library: it is a row of
- * divs, it themes with the rest of the application, and it adds nothing to a
- * bundle a pharmacy PC loads over a LAN.
- *
- * The bars are sized in pixels, not percentages. A percentage height inside a
- * parent whose own height is decided by its content resolves to nothing, and
- * that is exactly what happened here — the chart rendered, occupied its space,
- * and every bar was zero tall.
- */
-function Chart({ rows, chart }: { rows: any[]; chart: any }) {
-  const H = 190
-  const top = rows.slice(0, 14)
-  const values = top.map((r) => Math.abs(Number(r[chart.value] ?? 0)))
-  const peak = Math.max(...values, 1)
-  const money = /paisa/.test(chart.value)
-  const show = (v: number) => (money ? rs(v) : v.toLocaleString('en-PK'))
-
-  return (
-    <div>
-      <div className="relative" style={{ height: H }}>
-        {/* Quiet guides, so a bar can be read against a number. */}
-        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
-          <div key={f} className="absolute inset-x-0 flex items-center gap-2"
-            style={{ bottom: f * H }}>
-            <span className="w-14 shrink-0 text-right num text-[0.6rem] text-muted">
-              {show(peak * f)}
-            </span>
-            <span className="h-px flex-1 bg-divide" />
-          </div>
-        ))}
-
-        <div className="absolute inset-y-0 left-16 right-0 flex items-end gap-1.5">
-          {top.map((r, i) => {
-            const v = Number(r[chart.value] ?? 0)
-            const h = Math.max((Math.abs(v) / peak) * H, 3)
-            return (
-              <div key={i} className="group relative flex-1"
-                title={`${r[chart.label]} — ${money ? 'Rs ' + show(v) : show(v)}`}>
-                <div
-                  className={`w-full rounded-t-lg transition-all duration-200 ${
-                    v < 0 ? 'bg-bad/70 group-hover:bg-bad' : 'group-hover:opacity-100'}`}
-                  style={{
-                    height: h,
-                    ...(v < 0 ? {} : {
-                      backgroundImage:
-                        'linear-gradient(180deg, rgb(var(--c-accent)) 0%, rgb(var(--c-primary)) 100%)',
-                      opacity: 0.85
-                    })
-                  }} />
-                <span className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2
-                                 whitespace-nowrap rounded-lg bg-heading px-1.5 py-0.5
-                                 text-[0.6rem] text-white opacity-0 transition-opacity
-                                 group-hover:opacity-100">
-                  {show(v)}
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      <div className="ml-16 mt-2 flex gap-1.5">
-        {top.map((r, i) => (
-          <div key={i} className="flex-1 truncate text-center text-[0.6rem] text-muted"
-            title={String(r[chart.label])}>
-            {String(r[chart.label]).slice(0, 12)}
-          </div>
-        ))}
-      </div>
     </div>
   )
 }

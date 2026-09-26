@@ -89,7 +89,7 @@ function IpdCounterWork({ me }: { me: SessionUser }) {
                   <Th w="w-28" right>{tr('Owed')}</Th><Th w="w-52" right />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-divide rows-striped anim-rows">
+              <tbody className="divide-y divide-divide rows-striped">
                 {shown.map((v) => {
                   const due = (v.fee_paid ? 0 : Number(v.consultation_fee_paisa)) +
                     Number(v.chits_due_paisa)
@@ -558,7 +558,7 @@ export function IpdCounter({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id: string) => setTab(id as 'work' | 'reports')}
         title="Emergency" subtitle={me.displayName} />
-      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+      <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'work' ? <IpdCounterWork me={me} /> : <Reports me={me} />}
       </div>
     </div>

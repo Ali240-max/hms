@@ -1,3 +1,5 @@
+import { motion } from 'framer-motion'
+import { DUR, EASE } from '../lib/motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, rs, type SessionUser } from '../lib/api'
 import { useT } from '../lib/prefs'
@@ -60,7 +62,24 @@ export function MainCounter({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
         title="Main counter" subtitle={me.displayName} />
-      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+      {/*
+        A keyed panel that animates in, with no exit and no AnimatePresence.
+
+        This was `AnimatePresence mode="wait"`, which holds the incoming tab
+        until the outgoing one has finished animating away. When that exit
+        never completed — an interrupted transition, a child unmounting with
+        its own exit animation partway through — the new tab was never mounted
+        and every screen in the module stayed blank until the whole app was
+        remounted by signing in again.
+
+        Waiting buys a slightly tidier crossfade and costs a module that can
+        wedge itself. Not a trade worth making on a counter.
+      */}
+        <motion.div key={tab}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: DUR.page, ease: EASE }}
+          className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'desk' && <Desk me={me} onBill={sendToTill} />}
         {tab === 'billing' && (
           <CounterBilling me={me} target={billing}
@@ -76,7 +95,7 @@ export function MainCounter({ me }: { me: SessionUser }) {
         {tab === 'patients' && <PatientDirectory />}
         {tab === 'chits' && <ChitCounter onBill={sendToTill} />}
         {tab === 'reports' && <Reports me={me} />}
-      </div>
+      </motion.div>
     </div>
   )
 }

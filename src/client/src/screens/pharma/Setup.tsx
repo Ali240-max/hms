@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Truck, Factory, FlaskConical, Plus, Search } from 'lucide-react'
 import { api } from '../../lib/api'
-import { Card, Empty, ErrorNote, Field, Modal, Th } from '../../components/ui'
+import { Card, Empty, ErrorNote, Field, Modal, Tabs, Th } from '../../components/ui'
 import { t as tr } from '../../lib/prefs'
 
 type Tab = 'suppliers' | 'companies' | 'salts'
@@ -24,17 +24,9 @@ export function PharmacySetup() {
 
   return (
     <div className="space-y-4 p-4">
-      <div className="flex flex-wrap gap-1">
-        {TABS.map(([id, label, Icon]) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-2xs
-                        transition-colors ${
-              tab === id ? 'bg-brand text-white'
-                         : 'border-2 border-line bg-card text-muted hover:bg-raised'}`}>
-            <Icon size={13} /> {tr(label)}
-          </button>
-        ))}
-      </div>
+      <Tabs id="pharmacy-setup" value={tab} onChange={(v) => setTab(v as Tab)}
+        className="w-fit"
+        tabs={TABS.map(([id, label, icon]) => ({ value: id, label: tr(label), icon }))} />
 
       {tab === 'suppliers' && <Suppliers />}
       {tab === 'companies' && <Companies />}

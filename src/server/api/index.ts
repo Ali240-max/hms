@@ -125,9 +125,9 @@ api.post('/auth/login', async (c) => {
   return c.json(await login(b.username, b.password))
 })
 
-api.post('/auth/logout', (c) => {
+api.post('/auth/logout', async (c) => {
   const t = bearer(c)
-  if (t) logout(t)
+  if (t) await logout(t)
   return c.json({ ok: true })
 })
 
@@ -166,7 +166,7 @@ api.use('*', async (c, next) => {
 
   if (PUBLIC.includes(path)) return next()
   if (c.req.method === 'GET' && PUBLIC_GET.includes(path)) return next()
-  let user = sessionFor(bearer(c))
+  let user = await sessionFor(bearer(c))
 
   /**
    * A ticket stands in for the header on file downloads.
@@ -180,7 +180,7 @@ api.use('*', async (c, next) => {
     const ticket = c.req.query('ticket')
     if (ticket) {
       const userId = checkTicket(ticket, path)
-      if (userId != null) user = sessionForUser(userId)
+      if (userId != null) user = await sessionForUser(userId)
     }
   }
 
@@ -620,6 +620,24 @@ api.get('/lab/orders/:id/pdf', async (c) => {
 /** Every finished report on one visit, each on its own page. */
 api.get('/lab/visits/:id/pdf', async (c) => {
   const visitId = Number(c.req.param('id'))
+
+  /*
+   * Refused clearly when there is nothing finished to print.
+   *
+   * This used to throw, and the error handler turned it into a 204 with an
+   * empty body — which a PDF viewer reports as "Unexpected server response
+   * (204)". A half-filled report is not printable, and saying so is more use
+   * than a status code.
+   */
+  const ready = (await visitWork(visitId))
+    .filter((w: any) => w.lab_status === 'resulted' && w.lab_order_id)
+  if (ready.length === 0) {
+    return c.json({
+      error: 'No finished report on this visit yet. Fill in every line first.',
+      code: 'NOTHING_TO_PRINT'
+    }, 409)
+  }
+
   const pdf = await labReportPdf({ visitId })
   return new Response(pdf, {
     headers: {

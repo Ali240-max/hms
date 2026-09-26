@@ -1,4 +1,6 @@
 import { useState, type ComponentType, type ReactNode } from 'react'
+import { motion } from 'framer-motion'
+import { SPRING, tapBuzz } from '../lib/motion'
 import { ChevronLeft } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
@@ -27,15 +29,18 @@ export type NavItem = {
   section?: string
 }
 
-export function Sidebar({ items, active, onSelect, title, subtitle, footer }: {
+export function Sidebar({ items, active, onSelect, title, subtitle, footer, railId }: {
   items: NavItem[]
   active: string
   onSelect: (id: string) => void
   title: string
   subtitle?: string
   footer?: ReactNode
+  /** Namespaces the sliding marker. Defaults to the rail's own title. */
+  railId?: string
 }) {
   const [open, setOpen] = useState(true)
+  const rail = railId ?? title.toLowerCase().replace(/\s+/g, '-')
 
   return (
     <nav className={`no-print relative flex shrink-0 flex-col overflow-hidden
@@ -87,37 +92,48 @@ export function Sidebar({ items, active, onSelect, title, subtitle, footer }: {
                   {tr(item.section)}
                 </p>
               )}
-              <button onClick={() => onSelect(item.id)} title={tr(item.label)}
+              <button
+                onClick={() => { tapBuzz(); onSelect(item.id) }}
+                title={tr(item.label)}
                 className={`group relative flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2
-                            text-left transition-all duration-150
-                            ${on ? 'font-medium text-white shadow-sm'
-                                 : 'text-body hover:bg-card/70 hover:translate-x-0.5'}`}
-                style={on ? {
-                  backgroundImage:
-                    'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
-                } : undefined}>
+                            text-left transition-colors duration-150 active:scale-[0.97]
+                            ${on ? 'font-medium text-white'
+                                 : 'text-body hover:bg-card/70'}`}>
 
                 {/*
-                  A bar on the selected item, so the active row is readable
-                  even when the gradient is subtle in the dark theme.
+                  One highlight that slides between items rather than one
+                  hidden and another shown. `layoutId` is what does it: the
+                  same element exists in only one place at a time, so the
+                  library moves it. The id is namespaced per rail, or two rails
+                  on one screen fight over it and the marker flies across.
                 */}
                 {on && (
-                  <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-white/70" />
+                  <motion.span layoutId={`${rail}-active`}
+                    className="absolute inset-0 rounded-xl shadow-sm"
+                    transition={SPRING.pill}
+                    style={{
+                      backgroundImage:
+                        'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
+                    }} />
+                )}
+                {on && (
+                  <motion.span layoutId={`${rail}-bar`} transition={SPRING.pill}
+                    className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-white/70" />
                 )}
 
-                <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg text-2xs
-                                  font-semibold transition-colors
+                <span className={`relative grid h-7 w-7 shrink-0 place-items-center rounded-lg
+                                  text-2xs font-semibold transition-colors
                                   ${on ? 'bg-white/20 text-white'
                                        : 'bg-raised text-muted group-hover:text-primary'}`}>
                   {item.icon ? <item.icon size={15} /> : item.glyph}
                 </span>
 
                 {open && (
-                  <span className="min-w-0 flex-1 truncate text-2xs">{tr(item.label)}</span>
+                  <span className="relative min-w-0 flex-1 truncate text-2xs">{tr(item.label)}</span>
                 )}
 
                 {open && item.badge != null && item.badge > 0 && (
-                  <span className={`shrink-0 rounded-full px-1.5 py-0.5 num text-[0.6rem]
+                  <span className={`relative shrink-0 rounded-full px-1.5 py-0.5 num text-[0.6rem]
                                     font-semibold ${
                     on ? 'bg-white/25 text-white' : 'bg-primary/15 text-primary'}`}>
                     {item.badge > 99 ? '99+' : item.badge}

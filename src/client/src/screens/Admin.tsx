@@ -1,6 +1,8 @@
+import { motion } from 'framer-motion'
+import { DUR, EASE } from '../lib/motion'
 import { useCallback, useEffect, useState } from 'react'
 import { api, rs, toPaisa, bpToPct, pctToBp, today, type SessionUser , newId} from '../lib/api'
-import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th } from '../components/ui'
+import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Tabs, Th } from '../components/ui'
 import { useT } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
@@ -33,7 +35,24 @@ export function Admin({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
         title="Administration" subtitle={me.displayName} />
-      <div key={tab} className="anim-fade min-h-0 flex-1 space-y-5 overflow-auto p-5">
+      {/*
+        A keyed panel that animates in, with no exit and no AnimatePresence.
+
+        This was `AnimatePresence mode="wait"`, which holds the incoming tab
+        until the outgoing one has finished animating away. When that exit
+        never completed — an interrupted transition, a child unmounting with
+        its own exit animation partway through — the new tab was never mounted
+        and every screen in the module stayed blank until the whole app was
+        remounted by signing in again.
+
+        Waiting buys a slightly tidier crossfade and costs a module that can
+        wedge itself. Not a trade worth making on a counter.
+      */}
+        <motion.div key={tab}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: DUR.page, ease: EASE }}
+          className="min-h-0 flex-1 space-y-5 overflow-auto p-5">
       {tab === 'Overview' && <Overview />}
       {tab === 'Staff' && <StaffTab me={me} />}
       {tab === 'Services' && <ServicesTab />}
@@ -44,7 +63,7 @@ export function Admin({ me }: { me: SessionUser }) {
       {tab === 'Settings' && <BackupLocationCard />}
       {tab === 'Settings' && <DangerZoneCard me={me} />}
       {tab === 'Reports' && <Reports me={me} />}
-      </div>
+      </motion.div>
     </div>
   )
 }
@@ -66,8 +85,14 @@ function Overview() {
   return (
     <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Administrative figures, so these count. Nothing clinical here. */}
         <Stat label={tr('Patients today')} value={String(stats?.visits ?? 0)}
+          count={Number(stats?.visits ?? 0)}
           sub={`${stats?.new_patients ?? 0} newly registered`} />
+        {/*
+          Not counted. "Waiting now" is a queue length somebody acts on, and a
+          figure sweeping up from zero reads as a queue that is growing.
+        */}
         <Stat label={tr('Waiting now')} value={String(stats?.waiting ?? 0)} tone="warn" />
         <Stat label={tr('Consultation fees')} value={`Rs ${rs(stats?.fees_paisa)}`} tone="accent" />
         <Stat label={tr('Tests and scans')} value={`Rs ${rs(stats?.services_paisa)}`} tone="accent" />
@@ -447,23 +472,11 @@ function ServicesTab() {
         <Plus size={14} /> {tr('Add service')}
       </button>}>
 
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {SERVICE_GROUPS.map((g) => {
-          const n = rows.filter((s) => s.category === g.id).length
-          const Icon = g.icon
-          return (
-            <button key={g.id} onClick={() => setGroup(g.id)}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-2xs
-                          transition-colors ${group === g.id
-                ? 'bg-brand text-white shadow-sm'
-                : 'border-2 border-line bg-card text-body hover:bg-raised'}`}>
-              <Icon size={13} /> {tr(g.label)}
-              <span className={`rounded-full px-1.5 num text-[0.6rem] ${
-                group === g.id ? 'bg-white/25' : 'bg-raised text-muted'}`}>{n}</span>
-            </button>
-          )
-        })}
-      </div>
+      <Tabs id="service-groups" value={group} onChange={setGroup} className="mb-4 w-fit"
+        tabs={SERVICE_GROUPS.map((g) => ({
+          value: g.id, label: tr(g.label), icon: g.icon,
+          count: rows.filter((s) => s.category === g.id).length
+        }))} />
 
       <p className="mb-3 text-2xs text-muted">{tr(current.blurb)}</p>
 

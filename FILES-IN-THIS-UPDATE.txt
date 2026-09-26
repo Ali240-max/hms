@@ -1,20 +1,21 @@
-Changes since the hms-v9-complete update. 7 files.
+9 files. No migration, no new dependencies.
+
+DELETE this file after unzipping (it was replaced by northbyte-mark.png):
+
+  src/client/src/assets/northbyte.png
 
 New:
-  drizzle/0015_service_catalogue.sql
+  src/client/src/assets/northbyte-mark.png   the NB mark, cropped, 72 kB
+  verify-tabs.mjs                            catches the blank-module bug
 
 Changed:
-  src/server/services/billing.ts
-  src/server/services/clinical.ts
-  src/server/services/demo.ts
-  src/client/src/screens/Admin.tsx
-  src/client/src/lib/prefs.tsx
-  verify-lab.mjs
-
-Nothing to delete.
-
-After unzipping, in PowerShell:
+  src/client/src/screens/MainCounter.tsx     removed the wedge
+  src/client/src/screens/Pharmacy.tsx        removed the wedge
+  src/client/src/screens/Admin.tsx           removed the wedge
+  src/client/src/screens/Stores.tsx          removed the wedge
+  src/client/src/screens/SignIn.tsx          logo on a white tile, better points
+  src/client/src/lib/prefs.tsx               translations
+  package.json                               npm run verify:tabs
 
   npm run typecheck
-
-and start the server only when that prints nothing.
+  npm run verify:tabs

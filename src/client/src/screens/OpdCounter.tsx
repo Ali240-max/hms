@@ -121,7 +121,7 @@ function OpdCounterWork({ me }: { me: SessionUser }) {
                   <Th w="w-28">{tr('Status')}</Th><Th w="w-44" right />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-divide rows-striped anim-rows">
+              <tbody className="divide-y divide-divide rows-striped">
                 {shown.map((v) => (
                   <tr key={v.id}>
                     <td className="px-3 py-2">
@@ -407,7 +407,7 @@ export function OpdCounter({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id: string) => setTab(id as 'work' | 'reports')}
         title="OPD counter" subtitle={me.displayName} />
-      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+      <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'work' ? <OpdCounterWork me={me} /> : <Reports me={me} />}
       </div>
     </div>

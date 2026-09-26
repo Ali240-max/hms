@@ -282,6 +282,53 @@ console.log('\n— radiology is its own department —')
   }
 }
 
+console.log('\n— a half-filled report is not a finished one —')
+{
+  // Paid as well as pending. Taking a sample for unpaid work is refused, and
+  // the first version of this test only passed because it happened to pick a
+  // paid one.
+  const waiting = (await q('/lab/queue?status=all','lab')).body
+    .filter(x => x.lab_status === 'pending' && x.parameter_count > 3
+      && ['paid', 'completed'].includes(x.pay_status))
+  if (!waiting.length) { ok('a panel to half-fill exists', false, 'none pending') }
+  else {
+    const t2 = waiting[0]
+    const lo2 = (await q('/lab/collect','lab',{method:'POST',
+      body:JSON.stringify({ serviceOrderId: t2.service_order_id })})).body
+    const params = (await q(`/services/${t2.service_id}/parameters`,'lab')).body
+
+    // two of twelve, the way a phone call leaves a CBC
+    let r2 = await q(`/lab/orders/${lo2.id}/results`,'lab',{method:'POST',body:JSON.stringify({
+      values: params.map((p,i) => ({ name: p.name, value: i < 2 ? '5' : '' })), notes: null })})
+    ok('a partly filled panel saves as partial', r2.body.status === 'partial', r2.body.status)
+    ok('it says how many lines are missing', r2.body.missing === params.length - 2,
+      String(r2.body.missing))
+    ok('it shows in the Partly filled list',
+      (await q('/lab/queue?status=partial','lab')).body.some(x => x.lab_order_id === lo2.id))
+    ok('and NOT in Reported, where it could be printed',
+      !(await q('/lab/queue?status=resulted','lab')).body.some(x => x.lab_order_id === lo2.id))
+
+    r2 = await q(`/lab/orders/${lo2.id}/results`,'lab',{method:'POST',body:JSON.stringify({
+      values: params.map((p) => ({ name: p.name, value: '5' })), notes: null })})
+    ok('filling the rest finishes it', r2.body.status === 'resulted', r2.body.status)
+    ok('and it moves to Reported',
+      (await q('/lab/queue?status=resulted','lab')).body.some(x => x.lab_order_id === lo2.id))
+
+    // a scan has no parameters, so one written finding is the whole report
+    const scan = (await q('/lab/queue?status=all','xr')).body
+      .filter(x => x.lab_status === 'pending'
+        && ['paid', 'completed'].includes(x.pay_status))[0]
+    if (scan) {
+      const lo3 = (await q('/lab/collect','xr',{method:'POST',
+        body:JSON.stringify({ serviceOrderId: scan.service_order_id })})).body
+      const r3 = await q(`/lab/orders/${lo3.id}/results`,'xr',{method:'POST',body:JSON.stringify({
+        values: [{ name:'Findings', value:'Clear lung fields.' },
+                 { name:'Impression', value:'Normal study.' }], notes: null })})
+      ok('a scan with findings written is finished', r3.body.status === 'resulted', r3.body.status)
+    }
+  }
+}
+
 console.log('\n— tests bought without a doctor —')
 {
   let r3 = await q('/patients','mc',{method:'POST',body:JSON.stringify({

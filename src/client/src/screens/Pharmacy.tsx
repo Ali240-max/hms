@@ -1,3 +1,5 @@
+import { motion } from 'framer-motion'
+import { DUR, EASE } from '../lib/motion'
 import { useEffect, useState } from 'react'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Settings2 } from 'lucide-react'
@@ -116,7 +118,24 @@ export function Pharmacy({ me }: { me: SessionUser }) {
       <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as Tab)}
         title="Pharmacy" subtitle={me.displayName} />
 
-      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+      {/*
+        A keyed panel that animates in, with no exit and no AnimatePresence.
+
+        This was `AnimatePresence mode="wait"`, which holds the incoming tab
+        until the outgoing one has finished animating away. When that exit
+        never completed — an interrupted transition, a child unmounting with
+        its own exit animation partway through — the new tab was never mounted
+        and every screen in the module stayed blank until the whole app was
+        remounted by signing in again.
+
+        Waiting buys a slightly tidier crossfade and costs a module that can
+        wedge itself. Not a trade worth making on a counter.
+      */}
+        <motion.div key={tab}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: DUR.page, ease: EASE }}
+          className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'billing' && (
           <Billing me={me} pending={pending} onConsumed={() => setPending(null)} />
         )}
@@ -136,7 +155,7 @@ export function Pharmacy({ me }: { me: SessionUser }) {
             <PrinterSettingsCard module="pharmacy" label={tr('Pharmacy till')} />
           </div>
         )}
-      </div>
+      </motion.div>
     </div>
   )
 }

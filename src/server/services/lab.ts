@@ -21,7 +21,16 @@ export class LabError extends Error {
     'NOT_FOUND' | 'NOT_PAID' | 'WRONG_STATE' | 'NO_VALUES') { super(msg) }
 }
 
-export const LAB_STATUS = ['pending', 'collected', 'in_progress', 'resulted'] as const
+/**
+ * `partial` sits between running and reported.
+ *
+ * A technician who fills four of a CBC's twelve lines and goes to answer the
+ * phone used to leave a report marked finished: it moved to the Reported
+ * list, and it could be printed and handed over with eight blanks on it.
+ * Unfinished work now stays visibly unfinished.
+ */
+export const LAB_STATUS =
+  ['pending', 'collected', 'in_progress', 'partial', 'resulted'] as const
 
 /** LAB-000123. */
 async function nextReportNo(tx: any): Promise<string> {
@@ -43,6 +52,7 @@ export async function labQueue(opts: {
 
   let having = sql`true`
   if (status === 'active') {
+    // Anything still needing the bench, half-filled reports included.
     having = sql`COALESCE(lo.status, 'pending') <> 'resulted'`
   } else if (status !== 'all') {
     having = sql`COALESCE(lo.status, 'pending') = ${status}`
@@ -348,12 +358,46 @@ export async function saveResults(input: {
                 ${v.unit ?? p?.unit ?? null}, ${refText}, ${flag}, ${order++})`)
     }
 
+    /*
+     * Finished, or only started.
+     *
+     * A report counts as finished when every line the test defines carries a
+     * value. A test with no parameters at all — an x-ray, an ultrasound — is
+     * finished once anything has been written, because its one field is the
+     * whole report.
+     *
+     * The distinction is the point: a half-filled CBC that says "resulted"
+     * can be printed and handed to a patient with blanks where the platelets
+     * should be.
+     */
+    const expected = params.length > 0
+      ? params.map((p) => String(p.name).toLowerCase())
+      : input.values.map((v) => v.name.toLowerCase())
+    const filled = new Set(input.values
+      .filter((v) => String(v.value ?? '').trim() !== '')
+      .map((v) => v.name.toLowerCase()))
+    const complete = expected.every((name) => filled.has(name))
+    const status = complete ? 'resulted' : 'partial'
+
     await tx.execute(sql`
-      UPDATE lab_orders SET status = 'resulted', resulted_at = now(), resulted_by = ${input.by},
-             notes = ${input.notes ?? null}
+      UPDATE lab_orders
+      SET status = ${status},
+          -- Only a finished report carries a reported time and a name against
+          -- it. A partial one has nobody to attribute yet.
+          resulted_at = ${complete ? sql`now()` : sql`NULL`},
+          resulted_by = ${complete ? input.by : null},
+          -- A report that goes back to partial loses any verification it had:
+          -- what was checked is no longer what is on it.
+          verified_at = ${complete ? sql`lab_orders.verified_at` : sql`NULL`},
+          verified_by = ${complete ? sql`lab_orders.verified_by` : sql`NULL`},
+          notes = ${input.notes ?? null}
       WHERE id = ${input.labOrderId}`)
 
-    return { serviceId: lo.service_id, alreadyTaken: !!lo.supplies_taken_at }
+    return {
+      serviceId: lo.service_id, alreadyTaken: !!lo.supplies_taken_at,
+      status, complete,
+      missing: expected.filter((n) => !filled.has(n)).length
+    }
   })
 
   /**
@@ -379,7 +423,10 @@ export async function saveResults(input: {
       UPDATE lab_orders SET supplies_taken_at = now() WHERE id = ${input.labOrderId}`)
   }
 
-  return { used, problems }
+  return {
+    used, problems,
+    status: outcome.status, complete: outcome.complete, missing: outcome.missing
+  }
 }
 
 export async function verifyResult(labOrderId: number, by: string) {

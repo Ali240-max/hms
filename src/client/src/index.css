@@ -129,16 +129,23 @@ html.lang-ur .num { @apply font-sans; }
    * button that visibly moves is the cheapest possible acknowledgement.
    * Kept to two pixels — enough to feel, not enough to notice.
    */
+  /*
+   * `active:scale-[0.97]` on everything pressable.
+   *
+   * The press is the half that matters: a clerk hitting Complete Bill needs
+   * to know the click registered before the server answers, and the cheapest
+   * possible acknowledgement is a button that visibly moves.
+   */
   .btn-primary {
     @apply rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white
            transition-all duration-150 hover:opacity-90 hover:-translate-y-px
-           hover:shadow-md active:translate-y-0 active:shadow-sm
+           hover:shadow-md active:translate-y-0 active:scale-[0.97] active:shadow-sm
            disabled:opacity-40 disabled:translate-y-0 disabled:shadow-none;
   }
   .btn-ghost {
     @apply rounded-xl border-2 border-line bg-card px-3 py-2 text-sm text-body
            shadow-sm transition-all duration-150 hover:border-primary hover:bg-raised
-           hover:-translate-y-px active:translate-y-0
+           hover:-translate-y-px active:translate-y-0 active:scale-[0.97]
            disabled:opacity-40 disabled:translate-y-0;
   }
   .tile { @apply flex h-8 w-8 items-center justify-center rounded-xl bg-brand text-white; }

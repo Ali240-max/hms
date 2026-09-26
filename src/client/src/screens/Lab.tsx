@@ -1,9 +1,11 @@
+import { motion } from 'framer-motion'
+import { DUR, EASE } from '../lib/motion'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, rs, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../components/ui'
 import { t as tr } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
-import { PdfPreview } from '../components/PdfPreview'
+
 import { Reports } from './pharma/Reports'
 import {
   ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2,
@@ -13,6 +15,9 @@ import {
 const FILTERS: [string, string][] = [
   ['active', 'On the bench'], ['pending', 'Awaiting sample'],
   ['collected', 'Sample taken'], ['in_progress', 'Running'],
+  // Half-filled reports have their own list. They are not finished work and
+  // must not sit in the finished pile where they can be printed by mistake.
+  ['partial', 'Partly filled'],
   ['resulted', 'Reported'], ['all', 'All']
 ]
 
@@ -49,7 +54,23 @@ function LabQueue({ me }: { me: SessionUser }) {
   const [status, setStatus] = useState('active')
   const [q, setQ] = useState('')
   const [entering, setEntering] = useState<any | null>(null)
-  const [viewing, setViewing] = useState<any | null>(null)
+  /**
+   * The report, as a file.
+   *
+   * No preview step. A browser with its PDF viewer switched off showed an
+   * empty frame, and printing that frame printed the viewer rather than the
+   * report. The file itself has neither problem.
+   */
+  async function downloadReport(g: any) {
+    try {
+      const path = `/lab/visits/${g.visit_id}/pdf`
+      const { ticket } = await api.documentTicket(path)
+      const a = document.createElement('a')
+      a.href = `/api${path}?download=1&ticket=${encodeURIComponent(ticket)}`
+      a.download = `${g.mrn}-lab-report.pdf`
+      document.body.appendChild(a); a.click(); a.remove()
+    } catch (e: any) { setErr(e.message) }
+  }
   const [collecting, setCollecting] = useState<any | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -90,9 +111,13 @@ function LabQueue({ me }: { me: SessionUser }) {
 
   if (entering) {
     return (
-      <EnterResults group={entering} isRadiology={isRadiology}
-        onBack={() => { setEntering(null); load() }}
-        onDone={() => { setEntering(null); load() }} />
+      isRadiology
+        ? <ReportFindings group={entering}
+            onBack={() => { setEntering(null); load() }}
+            onDone={() => { setEntering(null); load() }} />
+        : <EnterResults group={entering} isRadiology={isRadiology}
+            onBack={() => { setEntering(null); load() }}
+            onDone={() => { setEntering(null); load() }} />
     )
   }
 
@@ -137,11 +162,25 @@ function LabQueue({ me }: { me: SessionUser }) {
               <thead className="thead-strip">
                 <tr>
                   <Th w="w-32">{tr('Report')}</Th><Th>{tr('Patient')}</Th>
-                  <Th>{tr('Test')}</Th><Th w="w-28">{tr('Stage')}</Th>
+                  <Th>{tr('Test')}</Th><Th w="w-44">{tr('Stage')}</Th>
                   <Th w="w-56" right />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-divide rows-striped anim-rows">
+              {/*
+                The whole list fades and lifts when the filter changes.
+                Keyed on the filter, so switching between Awaiting sample and
+                Reported reads as a new list arriving rather than rows
+                silently swapping underneath the cursor.
+
+                One movement for the table, not one per row: a technician
+                looking for a patient should see every row at the same moment,
+                and a staggered queue puts the one they want last.
+              */}
+              <motion.tbody key={status}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: DUR.page, ease: EASE }}
+                className="divide-y divide-divide rows-striped">
                 {grouped.map((g) => {
                   /**
                    * One row per patient, not per test.
@@ -160,8 +199,9 @@ function LabQueue({ me }: { me: SessionUser }) {
                     x.lab_status === 'pending' &&
                     (x.pay_status === 'paid' || x.pay_status === 'completed'))
                   const onBench = g.tests.filter((x: any) =>
-                    x.lab_status === 'collected' || x.lab_status === 'in_progress')
+                    ['collected', 'in_progress', 'partial'].includes(x.lab_status))
                   const reported = g.tests.filter((x: any) => x.lab_status === 'resulted')
+                  const partial = g.tests.filter((x: any) => x.lab_status === 'partial')
                   return (
                     <tr key={g.key}>
                       <td className="px-3 py-2">
@@ -205,12 +245,23 @@ function LabQueue({ me }: { me: SessionUser }) {
                           {onBench[0]?.sample_type && ` · ${onBench[0].sample_type}`}
                         </span>
                       </td>
-                      <td className="px-3 py-2">
+                      {/*
+                        A visit can be waiting on one test, part-way through a
+                        second and finished with a third, so this cell holds
+                        several badges at once. They used to sit on one line
+                        and the later ones were clipped by the column. Wrapped,
+                        with room to wrap into.
+                      */}
+                      <td className="px-3 py-2 align-top">
+                        <div className="flex flex-wrap items-center gap-1">
                         {waiting.length > 0 && (
                           <Badge>{waiting.length} {tr('to collect')}</Badge>
                         )}
                         {onBench.length > 0 && (
                           <Badge tone="warn">{onBench.length} {tr('on the bench')}</Badge>
+                        )}
+                        {partial.length > 0 && (
+                          <Badge tone="warn">{partial.length} {tr('partly filled')}</Badge>
                         )}
                         {reported.length > 0 && (
                           <Badge tone="ok">{reported.length} {tr('reported')}</Badge>
@@ -218,6 +269,7 @@ function LabQueue({ me }: { me: SessionUser }) {
                         {unpaidCount > 0 && (
                           <Badge tone="bad">{unpaidCount} {tr('not paid')}</Badge>
                         )}
+                        </div>
                       </td>
                       <td className="px-3 py-2 text-right">
                         {!paid ? (
@@ -263,7 +315,7 @@ function LabQueue({ me }: { me: SessionUser }) {
                             */}
                             {reported.length > 0 && (
                               <button
-                                onClick={() => setViewing(g)}
+                                onClick={() => downloadReport(g)}
                                 className="btn-ghost w-full px-2 py-1 text-2xs">
                                 {reported.length > 1
                                   ? `${tr('Report')} (${reported.length} ${tr('tests')})`
@@ -276,7 +328,7 @@ function LabQueue({ me }: { me: SessionUser }) {
                     </tr>
                   )
                 })}
-              </tbody>
+              </motion.tbody>
             </table>
           </div>
         )}
@@ -286,16 +338,6 @@ function LabQueue({ me }: { me: SessionUser }) {
         {tr('Signed in as')} {me.displayName}. {tr('The laboratory takes no payments. A test appears here once it has been paid for at the main counter.')}
       </p>
 
-      {/*
-        Drawn onto canvases by pdf.js rather than handed to the browser's PDF
-        viewer, which plenty of people have set to download instead of display.
-      */}
-      {viewing && (
-        <PdfPreview path={`/lab/visits/${viewing.visit_id}/pdf`}
-          title={`${viewing.patient_name} — ${tr('lab report')}`}
-          filename={`${viewing.mrn}-lab-report.pdf`}
-          onClose={() => setViewing(null)} />
-      )}
       {collecting && (
         <CollectSample group={collecting} isRadiology={isRadiology}
           onClose={() => setCollecting(null)}
@@ -720,8 +762,193 @@ export function Lab({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as any)}
         title={isRadiology ? 'Radiology' : 'Laboratory'} subtitle={me.displayName} />
-      <div key={tab} className="anim-fade min-h-0 flex-1 overflow-auto bg-screen">
+      <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'queue' ? <LabQueue me={me} /> : <Reports me={me} />}
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------- radiology report */
+
+/**
+ * Reporting a scan.
+ *
+ * A radiology report has no rows, no units and no reference ranges. Forcing
+ * it through the laboratory screen gave a radiographer one field called
+ * "X-Ray Chest PA" with a dash where the unit should be and another dash for
+ * the range, which is three columns of nothing around a box.
+ *
+ * What a scan actually produces is prose in a fixed order, the way it is
+ * dictated: how it was taken, what can be seen, and what that means. Written
+ * separately because a referring doctor reads the impression first and the
+ * findings only if the impression surprises them.
+ *
+ * Findings alone is enough to finish a report. Technique is optional, and an
+ * impression is expected but not demanded: a technologist describing an
+ * unremarkable film should not be blocked because a radiologist has not yet
+ * written the conclusion.
+ */
+function ReportFindings({ group, onBack, onDone }: {
+  group: any; onBack: () => void; onDone: () => void
+}) {
+  const [panels, setPanels] = useState<any[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [savedAt, setSavedAt] = useState<string | null>(null)
+
+  const workable = group.tests.filter((x: any) =>
+    x.pay_status === 'paid' || x.pay_status === 'completed')
+  const notTaken = workable.filter((x: any) => x.lab_status === 'pending')
+
+  useEffect(() => {
+    async function build() {
+      const out: any[] = []
+      for (const test of workable) {
+        const existing = test.lab_order_id
+          ? (await api.labReport(test.lab_order_id).catch(() => null))?.values ?? []
+          : []
+        const find = (name: string) =>
+          existing.find((e: any) => String(e.name).toLowerCase() === name)?.value ?? ''
+        const draft = DRAFTS.get(draftKey(test))
+        out.push({
+          test,
+          locked: test.lab_status === 'pending',
+          technique: draft?.values?.Technique ?? find('technique'),
+          findings: draft?.values?.Findings ?? find('findings'),
+          impression: draft?.values?.Impression ?? find('impression'),
+          notes: draft?.notes ?? test.notes ?? ''
+        })
+      }
+      setPanels(out)
+    }
+    build().catch((e: any) => setErr(e.message))
+  }, [group])
+
+  function edit(i: number, field: string, value: string) {
+    setPanels((ps) => {
+      const next = ps!.map((p, j) => (j === i ? { ...p, [field]: value } : p))
+      const panel = next[i]
+      // Kept outside React so a half-dictated report survives the phone ringing.
+      DRAFTS.set(draftKey(panel.test), {
+        values: {
+          Technique: panel.technique, Findings: panel.findings, Impression: panel.impression
+        },
+        notes: panel.notes ?? ''
+      })
+      return next
+    })
+  }
+
+  const ready = (panels ?? []).some((p) => !p.locked && p.findings.trim())
+
+  async function save() {
+    setBusy(true); setErr(null)
+    try {
+      for (const panel of panels ?? []) {
+        if (panel.locked || !panel.findings.trim()) continue
+        let id = panel.test.lab_order_id
+        if (!id) id = (await api.collectSample(panel.test.service_order_id, null)).id
+
+        /*
+         * Written as three named lines rather than free text in one blob, so
+         * the printed report can lay them out with headings and a later
+         * search can look inside findings specifically.
+         */
+        const values = [
+          { name: 'Technique', value: panel.technique.trim() },
+          { name: 'Findings', value: panel.findings.trim() },
+          { name: 'Impression', value: panel.impression.trim() }
+        ].filter((v) => v.value !== '')
+
+        await api.saveLabResults(id, values, panel.notes.trim() || null)
+        DRAFTS.delete(draftKey(panel.test))
+      }
+      setSavedAt(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))
+      onDone()
+    } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-screen">
+      <header className="sticky top-0 z-10 border-b-2 border-line bg-card px-5 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <button onClick={onBack} className="btn-ghost px-3 py-1.5 text-2xs">
+              &larr; {tr('Back to the list')}
+            </button>
+            <div>
+              <h2 className="text-base font-semibold text-heading">{group.patient_name}</h2>
+              <p className="num text-2xs text-muted">
+                {group.mrn}
+                {group.age_years != null && ` · ${group.age_years}y`}
+                {group.gender && ` · ${tr(group.gender)}`}
+              </p>
+            </div>
+          </div>
+          <button onClick={save} disabled={busy || !ready} className="btn-primary">
+            {busy ? tr('Saving…') : tr('Save report')}
+          </button>
+        </div>
+        {savedAt && <p className="mt-1 text-2xs text-ok">{tr('Saved at')} {savedAt}</p>}
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-auto p-5">
+        <ErrorNote>{err}</ErrorNote>
+
+        {notTaken.length > 0 && (
+          <div className="mb-4 rounded-xl border-2 border-warn/40 bg-warn/5 p-3">
+            <p className="text-2xs text-warn">
+              {notTaken.map((x: any) => x.service_name).join(', ')} — {
+                tr('not started yet. Begin the procedure from the list first.')}
+            </p>
+          </div>
+        )}
+
+        {!panels ? <SkeletonRows rows={4} cols={1} /> : (
+          <div className="space-y-5">
+            {panels.map((panel, i) => (
+              <Card key={panel.test.service_order_id}
+                className={panel.locked ? 'opacity-60' : ''}
+                title={panel.test.service_name}
+                hint={panel.locked ? tr('Not started yet')
+                  : `${panel.test.report_no ?? tr('new')}${
+                      panel.test.collected_by ? ` · ${panel.test.collected_by}` : ''}`}>
+
+                <Field label={tr('Technique')} hint={tr('Optional. Views taken, contrast, position.')} span>
+                  <input value={panel.technique} disabled={panel.locked}
+                    onChange={(e) => edit(i, 'technique', e.target.value)}
+                    placeholder={tr('e.g. PA view, erect')}
+                    className="field mt-1 text-sm" />
+                </Field>
+
+                <Field label={tr('Findings')} hint={tr('What is on the film. This is the report.')} span>
+                  <textarea value={panel.findings} disabled={panel.locked} rows={7}
+                    onChange={(e) => edit(i, 'findings', e.target.value)}
+                    placeholder={tr('Describe what is seen, in the order you would dictate it.')}
+                    className="field mt-1 resize-y text-sm leading-relaxed" />
+                </Field>
+
+                <Field label={tr('Impression')}
+                  hint={tr('The conclusion. A referring doctor reads this first.')} span>
+                  <textarea value={panel.impression} disabled={panel.locked} rows={3}
+                    onChange={(e) => edit(i, 'impression', e.target.value)}
+                    placeholder={tr('e.g. No active pulmonary disease.')}
+                    className="field mt-1 resize-y text-sm leading-relaxed" />
+                </Field>
+
+                <input value={panel.notes} disabled={panel.locked}
+                  onChange={(e) => edit(i, 'notes', e.target.value)}
+                  placeholder={tr('Comment printed under the report')}
+                  className="field mt-3 text-2xs" />
+              </Card>
+            ))}
+          </div>
+        )}
+
+        <p className="mt-5 text-2xs text-muted">
+          {tr('Findings are enough to finish a report. Anything you type is kept if you go back.')}
+        </p>
       </div>
     </div>
   )

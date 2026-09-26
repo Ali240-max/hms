@@ -62,8 +62,15 @@ const RETIRED = ['pharmacy_admin']
 console.log(`\nroles in the database enum: ${serverEnum.join(', ')}\n`)
 check('the client type lists every role',
   serverEnum.filter((r) => !clientType.includes(r) && !RETIRED.includes(r)))
-check('every role has a sign-in cell',
-  serverEnum.filter((r) => !signIn.includes(r) && !SHARES_CELL[r]))
+/*
+ * The sign-in screen no longer lists roles.
+ *
+ * It used to show a button per department, which told anybody standing at an
+ * unattended counter exactly which departments exist and what each is called.
+ * A username already knows its own role, so the cells were removed and this
+ * check with them. What still matters is below: every role must land on a
+ * screen once it signs in.
+ */
 check('every role can be created in Admin',
   serverEnum.filter((r) => !adminOpts.includes(r) && !RETIRED.includes(r)))
 // admin is the bootstrap account and has its own setup path, so it needs no
