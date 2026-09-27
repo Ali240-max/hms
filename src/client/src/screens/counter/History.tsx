@@ -18,6 +18,18 @@ import { t as tr } from '../../lib/prefs'
  * again solves it without creating anything new. Nothing here writes: it finds
  * and it reprints.
  */
+/** The ranges anybody actually asks for. */
+const RANGES: [string, number][] = [
+  ['Today', 0], ['Last 7 days', 6], ['Last 30 days', 29], ['Last 90 days', 89]
+]
+
+/** A date this many days before today, as YYYY-MM-DD. */
+function shift(days: number) {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return d.toISOString().slice(0, 10)
+}
+
 export function CounterHistory({ me }: { me: SessionUser }) {
   const [kind, setKind] = useState('all')
   const [q, setQ] = useState('')
@@ -53,6 +65,27 @@ export function CounterHistory({ me }: { me: SessionUser }) {
       <Card title={tr('Bills and chits')}
         hint={tr('Find anything the counter has taken and print it again. Nothing new is created.')}>
         <ErrorNote>{err}</ErrorNote>
+
+        {/*
+          A row of ranges before the two date boxes.
+          Somebody looking for a chit lost this morning should not have to
+          think about dates at all, and "last 7 days" covers almost every case
+          that is not today.
+        */}
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {RANGES.map(([label, days]) => {
+            const f = shift(days)
+            const on = from === f && to === today()
+            return (
+              <button key={label} onClick={() => { setFrom(f); setTo(today()) }}
+                className={`rounded-xl px-3 py-1.5 text-2xs transition-colors ${
+                  on ? 'bg-brand text-white'
+                     : 'border-2 border-line bg-card text-body hover:bg-raised'}`}>
+                {tr(label)}
+              </button>
+            )
+          })}
+        </div>
 
         <div className="mb-3 flex flex-wrap items-end gap-2">
           <div className="relative min-w-56 flex-1">
@@ -154,6 +187,26 @@ export function CounterHistory({ me }: { me: SessionUser }) {
 export function PatientLabels({ patient, visitId, onClose }: {
   patient: any; visitId?: number | null; onClose: () => void
 }) {
+  /*
+   * The visit is looked up here rather than being required from the caller.
+   *
+   * It was passed in, and the search results do not carry it, so the ward
+   * label section simply did not appear for anyone found by searching — which
+   * is how most people are found. Asking for the patient's own visits is one
+   * request and always right.
+   */
+  const [visit, setVisit] = useState<number | null>(visitId ?? null)
+  const [noVisit, setNoVisit] = useState(false)
+  useEffect(() => {
+    if (visitId) { setVisit(visitId); return }
+    api.patientVisits(patient.id)
+      .then((vs: any[]) => {
+        if (vs.length) setVisit(vs[0].id)
+        else setNoVisit(true)
+      })
+      .catch(() => setNoVisit(true))
+  }, [patient.id, visitId])
+
   const [from, setFrom] = useState(1)
   const [diagnosis, setDiagnosis] = useState('')
   const [busy, setBusy] = useState(false)
@@ -204,7 +257,7 @@ export function PatientLabels({ patient, visitId, onClose }: {
         </button>
       </div>
 
-      {visitId && (
+      {visit != null && (
         <div className="mt-4 rounded-xl border-2 border-line p-3">
           <p className="text-sm font-medium text-heading">{tr('Ward labels')}</p>
           <p className="mt-0.5 text-2xs text-muted">
@@ -220,11 +273,19 @@ export function PatientLabels({ patient, visitId, onClose }: {
 
           <button disabled={busy}
             onClick={() => grab(
-              `/visits/${visitId}/ward-labels/pdf?diagnosis=${encodeURIComponent(diagnosis)}`,
+              `/visits/${visit}/ward-labels/pdf?diagnosis=${encodeURIComponent(diagnosis)}`,
               `${patient.mrn}-ward-labels.pdf`)}
             className="btn-primary mt-3 inline-flex items-center gap-1.5">
             <Tags size={14} /> {busy ? tr('Preparing…') : tr('Download ward labels')}
           </button>
+        </div>
+      )}
+
+      {noVisit && (
+        <div className="mt-4 rounded-xl border-2 border-line bg-raised p-3">
+          <p className="text-2xs text-muted">
+            {tr('Ward labels need a visit. Register this patient with a doctor or a test first, then come back.')}
+          </p>
         </div>
       )}
 

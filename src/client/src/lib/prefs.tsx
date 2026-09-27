@@ -1187,6 +1187,7 @@ const UR: Record<string, string> = {
   "Walk-in": "بغیر وقت",
   "Walk-in admissions and bedside medicines": "براہِ راست داخلے اور بستر پر دی گئی ادویات",
   "Ward labels": "وارڈ لیبل",
+  "Ward labels need a visit. Register this patient with a doctor or a test first, then come back.": "وارڈ لیبل کے لیے وزٹ درکار ہے۔ پہلے اس مریض کو ڈاکٹر یا ٹیسٹ کے ساتھ رجسٹر کریں، پھر واپس آئیں۔",
   "Warn when the shelf drops to this": "اس حد پر پہنچنے پر خبردار کریں",
   "We owe": "ہمارے ذمے",
   "Weight": "وزن",

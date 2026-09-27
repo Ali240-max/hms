@@ -23,10 +23,58 @@ export class PatientError extends Error {
   constructor(msg: string, public code: 'NOT_FOUND' | 'NO_NAME' | 'HAS_HISTORY') { super(msg) }
 }
 
-/** MRN-000123. Short enough to read aloud, long enough to last. */
-async function nextMrn(tx: any): Promise<string> {
-  const n = await nextCounter(tx, 'mrn')
-  return `MRN-${String(n).padStart(6, '0')}`
+/**
+ * SU17-26092026-04
+ *
+ * Initials, age, the date, and a counter for the day. Modelled on what the
+ * hospital already writes by hand: SU for Sami Ullah, 17 for the age,
+ * 26092026 for the day.
+ *
+ * The parts earn their place. The initials and age let a clerk holding a slip
+ * see at a glance whether it is the right patient before reading the number
+ * out. The date says when the record was opened, which is the question asked
+ * of an old file.
+ *
+ * None of that is unique on its own — two 17-year-olds called Sami Ullah
+ * registering on the same morning is not far-fetched in a busy OPD — so the
+ * last pair of digits is a per-day sequence. It is drawn from the same
+ * counters table every other document number uses, which means two counters
+ * registering at the same instant cannot produce the same one: the row is
+ * locked for the length of the transaction.
+ *
+ * A blank age gives 00, and a name with no usable letters gives XX, so the
+ * shape never changes and nothing has to handle a missing piece.
+ */
+async function nextMrn(tx: any, name: string, ageYears?: number | null): Promise<string> {
+  /*
+   * Always two letters.
+   *
+   * First letter of the first two words, or the first two letters of a single
+   * name: "Ayesha" gives AY, not A, so every MRN is the same width and a
+   * column of them lines up.
+   */
+  const words = name.replace(/[^\p{L}\s]/gu, ' ').trim().split(/\s+/).filter(Boolean)
+  const initials = (
+    words.length >= 2
+      ? words[0]![0]! + words[1]![0]!
+      : (words[0] ?? '').slice(0, 2).padEnd(2, 'X')
+  ).toUpperCase() || 'XX'
+
+  const age = ageYears != null && ageYears >= 0
+    ? String(Math.min(Math.floor(ageYears), 199)).padStart(2, '0')
+    : '00'
+
+  const now = new Date()
+  const day =
+    String(now.getDate()).padStart(2, '0') +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getFullYear())
+
+  // Per-day, so it stays short. Two digits is 99 registrations a day; past
+  // that it simply carries on into three rather than colliding.
+  const n = await nextCounter(tx, `mrn:${day}`)
+
+  return `${initials}${age}-${day}-${String(n).padStart(2, '0')}`
 }
 
 export type NewPatient = {
@@ -94,7 +142,7 @@ export async function registerPatient(input: NewPatient, staffId?: number) {
   void staffId
 
   return db.transaction(async (tx) => {
-    const mrn = await nextMrn(tx)
+    const mrn = await nextMrn(tx, input.name, input.ageYears ?? null)
     const [row] = await tx.insert(s.patients).values({
       mrn,
       name: input.name.trim(),

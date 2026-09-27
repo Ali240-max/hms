@@ -103,12 +103,11 @@ export function ChitSlip({ chit, lines, hospital, categoryLabel }: {
         )}
         {chit.doctor_name && <SlipRow k={tr('Referred by')} v={chit.doctor_name} />}
         {/*
-          Who raised it, separate from who took the money.
-          A chit queried at the department is queried with whoever wrote it,
-          and on a busy counter with two people that is not always the person
-          who later took the payment.
+          Called "Cashier" here and on the consultation bill, so a department
+          querying either slip is looking for the same word. It is whoever was
+          at the counter, which is the person to ask about it.
         */}
-        {chit.created_by && <SlipRow k={tr('Raised by')} v={chit.created_by} />}
+        {chit.created_by && <SlipRow k={tr('Cashier')} v={chit.created_by} />}
       </div>
 
       <Rule />

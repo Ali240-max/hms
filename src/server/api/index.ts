@@ -690,6 +690,20 @@ api.get('/lab/visits/:id/pdf', async (c) => {
  *
  * `from` starts part way down a sheet that has already had some peeled off.
  */
+/** This patient's visits, newest first. Used to pick one for ward labels. */
+api.get('/patients/:id/visits',
+  allow('admin', 'main_counter', 'receptionist', 'ipd_counter', 'doctor'), async (c) => {
+  const r = await db.execute<any>(sql`
+    SELECT v.id, v.visit_no, v.created_at, v.status,
+           COALESCE(st.display_name, '—') AS doctor_name
+    FROM visits v
+    LEFT JOIN doctors d ON d.id = v.doctor_id
+    LEFT JOIN staff st ON st.id = d.staff_id
+    WHERE v.patient_id = ${Number(c.req.param('id'))}
+    ORDER BY v.created_at DESC LIMIT 20`)
+  return c.json(r.rows)
+})
+
 api.get('/patients/:id/stickers/pdf',
   allow('admin', 'main_counter', 'receptionist', 'ipd_counter'), async (c) => {
   const pdf = await patientStickers(Number(c.req.param('id')), {

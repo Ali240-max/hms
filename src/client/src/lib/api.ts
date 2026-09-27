@@ -138,6 +138,7 @@ export const api = {
   patientHistory: (id: number) => req<any[]>(`/patients/${id}/history`),
 
   queue: (doctorId?: number) => req<any[]>(`/visits/queue${doctorId ? `?doctor=${doctorId}` : ''}`),
+  patientVisits: (id: number) => req<any[]>(`/patients/${id}/visits`),
   createVisit: (b: any) => req<any>('/visits', { method: 'POST', body: JSON.stringify(b) }),
   visit: (id: number) => req<any>(`/visits/${id}`),
   setVisitStatus: (id: number, status: string) =>

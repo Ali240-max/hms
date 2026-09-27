@@ -68,7 +68,9 @@ ok('the counter can still sign in', !!(await login('main-counter','1234')))
 console.log('\n— numbering starts again —')
 {
   const pt = (await q('/patients','mc',{method:'POST',body:JSON.stringify({ name:'After Wipe' })})).body
-  ok('the first patient is MRN-000001', pt.mrn === 'MRN-000001', pt.mrn)
+  // The MRN carries the date and a per-day sequence, so after a wipe the
+  // sequence restarts at 01 rather than the whole number being 000001.
+  ok('the first patient after a wipe ends in 01', /-01$/.test(pt.mrn), pt.mrn)
   const docs = (await q('/doctors','mc')).body
   const v = (await q('/visits','mc',{method:'POST',body:JSON.stringify({
     patientId: pt.id, doctorId: docs[0].id })})).body

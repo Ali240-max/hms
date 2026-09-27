@@ -96,8 +96,38 @@ console.log('\n— two tills at once cannot collide —')
     nos.length - new Set(nos).size + ' duplicates')
 }
 
-console.log('\n— an MRN is deliberately not dated —')
-ok('a patient keeps a plain lifelong number', /^MRN-\d{6}$/.test(pt.mrn), pt.mrn)
+console.log('\n— an MRN says who and when, and is still unique —')
+{
+  /*
+   * SU17-26092026-04: initials, age, the date, and a per-day sequence.
+   *
+   * The initials and age are there so a clerk holding a slip can tell whether
+   * it is the right patient before reading the number out. They are not
+   * unique on their own — two 17-year-olds with the same initials on one
+   * morning is ordinary in an OPD — which is what the last pair is for.
+   */
+  ok('it carries initials, age, date and a sequence',
+    /^[A-Z]{2}\d{2}-\d{8}-\d{2,}$/.test(pt.mrn), pt.mrn)
+
+  const day = new Date()
+  const stamp = String(day.getDate()).padStart(2, '0') +
+    String(day.getMonth() + 1).padStart(2, '0') + String(day.getFullYear())
+  ok('the date is today', pt.mrn.split('-')[1] === stamp, pt.mrn)
+
+  const twin = (await q('/patients','mc',{method:'POST',body:JSON.stringify({
+    name: 'Numbering Twin', ageYears: 30 })})).body
+  const twin2 = (await q('/patients','mc',{method:'POST',body:JSON.stringify({
+    name: 'Numbering Twin', ageYears: 30 })})).body
+  ok('two identical patients on one day get different numbers',
+    twin.mrn !== twin2.mrn, `${twin.mrn} vs ${twin2.mrn}`)
+  ok('and they differ only in the sequence',
+    twin.mrn.split('-').slice(0,2).join('-') === twin2.mrn.split('-').slice(0,2).join('-'))
+
+  const single = (await q('/patients','mc',{method:'POST',body:JSON.stringify({
+    name: 'Ayesha', ageYears: null })})).body
+  ok('a one-word name still gives two letters and an age of 00',
+    /^AY00-/.test(single.mrn), single.mrn)
+}
 
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail?1:0)

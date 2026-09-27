@@ -1,21 +1,18 @@
-12 files. No migration, no new dependencies.
+10 files. No migration, no new dependencies.
 
 New:
-  src/server/services/admin-perms.ts          what each administrator may change
-  src/client/src/screens/admin/AdminAccess.tsx  the checklist screen
-  verify-admin-access.mjs                     26 assertions on the above
+  DEPLOY-WINDOWS-OFFLINE.md      the whole install, in order, with NSSM
 
 Changed:
-  src/server/api/index.ts          enforces the permissions; label route tickets
-  src/server/services/patients.ts  returns last_visit_id for ward labels
-  src/client/src/components/Slip.tsx        SlipTopBar, token boxed on the right
-  src/client/src/components/Chit.tsx        uses it
-  src/client/src/components/CounterBill.tsx uses it, token on consultations too
-  src/client/src/screens/Admin.tsx          Access tab, rail gated by permission
-  src/client/src/screens/MainCounter.tsx    label button on directory rows
+  scripts/bundle.mjs             builds first; refuses a stale build; VERSION.txt
+  src/server/services/patients.ts  new MRN format; latest visit id on rows
+  src/server/api/index.ts        GET /patients/:id/visits
+  src/client/src/screens/counter/History.tsx  ward labels always offered; date ranges
+  src/client/src/components/Chit.tsx          "Cashier" on both slips
   src/client/src/lib/api.ts, lib/prefs.tsx
+  verify-numbering.mjs, verify-wipe.mjs       MRN assertions
 
 Nothing to delete.
 
   npm run typecheck
-  npm run verify:admin      (needs the server running)
+  npm run bundle          <- now builds by itself
