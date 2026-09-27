@@ -65,7 +65,7 @@ export async function verifyPassword(pw: string, stored: string) {
 export class AuthError extends Error {
   constructor(
     msg: string,
-    public code: 'BAD_CREDENTIALS' | 'WEAK_PASSWORD' | 'DUPLICATE' | 'SETUP_DONE' | 'LAST_ADMIN'
+    public code: 'BAD_CREDENTIALS' | 'WEAK_PASSWORD' | 'DUPLICATE' | 'SETUP_DONE' | 'LAST_ADMIN' | 'HAS_HISTORY'
   ) { super(msg) }
 }
 
@@ -314,4 +314,103 @@ export async function restoreStaff(staffId: number) {
     await tx.update(s.staff).set({ isActive: true }).where(eq(s.staff.id, staffId))
     await tx.update(s.doctors).set({ isActive: true }).where(eq(s.doctors.staffId, staffId))
   })
+}
+
+/**
+ * Change an existing member of staff.
+ *
+ * Accounts could only be created and archived before, so a misspelled name or
+ * a wrong department meant making a second account and retiring the first,
+ * which leaves two rows for one person and splits everything attributed to
+ * them.
+ *
+ * The username is deliberately not editable. It appears on printed slips and
+ * in the stock ledger as plain text, and changing it would leave those
+ * records pointing at a name that no longer exists.
+ */
+export async function updateStaff(staffId: number, input: {
+  displayName?: string
+  role?: string
+  departmentId?: number | null
+  phone?: string | null
+}) {
+  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
+  if (!row) throw new AuthError('No such user', 'BAD_CREDENTIALS')
+
+  /*
+   * Moving the last administrator to another role locks everybody out just as
+   * surely as deleting it, so it is refused the same way.
+   */
+  if (row.role === 'admin' && input.role && input.role !== 'admin') {
+    const r = await db.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM staff
+      WHERE is_active AND role = 'admin' AND id <> ${staffId}`)
+    if (Number((r.rows as any[])[0].n) === 0) {
+      throw new AuthError(
+        'This is the only administrator. Make somebody else one first.', 'LAST_ADMIN')
+    }
+  }
+
+  await db.execute(sql`
+    UPDATE staff SET
+      display_name  = COALESCE(${input.displayName ?? null}, display_name),
+      role          = COALESCE(${input.role ?? null}::staff_role, role),
+      department_id = ${input.departmentId === undefined
+                          ? sql`department_id` : input.departmentId},
+      phone         = ${input.phone === undefined ? sql`phone` : input.phone}
+    WHERE id = ${staffId}`)
+
+  // A changed role means different permissions, so any open session for them
+  // has to be re-read rather than left holding the old one.
+  if (input.role && input.role !== row.role) await dropSessionsFor(staffId)
+
+  const [updated] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
+  return updated
+}
+
+/**
+ * Remove an account outright.
+ *
+ * Refused once the person has done anything the hospital keeps: a bill they
+ * took, a result they reported, a delivery they received. Those records name
+ * them, and deleting the account would leave a name in a printed slip with
+ * nothing behind it. Archiving is the answer in that case, which is what the
+ * error says.
+ */
+export async function deleteStaff(staffId: number) {
+  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
+  if (!row) throw new AuthError('No such user', 'BAD_CREDENTIALS')
+
+  if (row.role === 'admin') {
+    const r = await db.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM staff
+      WHERE is_active AND role = 'admin' AND id <> ${staffId}`)
+    if (Number((r.rows as any[])[0].n) === 0) {
+      throw new AuthError(
+        'This is the only administrator. Create another one first.', 'LAST_ADMIN')
+    }
+  }
+
+  const used = (await db.execute<any>(sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM counter_bills WHERE cashier_name = ${row.displayName}) AS bills,
+      (SELECT COUNT(*)::int FROM visits WHERE registered_by = ${staffId})               AS visits,
+      (SELECT COUNT(*)::int FROM lab_orders
+        WHERE resulted_by = ${row.displayName} OR collected_by = ${row.displayName})    AS lab,
+      (SELECT COUNT(*)::int FROM doctors WHERE staff_id = ${staffId})                   AS doctor
+  `)).rows[0] as any
+
+  const total = Number(used.bills) + Number(used.visits) + Number(used.lab)
+  if (total > 0 || Number(used.doctor) > 0) {
+    throw new AuthError(
+      Number(used.doctor) > 0
+        ? 'This is a doctor with patient records. Archive the account instead of deleting it.'
+        : `This account has ${total} records against it. Archive it instead of deleting it.`,
+      'HAS_HISTORY')
+  }
+
+  await dropSessionsFor(staffId)
+  await db.execute(sql`DELETE FROM staff_permissions WHERE staff_id = ${staffId}`)
+  await db.execute(sql`DELETE FROM staff WHERE id = ${staffId}`)
+  return { deleted: true }
 }

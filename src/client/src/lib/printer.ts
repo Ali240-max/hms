@@ -69,11 +69,46 @@ export function applyPaper(paper: PaperWidth) {
   root.style.setProperty('--print-width', PAPER_WIDTH[paper])
 }
 
+/**
+ * Copy what is to be printed into the print host, print, then clear it.
+ *
+ * The browser prints the whole document, so the document has to *be* the slip.
+ * Hiding the application with `visibility: hidden` left every hidden element
+ * occupying its height, and a thermal printer on a continuous roll fed out
+ * that entire height as blank paper with the slip at the very top. One press
+ * of Print wasted most of a roll.
+ *
+ * Copying the node means the on-screen preview is untouched and the printed
+ * document contains nothing else at all.
+ */
+function withPrintHost(run: () => void) {
+  const host = document.getElementById('print-root')
+  const source = document.querySelector('.print-area')
+
+  if (!host || !source) {
+    // Nothing identified as printable. Printing the application by accident is
+    // exactly the failure this function exists to prevent.
+    console.warn('Nothing to print: no .print-area on the page')
+    return
+  }
+
+  host.replaceChildren(source.cloneNode(true))
+  try {
+    run()
+  } finally {
+    // Cleared straight away. A slip left here would be printed again by the
+    // next unrelated Ctrl+P anywhere in the application.
+    host.replaceChildren()
+  }
+}
+
 /** Print, honouring the copy count. */
 export function printNow(module: string) {
   const s = loadPrinter(module)
   applyPaper(s.paper)
-  for (let i = 0; i < Math.max(1, s.copies); i++) window.print()
+  withPrintHost(() => {
+    for (let i = 0; i < Math.max(1, s.copies); i++) window.print()
+  })
 }
 
 /**
@@ -103,7 +138,7 @@ export function printSheet() {
   }
   window.addEventListener('afterprint', restore)
 
-  window.print()
+  withPrintHost(() => window.print())
   // Safari never fires afterprint from a programmatic print, so put the roll
   // settings back regardless once the dialog has had time to open.
   setTimeout(restore, 1500)

@@ -7,6 +7,7 @@ import * as s from '../db/schema'
 import {
   needsSetup, createFirstAdmin, login, logout, sessionFor, sessionForUser, listStaff,
   createStaff, setStaffPassword, archiveStaff, restoreStaff, updateDoctor,
+  updateStaff, deleteStaff,
   AuthError, type SessionUser, type Role
 } from '../services/auth'
 import {
@@ -32,7 +33,7 @@ import { wipePreview, wipeTradingData, WipeError } from '../services/wipe'
 import { patientStickers, wardLabels } from '../services/labels-pdf'
 import {
   ADMIN_PERMISSIONS, adminPermissionsFor, saveAdminPermissions, adminAccounts,
-  hasAdminPermission
+  hasAdminPermission, guardRootAccount
 } from '../services/admin-perms'
 import { extraBackupDir, setExtraBackupDir, checkExtraDir, backupDir } from '../services/backup'
 import {
@@ -258,6 +259,28 @@ api.post('/departments', adminCan('admin.departments'), async (c) => {
   return c.json(row, 201)
 })
 
+api.delete('/departments/:id', adminCan('admin.departments'), async (c) => {
+  const id = Number(c.req.param('id'))
+  /*
+   * Refused while anything points at it. A department deleted out from under a
+   * doctor or a visit leaves rows referring to something that is gone, and the
+   * screens that join on it start showing blanks.
+   */
+  const used = ((await db.execute<any>(sql`
+    SELECT (SELECT COUNT(*)::int FROM staff WHERE department_id = ${id})  AS staff,
+           (SELECT COUNT(*)::int FROM visits WHERE department_id = ${id}) AS visits
+  `)).rows as any[])[0]
+  if (Number(used.staff) + Number(used.visits) > 0) {
+    return c.json({
+      error: `${used.staff} staff and ${used.visits} visits still use this department. ` +
+        'Move them first, or switch it off instead of deleting it.',
+      code: 'IN_USE'
+    }, 409)
+  }
+  await db.execute(sql`DELETE FROM departments WHERE id = ${id}`)
+  return c.json({ deleted: true })
+})
+
 api.patch('/departments/:id', adminCan('admin.departments'), async (c) => {
   const b = z.object({
     name: z.string().optional(), code: z.string().optional(), isActive: z.boolean().optional()
@@ -292,12 +315,45 @@ api.post('/staff', adminCan('admin.staff.edit'), async (c) => {
 })
 
 api.post('/staff/:id/password', adminCan('admin.staff.password'), async (c) => {
+  try {
+    await guardRootAccount(Number(c.req.param('id')), me(c).id)
+  } catch (e: any) {
+    return c.json({ error: e.message, code: 'NOT_ALLOWED' }, 403)
+  }
   const b = z.object({ password: z.string() }).parse(await c.req.json())
   await setStaffPassword(Number(c.req.param('id')), b.password)
   return c.json({ ok: true })
 })
 
+api.patch('/staff/:id', adminCan('admin.staff.edit'), async (c) => {
+  const id = Number(c.req.param('id'))
+  try { await guardRootAccount(id, me(c).id) }
+  catch (e: any) { return c.json({ error: e.message, code: 'NOT_ALLOWED' }, 403) }
+
+  const b = z.object({
+    displayName: z.string().min(1).optional(),
+    role: z.enum(['admin', 'main_counter', 'receptionist', 'ipd_counter',
+      'store_keeper', 'lab_tech', 'radiology', 'doctor',
+      'pharmacist', 'pharmacy_admin', 'reports']).optional(),
+    departmentId: z.number().int().nullable().optional(),
+    phone: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  return c.json(await updateStaff(id, b))
+})
+
+api.delete('/staff/:id', adminCan('admin.staff.edit'), async (c) => {
+  const id = Number(c.req.param('id'))
+  try { await guardRootAccount(id, me(c).id) }
+  catch (e: any) { return c.json({ error: e.message, code: 'NOT_ALLOWED' }, 403) }
+  return c.json(await deleteStaff(id))
+})
+
 api.post('/staff/:id/archive', adminCan('admin.staff.edit'), async (c) => {
+  try {
+    await guardRootAccount(Number(c.req.param('id')), me(c).id)
+  } catch (e: any) {
+    return c.json({ error: e.message, code: 'NOT_ALLOWED' }, 403)
+  }
   await archiveStaff(Number(c.req.param('id')))
   return c.json({ ok: true })
 })

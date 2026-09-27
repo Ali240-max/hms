@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { DUR, EASE } from '../lib/motion'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, rs, toPaisa, bpToPct, pctToBp, today, type SessionUser , newId} from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Tabs, Th } from '../components/ui'
 import { useT } from '../lib/prefs'
@@ -185,6 +185,8 @@ function StaffTab({ me }: { me: SessionUser }) {
   const [rows, setRows] = useState<any[]>([])
   const [adding, setAdding] = useState(false)
   const [resetting, setResetting] = useState<any | null>(null)
+  const [editing, setEditing] = useState<any | null>(null)
+  const [deleting, setDeleting] = useState<any | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const load = useCallback(() => { api.staff().then(setRows).catch((e) => setErr(e.message)) }, [])
@@ -250,14 +252,22 @@ function StaffTab({ me }: { me: SessionUser }) {
                   {u.doctor_id ? `${bpToPct(u.consultation_share_bp)}%` : '—'}
                 </td>
                 <td className="px-3 py-2 text-right">
+                  <button onClick={() => setEditing(u)} className="btn-ghost mr-1 px-2 py-1 text-2xs">
+                    {tr('Edit')}
+                  </button>
                   <button onClick={() => setResetting(u)} className="btn-ghost mr-1 px-2 py-1 text-2xs">
                     {tr('Password')}
                   </button>
+                  {/*
+                    Delete outright. Refused by the server once the person has
+                    taken a bill or reported a result, because those records
+                    carry their name: the answer there is to archive, and the
+                    message says so.
+                  */}
                   <button disabled={u.id === me.id}
-                    onClick={() => (u.is_active ? api.archiveStaff(u.id) : api.restoreStaff(u.id))
-                      .then(load).catch((e) => setErr(e.message))}
-                    className="btn-ghost px-2 py-1 text-2xs">
-                    {u.is_active ? 'Retire' : 'Restore'}
+                    onClick={() => setDeleting(u)}
+                    className="btn-ghost px-2 py-1 text-2xs text-bad">
+                    {tr('Delete')}
                   </button>
                 </td>
               </tr>
@@ -274,6 +284,14 @@ function StaffTab({ me }: { me: SessionUser }) {
       {resetting && (
         <ResetPassword user={resetting} onClose={() => setResetting(null)}
           onDone={() => { setResetting(null); load() }} />
+      )}
+      {editing && (
+        <EditStaff user={editing} onClose={() => setEditing(null)}
+          onDone={() => { setEditing(null); load() }} />
+      )}
+      {deleting && (
+        <DeleteStaff user={deleting} onClose={() => setDeleting(null)}
+          onDone={() => { setDeleting(null); load() }} />
       )}
     </Card>
   )
@@ -798,6 +816,8 @@ function SharesTab() {
 /* ---------------------------------------------------------- departments */
 
 function DepartmentsTab() {
+  const [editing, setEditing] = useState<number | null>(null)
+  const draft = useRef<{ name?: string; code?: string }>({})
   const [rows, setRows] = useState<any[]>([])
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
@@ -829,12 +849,48 @@ function DepartmentsTab() {
 
       <ul className="mt-4 divide-y divide-divide">
         {rows.map((d) => (
-          <li key={d.id} className="flex items-center justify-between py-2">
-            <span>
-              <span className="text-sm text-heading">{d.name}</span>
-              <Badge tone="primary">{d.code}</Badge>
-            </span>
-            <span className="num text-2xs text-muted">{d.staff_count} staff</span>
+          <li key={d.id} className="flex items-center justify-between gap-2 py-2">
+            {editing === d.id ? (
+              <>
+                <input defaultValue={d.name} autoFocus
+                  onChange={(e) => (draft.current.name = e.target.value)}
+                  className="field flex-1 py-1 text-sm" />
+                <input defaultValue={d.code}
+                  onChange={(e) => (draft.current.code = e.target.value)}
+                  className="field num w-24 py-1 text-sm" />
+                <button className="btn-primary px-2 py-1 text-2xs"
+                  onClick={() => api.updateDepartment(d.id, {
+                    name: draft.current.name ?? d.name,
+                    code: draft.current.code ?? d.code
+                  }).then(() => { setEditing(null); load() })
+                    .catch((e: any) => setErr(e.message))}>
+                  {tr('Save')}
+                </button>
+                <button onClick={() => setEditing(null)} className="btn-ghost px-2 py-1 text-2xs">
+                  {tr('Cancel')}
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="min-w-0 flex-1">
+                  <span className="text-sm text-heading">{d.name}</span>
+                  <Badge tone="primary">{d.code}</Badge>
+                </span>
+                <span className="num text-2xs text-muted">{d.staff_count} staff</span>
+                <button
+                  onClick={() => { draft.current = {}; setEditing(d.id) }}
+                  className="btn-ghost px-2 py-1 text-2xs">{tr('Edit')}</button>
+                {/*
+                  Refused by the server while any staff or visit still points
+                  at it, because those rows would otherwise refer to something
+                  that no longer exists.
+                */}
+                <button
+                  onClick={() => api.deleteDepartment(d.id).then(load)
+                    .catch((e: any) => setErr(e.message))}
+                  className="btn-ghost px-2 py-1 text-2xs text-bad">{tr('Delete')}</button>
+              </>
+            )}
           </li>
         ))}
       </ul>
@@ -1280,6 +1336,142 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
           ))}
         </select>
       </div>
+    </Modal>
+  )
+}
+
+/* ------------------------------------------------------------ edit staff */
+
+/**
+ * Changing somebody's details after the account exists.
+ *
+ * Without this, a misspelled name meant creating a second account and retiring
+ * the first, which leaves two rows for one person and splits everything
+ * recorded against them.
+ *
+ * The username is not editable. It is written into printed slips and into the
+ * stock ledger as plain text, and changing it would leave those records
+ * pointing at a name that no longer exists.
+ */
+function EditStaff({ user, onClose, onDone }: {
+  user: any; onClose: () => void; onDone: () => void
+}) {
+  const [f, setF] = useState({
+    displayName: user.display_name ?? '',
+    role: user.role,
+    departmentId: user.department_id ? String(user.department_id) : '',
+    phone: user.phone ?? ''
+  })
+  const [depts, setDepts] = useState<any[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => { api.departments().then(setDepts).catch(() => {}) }, [])
+
+  return (
+    <Modal title={`${tr('Edit')} ${user.username}`} onClose={onClose}
+      footer={<>
+        <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
+        <button disabled={busy || !f.displayName.trim()} className="btn-primary"
+          onClick={async () => {
+            setBusy(true); setErr(null)
+            try {
+              await api.updateStaff(user.id, {
+                displayName: f.displayName.trim(),
+                role: f.role,
+                departmentId: f.departmentId ? Number(f.departmentId) : null,
+                phone: f.phone.trim() || null
+              })
+              onDone()
+            } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+          }}>
+          {busy ? tr('Saving…') : tr('Save')}
+        </button>
+      </>}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label={tr('Username')} hint={tr('Cannot change — it is printed on past slips')}>
+          <input value={user.username} disabled className="field mt-1 num opacity-60" />
+        </Field>
+        <Field label={tr('Name')} hint={tr('Printed on everything they do')}>
+          <input value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })}
+            className="field mt-1" />
+        </Field>
+        <Field label={tr('Role')}>
+          <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}
+            className="field mt-1">
+            <option value="main_counter">{tr('Main counter')}</option>
+            <option value="receptionist">{tr('OPD counter')}</option>
+            <option value="ipd_counter">{tr('Emergency')}</option>
+            <option value="doctor">{tr('Doctor')}</option>
+            <option value="lab_tech">{tr('Laboratory')}</option>
+            <option value="radiology">{tr('Radiology')}</option>
+            <option value="store_keeper">{tr('Stores')}</option>
+            <option value="pharmacist">{tr('Pharmacy')}</option>
+            <option value="reports">{tr('Reports')}</option>
+            <option value="admin">{tr('Administration')}</option>
+          </select>
+        </Field>
+        <Field label={tr('Department')}>
+          <select value={f.departmentId}
+            onChange={(e) => setF({ ...f, departmentId: e.target.value })}
+            className="field mt-1">
+            <option value="">{tr('None')}</option>
+            {depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+        <Field label={tr('Phone')} span>
+          <input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })}
+            className="field mt-1 num" />
+        </Field>
+      </div>
+      <div className="mt-2"><ErrorNote>{err}</ErrorNote></div>
+    </Modal>
+  )
+}
+
+/**
+ * Deleting an account.
+ *
+ * The server refuses once the person has taken a bill, registered a patient or
+ * reported a result, because those records carry their name and deleting the
+ * account would leave a name on a printed slip with nothing behind it. This
+ * dialog simply passes the refusal on, which reads better than a bare error.
+ */
+function DeleteStaff({ user, onClose, onDone }: {
+  user: any; onClose: () => void; onDone: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  return (
+    <Modal title={`${tr('Delete')} ${user.display_name}?`} onClose={onClose}
+      footer={<>
+        <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
+        <button disabled={busy}
+          className="rounded-xl bg-bad px-4 py-2 text-sm font-medium text-white
+                     transition-opacity hover:opacity-90 disabled:opacity-40"
+          onClick={async () => {
+            setBusy(true); setErr(null)
+            try { await api.deleteStaff(user.id); onDone() }
+            catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+          }}>
+          {busy ? tr('Deleting…') : tr('Yes, delete')}
+        </button>
+      </>}>
+      <p className="text-sm text-body">
+        {tr('This removes the account completely. They will not be able to sign in.')}
+      </p>
+      <p className="mt-2 text-2xs text-muted">
+        {tr('If they have already taken a bill or reported a result, this is refused — those records carry their name. Archive the account instead.')}
+      </p>
+      {user.is_active && (
+        <button
+          onClick={() => api.archiveStaff(user.id).then(onDone).catch((e: any) => setErr(e.message))}
+          className="btn-ghost mt-3 text-2xs">
+          {tr('Archive instead')}
+        </button>
+      )}
+      <div className="mt-2"><ErrorNote>{err}</ErrorNote></div>
     </Modal>
   )
 }

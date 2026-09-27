@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { Modal, ErrorNote } from './ui'
-import { loadPrinter, applyPaper } from '../lib/printer'
+import { loadPrinter, applyPaper, printNow } from '../lib/printer'
 import { t as tr } from '../lib/prefs'
 
 /**
@@ -163,7 +163,7 @@ export function LabelPreview({ saleId, visitId, onClose }: {
     <Modal title={tr('Medicine labels')} wide onClose={onClose}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Close')}</button>
-        <button onClick={() => window.print()} disabled={!labels?.length} className="btn-primary">
+        <button onClick={() => printNow('labels')} disabled={!labels?.length} className="btn-primary">
           {tr('Print labels')}
         </button>
       </>}>

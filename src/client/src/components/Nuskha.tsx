@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { Modal, ErrorNote } from './ui'
 import { t as tr } from '../lib/prefs'
+import { printNow } from '../lib/printer'
 
 /**
  * The prescription slip.
@@ -61,7 +62,7 @@ export function NuskhaPreview({ visitId, draft, onClose }: {
     <Modal title={tr('Prescription')} wide onClose={onClose}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Close')}</button>
-        <button onClick={() => window.print()} disabled={!data} className="btn-primary">
+        <button onClick={() => printNow('nuskha')} disabled={!data} className="btn-primary">
           {tr('Print')}
         </button>
       </>}>

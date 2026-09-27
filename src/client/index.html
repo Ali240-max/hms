@@ -7,6 +7,17 @@
   </head>
   <body>
     <div id="root"></div>
+    <!--
+      Where a slip is copied to just before printing.
+
+      Printing used to hide the application with `visibility: hidden`, which
+      leaves every hidden element occupying its full height. With a page height
+      of `auto` on a continuous roll, the printer fed out the entire height of
+      the application as blank paper with the slip at the very top. Copying the
+      slip here and hiding #root with `display: none` means the printed
+      document is the slip and nothing else.
+    -->
+    <div id="print-root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

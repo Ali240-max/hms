@@ -93,7 +93,7 @@ export function CounterBilling({ me, target, onDone, onCancel }: {
   if (done) {
     const isConsult = done.bill.kind === 'consultation'
     return (
-      <div className="flex h-full items-center justify-center p-6">
+      <div className="flex h-full flex-wrap items-start justify-center gap-5 overflow-auto p-6">
         <div className="panel w-full max-w-md p-6 text-center">
           <p className="text-2xs uppercase tracking-wide text-muted">{tr('Bill complete')}</p>
           <p className="num mt-1 text-4xl font-semibold text-primary">
@@ -120,18 +120,22 @@ export function CounterBilling({ me, target, onDone, onCancel }: {
             Printing a separate payment receipt as well would give them two
             pieces of paper where one does the job.
           */}
-          <button onClick={() => setPreview(done.bill.id)} className="btn-ghost mt-5 w-full">
-            {isConsult ? tr('Print receipt') : tr('Print chit')}
-          </button>
-          <button onClick={() => { setDone(null); onDone() }} className="btn-primary mt-2 w-full">
+          <button onClick={() => { setDone(null); onDone() }} className="btn-primary mt-5 w-full">
             {tr('Next patient')}
           </button>
         </div>
 
-        {preview && (isConsult
-          ? <CounterBillPreview billId={preview} onClose={() => setPreview(null)} />
-          : <ChitPreview chitId={done.bill.chit_id} onClose={() => setPreview(null)} />
-        )}
+        {/*
+          The slip itself, beside the confirmation, with its own print button.
+          Pressing Print used to open an empty dialog first and then the slip,
+          which meant nobody saw what was about to come out of the printer
+          until it already had.
+        */}
+        <div className="w-full max-w-sm">
+          {isConsult
+            ? <CounterBillPreview billId={done.bill.id} inline />
+            : <ChitPreview chitId={done.bill.chit_id} inline />}
+        </div>
       </div>
     )
   }

@@ -117,6 +117,12 @@ export const api = {
   createDepartment: (b: any) => req<any>('/departments', { method: 'POST', body: JSON.stringify(b) }),
 
   staff: () => req<any[]>('/staff'),
+  updateStaff: (id: number, b: any) =>
+    req<any>(`/staff/${id}`, { method: 'PATCH', body: JSON.stringify(b) }),
+  deleteStaff: (id: number) => req<any>(`/staff/${id}`, { method: 'DELETE' }),
+  updateDepartment: (id: number, b: any) =>
+    req<any>(`/departments/${id}`, { method: 'PATCH', body: JSON.stringify(b) }),
+  deleteDepartment: (id: number) => req<any>(`/departments/${id}`, { method: 'DELETE' }),
   createStaff: (b: any) => req<any>('/staff', { method: 'POST', body: JSON.stringify(b) }),
   setStaffPassword: (id: number, password: string) =>
     req<any>(`/staff/${id}/password`, { method: 'POST', body: JSON.stringify({ password }) }),

@@ -284,64 +284,68 @@ html.lang-ur .num { @apply font-sans; }
  * happens to own, which is the only portable option here.
  */
 @media print {
+  /*
+   * Only the copy in #print-root is printed.
+   *
+   * The application is removed from the page entirely rather than made
+   * invisible. `visibility: hidden` keeps an element's box, so with a page
+   * height of `auto` a thermal printer fed out the whole height of the
+   * application as blank roll with the slip at the top. `display: none`
+   * collapses it, so the document is exactly as tall as the slip.
+   */
+  #root { display: none !important; }
+  #print-root { display: block !important; }
+
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
   /* Roll printers are fed a page exactly as wide as the paper. */
   @page { size: var(--print-paper, 80mm) auto; margin: 0; }
 
-  body * { visibility: hidden !important; }
-  .print-area, .print-area * { visibility: visible !important; }
-  .print-area {
-    position: absolute !important;
-    left: 0 !important; top: 0 !important;
+  .no-print { display: none !important; }
+
+  #print-root .print-area {
+    position: static !important;
     width: var(--print-width, 72mm) !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: visible !important;
     margin: 0 !important;
     border: 0 !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
     /* Thermal paper is white and the head only prints black; forcing both
        stops a dark-mode screen producing a grey, half-legible slip. */
     background: #fff !important;
     color: #000 !important;
   }
-  .print-area * { background: transparent !important; color: #000 !important; }
-  .no-print { display: none !important; }
+  #print-root .print-area * {
+    background: transparent !important;
+    color: #000 !important;
+    overflow: visible !important;
+    max-height: none !important;
+  }
 
   /*
-   * A report is an A4 document, not a till slip.
-   *
-   * Everything printable shared one rule sized to the receipt roll, so a
-   * report came out 72mm wide with its right-hand columns sliced off. Paper
-   * width belongs to the kind of document, not to the printer someone last
-   * configured.
+   * A report is an A4 document, not a till slip. Paper width belongs to the
+   * kind of document, not to whichever printer was last configured.
    */
-  .print-sheet {
-    position: static !important;
+  #print-root .print-sheet {
     width: auto !important;
-    max-width: none !important;
-    max-height: none !important;
-    overflow: visible !important;
-    padding: 0 !important;
     font-size: 9.5pt !important;
   }
-  /* The scroll box on screen must not clip the printed copy. */
-  .print-sheet, .print-sheet * {
-    overflow: visible !important;
-    max-height: none !important;
-  }
-  .print-sheet table { width: 100% !important; table-layout: auto !important; }
-  .print-sheet thead { display: table-header-group; }
-  .print-sheet tr { break-inside: avoid; page-break-inside: avoid; }
+  #print-root .print-sheet table { width: 100% !important; table-layout: auto !important; }
+  #print-root .print-sheet thead { display: table-header-group; }
+  #print-root .print-sheet tr { break-inside: avoid; page-break-inside: avoid; }
 
-  /* A prescription goes on A5, not on a till roll. */
-  .print-area:has(.nuskha), .print-area.nuskha { width: 148mm !important; }
-
-  /*
-   * Labels print as a run of fixed-size stickers rather than one long slip,
-   * so they get their own page box. Sized to the die-cut, not to the content:
-   * a label scaled by the browser lands off the edge of the sticker.
-   */
-  .print-area:has(.label-sticker) { width: 50mm !important; }
-  .label-sticker {
-    break-inside: avoid;
-    page-break-inside: avoid;
-    border: 0 !important;
+  /* A prescription goes on A5, and a sticker on its own die-cut sheet. */
+  #print-root .print-area:has(.nuskha), #print-root .print-area.nuskha {
+    width: 148mm !important;
   }
+  #print-root .print-area:has(.label-sticker) { width: 50mm !important; }
 }

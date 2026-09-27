@@ -28,11 +28,12 @@ tok.root = await login('admin', 'admin-demo-1')
 
 console.log('\n— the catalogue —')
 let r = await q('/admin/permissions', 'root')
+const r0 = r.body
 ok('there is a list of named powers', r.status === 200 && r.body.length >= 12, `${r.body?.length}`)
 const guarded = r.body.filter((p) => p.guarded).map((p) => p.key)
 ok('the dangerous ones are marked as granted deliberately',
-  ['admin.wipe', 'admin.services.price', 'admin.shares', 'admin.access']
-    .every((k) => guarded.includes(k)), guarded.join(','))
+  ['admin.wipe', 'admin.services.price', 'admin.shares', 'admin.access',
+   'admin.staff.password'].every((k) => guarded.includes(k)), guarded.join(','))
 
 console.log('\n— the first administrator cannot be cut down —')
 r = await q('/admin/permissions/me', 'root')
@@ -111,6 +112,42 @@ ok('editing its own permissions is refused', r.status === 403, `got ${r.status}`
 r = await q('/admin/permissions/me', 'sub')
 ok('and it did not gain the power', !r.body.allowed.includes('admin.wipe'),
   r.body.allowed?.join(','))
+
+console.log('\n— the first administrator account is untouchable —')
+{
+  /*
+   * Explicitly, regardless of permissions. A second administrator who could
+   * reset the root password could take the hospital's system away from the
+   * hospital. Granting every power does not grant this one.
+   */
+  await q(`/admin/permissions/${sub.id}`, 'root', {
+    method: 'PUT',
+    body: JSON.stringify({ allowed: r0.map((p) => p.key) })
+  })
+  const full = await q('/admin/permissions/me', 'sub')
+  ok('the second admin now holds everything grantable', full.body.allowed.length >= 12)
+
+  r = await q(`/staff/${root.id}/password`, 'sub', {
+    method: 'POST', body: JSON.stringify({ password: 'taken-over-1' })
+  })
+  ok('it still cannot reset the root password', r.status === 403, `got ${r.status}`)
+  r = await q(`/staff/${root.id}/archive`, 'sub', { method: 'POST' })
+  ok('nor archive the root account', r.status === 403, `got ${r.status}`)
+  r = await q(`/staff/${root.id}`, 'sub', { method: 'DELETE' })
+  ok('nor delete it', r.status === 403, `got ${r.status}`)
+
+  // And resetting anybody else's password is a guarded power, not a default.
+  const fresh = (await q(`/admin/permissions/${sub.id}`, 'root')).body
+  await q(`/admin/permissions/${sub.id}`, 'root', {
+    method: 'PUT',
+    body: JSON.stringify({ allowed: fresh.allowed.filter((k) => k !== 'admin.staff.password') })
+  })
+  const victim = (await q('/staff', 'root')).body.find((s) => s.role !== 'admin')
+  r = await q(`/staff/${victim.id}/password`, 'sub', {
+    method: 'POST', body: JSON.stringify({ password: 'should-fail-1' })
+  })
+  ok('without the permission it cannot reset anyone', r.status === 403, `got ${r.status}`)
+}
 
 console.log('\n— a non-administrator holds none of this —')
 tok.mc = await login('main-counter', '1234')

@@ -6,7 +6,12 @@ import { loadPrinter, printNow, applyPaper } from '../lib/printer'
 import { t as tr } from '../lib/prefs'
 
 /** A main-counter invoice, on the same roll as everything else. */
-export function CounterBillPreview({ billId, onClose }: { billId: number; onClose: () => void }) {
+export function CounterBillPreview({ billId, onClose, inline = false }: {
+  billId: number
+  onClose?: () => void
+  /** In the page rather than a dialog, so the slip is seen before printing. */
+  inline?: boolean
+}) {
   const [data, setData] = useState<any>(null)
   const [err, setErr] = useState<string | null>(null)
   const s = loadPrinter('counter')
@@ -16,8 +21,28 @@ export function CounterBillPreview({ billId, onClose }: { billId: number; onClos
     api.counterBill(billId).then(setData).catch((e: any) => setErr(e.message))
   }, [billId])
 
+  if (inline) {
+    return (
+      <div className="panel p-4">
+        <div className="no-print mb-3 flex items-center justify-between">
+          <span className="text-2xs font-medium text-heading">{tr('Receipt')}</span>
+          <span className="text-2xs text-muted">{s.paper} · {tr('preview is exact')}</span>
+        </div>
+        <ErrorNote>{err}</ErrorNote>
+        {!data ? <p className="text-2xs text-muted">{tr('Loading…')}</p> : (
+          <>
+            <CounterBillSlip bill={data.bill} items={data.items} hospital={data.hospital} />
+            <button onClick={() => printNow('counter')} className="btn-primary no-print mt-3 w-full">
+              {tr('Print receipt')}
+            </button>
+          </>
+        )}
+      </div>
+    )
+  }
+
   return (
-    <Modal title={tr('Receipt')} hint={data?.bill?.bill_no} onClose={onClose}
+    <Modal title={tr('Receipt')} hint={data?.bill?.bill_no} onClose={onClose ?? (() => {})}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Close')}</button>
         <button onClick={() => printNow('counter')} disabled={!data} className="btn-primary">

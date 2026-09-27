@@ -12,12 +12,19 @@ import { t as tr } from '../lib/prefs'
  * patient to the wrong counter, and paper costs money in a place that counts
  * it. What is on screen is exactly what the printer produces.
  */
-export function ChitPreview({ chitId, onClose, onPaid, canTakePayment = false }: {
+export function ChitPreview({ chitId, onClose, onPaid, canTakePayment = false, inline = false }: {
   chitId: number
-  onClose: () => void
+  onClose?: () => void
   onPaid?: () => void
   /** Only the cash counter settles chits. Reception prints them. */
   canTakePayment?: boolean
+  /**
+   * Shown in the page rather than in a dialog.
+   *
+   * Used on the screen that follows a completed bill, so the cashier sees the
+   * slip that is about to be printed before pressing Print, instead of after.
+   */
+  inline?: boolean
 }) {
   const [data, setData] = useState<any>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -29,18 +36,37 @@ export function ChitPreview({ chitId, onClose, onPaid, canTakePayment = false }:
   }, [chitId])
 
   if (!data) {
-    return (
-      <Modal title={tr('Chit')} onClose={onClose}
+    const body = err ? <ErrorNote>{err}</ErrorNote>
+      : <p className="text-2xs text-muted">{tr('Loading…')}</p>
+    return inline ? <div className="panel p-4">{body}</div> : (
+      <Modal title={tr('Chit')} onClose={onClose ?? (() => {})}
         footer={<button onClick={onClose} className="btn-ghost">{tr('Close')}</button>}>
-        {err ? <ErrorNote>{err}</ErrorNote> : <p className="text-2xs text-muted">{tr('Loading…')}</p>}
+        {body}
       </Modal>
     )
   }
 
   const { chit, lines, hospital, categoryLabel } = data
 
+  if (inline) {
+    return (
+      <div className="panel p-4">
+        <div className="no-print mb-3 flex items-center justify-between">
+          <span className="text-2xs font-medium text-heading">{categoryLabel} {tr('chit')}</span>
+          <span className="text-2xs text-muted">
+            {loadPrinter('pharmacy').paper} · {tr('preview is exact')}
+          </span>
+        </div>
+        <ChitSlip chit={chit} lines={lines} hospital={hospital} categoryLabel={categoryLabel} />
+        <button onClick={() => printNow('pharmacy')} className="btn-primary no-print mt-3 w-full">
+          {tr('Print chit')}
+        </button>
+      </div>
+    )
+  }
+
   return (
-    <Modal title={`${categoryLabel} chit`} hint={chit.chit_no} onClose={onClose}
+    <Modal title={`${categoryLabel} chit`} hint={chit.chit_no} onClose={onClose ?? (() => {})}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Close')}</button>
         {canTakePayment && chit.status === 'ordered' && onPaid && (

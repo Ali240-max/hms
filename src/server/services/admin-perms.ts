@@ -43,7 +43,8 @@ export const ADMIN_PERMISSIONS: AdminPermission[] = [
   { key: 'admin.staff.edit', group: 'Staff', label: 'Add and edit staff',
     blurb: 'Create accounts, change roles, archive somebody.' },
   { key: 'admin.staff.password', group: 'Staff', label: 'Reset passwords',
-    blurb: 'Set a new password for another member of staff.' },
+    blurb: 'Set a new password for another member of staff. Whoever holds this can sign in as anybody.',
+    guarded: true },
 
   { key: 'admin.services.view', group: 'Services and prices', label: 'See services',
     blurb: 'The list of tests, scans and procedures.' },
@@ -161,4 +162,21 @@ export async function adminAccounts() {
 export async function hasAdminPermission(staffId: number, key: string) {
   const { allowed } = await adminPermissionsFor(staffId)
   return allowed.includes(key)
+}
+
+/**
+ * The first administrator's own account is untouchable.
+ *
+ * Its password cannot be reset, and it cannot be archived or deleted, by
+ * anybody other than itself — no permission grants it, because the whole point
+ * of that account is that it is the way back in when something else has been
+ * misconfigured. A second administrator who could reset its password could
+ * take the hospital's own system away from it.
+ */
+export async function guardRootAccount(targetId: number, actorId: number) {
+  const root = await rootAdminId()
+  if (root != null && Number(targetId) === root && Number(actorId) !== root) {
+    throw new Error(
+      'The first administrator account can only be changed by itself')
+  }
 }

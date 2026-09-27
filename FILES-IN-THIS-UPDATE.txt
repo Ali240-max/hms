@@ -1,18 +1,25 @@
-10 files. No migration, no new dependencies.
+17 files. One migration (0017_departments.sql). No new dependencies.
+
+THE PRINTING FIX IS THE IMPORTANT ONE. Apply this before printing again.
 
 New:
-  DEPLOY-WINDOWS-OFFLINE.md      the whole install, in order, with NSSM
+  drizzle/0017_departments.sql   22 common departments, added only where missing
+  DEPLOY-CADDY.md                short address instead of an IP and port
 
 Changed:
-  scripts/bundle.mjs             builds first; refuses a stale build; VERSION.txt
-  src/server/services/patients.ts  new MRN format; latest visit id on rows
-  src/server/api/index.ts        GET /patients/:id/visits
-  src/client/src/screens/counter/History.tsx  ward labels always offered; date ranges
-  src/client/src/components/Chit.tsx          "Cashier" on both slips
-  src/client/src/lib/api.ts, lib/prefs.tsx
-  verify-numbering.mjs, verify-wipe.mjs       MRN assertions
+  src/client/index.html          adds #print-root, the print host
+  src/client/src/index.css       prints ONLY the slip, not the hidden app
+  src/client/src/lib/printer.ts  copies the slip into the host before printing
+  src/client/src/components/Chit.tsx, CounterBill.tsx   inline preview
+  src/client/src/components/Labels.tsx, Nuskha.tsx      route through printNow
+  src/client/src/screens/counter/Billing.tsx            slip shown after billing
+  src/client/src/screens/Admin.tsx                      staff edit/delete, depts
+  src/server/services/auth.ts          updateStaff, deleteStaff
+  src/server/services/admin-perms.ts   password reset is now guarded; root guard
+  src/server/api/index.ts              PATCH/DELETE staff, DELETE department
+  src/client/src/lib/api.ts, lib/prefs.tsx, verify-admin-access.mjs
 
 Nothing to delete.
 
   npm run typecheck
-  npm run bundle          <- now builds by itself
+  npm run verify:admin
