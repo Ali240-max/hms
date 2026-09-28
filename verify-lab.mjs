@@ -180,15 +180,30 @@ ok('the out-of-range value appears on the page', text.includes(String(high)),
 // The heading is printed in capitals by design.
 ok('the configured lab name is printed',
   text.toLowerCase().includes('al-shifa clinical laboratory'))
-/**
- * Once a result is verified the second signature carries the verifier, not
- * the standing in-charge — that is the point of verifying. The in-charge is
- * the fallback for a report that has not been checked yet.
+/*
+ * The foot of a report carries whoever the laboratory has configured to sign
+ * it — a pathologist and a technologist, with their registration numbers.
+ * Where none are configured it falls back to naming the people who did the
+ * work, which is better than a blank line. Both paths are checked.
  */
-ok('the second signature names whoever verified it', text.includes('Verified by'))
-ok('the registration number is printed', text.includes('PMC-11223'))
-ok('the contact line is printed', text.includes('053-3512399'))
-ok('who performed it is printed', text.includes('Farhan Javed'))
+{
+  const signers = (await q('/lab/signatories','lab')).body
+  if (signers.length > 0) {
+    ok('the configured signatories are printed',
+      signers.every((s) => text.toUpperCase().includes(String(s.name).toUpperCase())),
+      signers.map((s) => s.name).join(', '))
+    ok('with their registration numbers',
+      signers.filter((s) => s.registration)
+        .every((s) => text.includes(s.registration)))
+    ok('and their designations',
+      signers.filter((s) => s.designation)
+        .every((s) => text.includes(s.designation)))
+  } else {
+    ok('the second signature names whoever verified it', text.includes('Verified by'))
+    ok('the registration number is printed', text.includes(FOOTER.registrationNo))
+    ok('who performed it is printed', text.includes('Performed by'))
+  }
+}
 ok('the hospital heading is printed', /Hospital|Al-Shifa/i.test(text))
 r = await q('/lab/footer','lab',{method:'PUT',body:JSON.stringify({labName:'Nope'})})
 ok('the lab cannot change the footer', r.status===403, `got ${r.status}`)

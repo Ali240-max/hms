@@ -11,7 +11,7 @@ import { AdminAccess } from './admin/AdminAccess'
 import {
   LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
   Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle,
-  ShieldCheck
+  ShieldCheck, Upload
 } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
@@ -1134,6 +1134,55 @@ function SettingsTab() {
                 </Field>
               ))}
             </div>
+            {/*
+              The mark that prints on lab and radiology reports.
+              Stored in the database rather than as a file on disk, so it
+              survives a reinstall, travels with a backup, and is there for
+              every machine on the network without anyone copying a file.
+            */}
+            <div className="mt-4 border-t border-divide pt-4">
+              <p className="label">{tr('Logo on reports')}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-4">
+                {f.logoDataUri
+                  ? <img src={f.logoDataUri} alt=""
+                      className="h-16 w-auto rounded-lg bg-white p-1.5 ring-1 ring-line" />
+                  : <span className="grid h-16 w-16 place-items-center rounded-lg border-2
+                                     border-dashed border-line text-2xs text-muted">
+                      {tr('none')}
+                    </span>}
+
+                <label className="btn-ghost inline-flex cursor-pointer items-center gap-1.5">
+                  <Upload size={14} /> {tr('Choose an image')}
+                  <input type="file" accept="image/png,image/jpeg" className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      /*
+                       * Capped deliberately. A photograph straight off a phone
+                       * is several megabytes, and it would be read on every
+                       * report and carried in every backup.
+                       */
+                      if (file.size > 400_000) {
+                        setErr(tr('That image is too large. Around 400 kB is plenty for a logo.'))
+                        return
+                      }
+                      const r = new FileReader()
+                      r.onload = () => setF({ ...f, logoDataUri: String(r.result) })
+                      r.readAsDataURL(file)
+                    }} />
+                </label>
+
+                {f.logoDataUri && (
+                  <button onClick={() => setF({ ...f, logoDataUri: '' })}
+                    className="btn-ghost text-2xs">{tr('Remove')}</button>
+                )}
+
+                <span className="text-2xs text-muted">
+                  {tr('A PNG with a transparent background prints best. Where it sits on the report is set in the laboratory, under Report layout.')}
+                </span>
+              </div>
+            </div>
+
             <div className="mt-4 grid gap-3 border-t border-divide pt-4 sm:grid-cols-2">
               <Field label={tr('Footer on chits')} hint={tr('Tells the patient what to do next')}>
                 <input value={f.chitFooter ?? ''}

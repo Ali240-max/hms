@@ -442,6 +442,8 @@ export async function verifyResult(labOrderId: number, by: string) {
 export async function reportFor(labOrderId: number) {
   const head = (await db.execute<any>(sql`
     SELECT lo.*, so.service_name, so.price_paisa, sv.category,
+           -- Needed to look up the test's interpretation bands when printing.
+           sv.id AS service_id,
            p.mrn, p.name AS patient_name, p.age_years, p.gender, p.phone, p.cnic,
            v.visit_no, v.token_no, v.created_at AS visit_at,
            st.display_name AS doctor_name, d.specialisation
@@ -479,4 +481,110 @@ export async function labStats(scope: 'all' | 'radiology' | 'not-radiology' = 'a
       AND ${where}
       AND so.ordered_at >= now() - interval '30 days'`)
   return (r.rows as any[])[0]
+}
+
+/* ------------------------------------------------- what a result means */
+
+/**
+ * The interpretation block printed under a test.
+ *
+ * "Deficiency < 20, Sufficiency 21 - 30, Desirable 31 - 100." It belongs to
+ * the test rather than to any one result, because it is identical on every
+ * copy and a laboratory changes it when its method changes, not per patient.
+ *
+ * The range is free text. Laboratories write "Adults: 30 - 115" and
+ * "Upto 15 Years: < 345" on the same report, and forcing those into a pair of
+ * numbers would lose them.
+ */
+export async function interpretationsFor(serviceId: number) {
+  // A missing id would otherwise interpolate as nothing and produce a syntax
+  // error rather than an empty list.
+  if (!Number.isFinite(Number(serviceId))) return []
+  const r = await db.execute<any>(sql`
+    SELECT id, title, range_text, display_order
+    FROM service_interpretations
+    WHERE service_id = ${serviceId}
+    ORDER BY display_order, id`)
+  return r.rows
+}
+
+/**
+ * The note printed at the foot of this test's report, and its heading.
+ *
+ * Per test rather than per hospital. A Vitamin D report ends with a line about
+ * seasonal variation, a CBC with one about slide review; a single setting for
+ * every test was right for none of them.
+ */
+export async function reportNoteFor(serviceId: number) {
+  const row = ((await db.execute<any>(sql`
+    SELECT note_heading, note_text FROM services WHERE id = ${serviceId}`)).rows as any[])[0]
+  return {
+    noteHeading: row?.note_heading ?? '',
+    noteText: row?.note_text ?? ''
+  }
+}
+
+export async function saveReportNote(serviceId: number, input: {
+  noteHeading?: string | null; noteText?: string | null
+}) {
+  await db.execute(sql`
+    UPDATE services SET
+      note_heading = ${input.noteHeading?.trim() || null},
+      note_text    = ${input.noteText?.trim() || null}
+    WHERE id = ${serviceId}`)
+  return reportNoteFor(serviceId)
+}
+
+export async function saveInterpretations(serviceId: number, rows: {
+  title: string; rangeText: string
+}[]) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM service_interpretations WHERE service_id = ${serviceId}`)
+    let order = 0
+    for (const row of rows) {
+      if (!row.title.trim()) continue
+      await tx.execute(sql`
+        INSERT INTO service_interpretations (service_id, title, range_text, display_order)
+        VALUES (${serviceId}, ${row.title.trim()}, ${row.rangeText.trim()}, ${order++})`)
+    }
+    return interpretationsFor(serviceId)
+  })
+}
+
+/* ----------------------------------------------------- who signs reports */
+
+export async function signatories() {
+  const r = await db.execute<any>(sql`
+    SELECT * FROM lab_signatories WHERE is_active ORDER BY display_order, id`)
+  return r.rows
+}
+
+export async function saveSignatories(rows: {
+  id?: number
+  name: string
+  qualification?: string | null
+  designation?: string | null
+  registration?: string | null
+  signature?: string | null
+}[]) {
+  return db.transaction(async (tx) => {
+    /*
+     * Rewritten as a set rather than patched row by row.
+     *
+     * The order matters — they print left to right along the foot — and
+     * keeping order in step through individual inserts and deletes is more
+     * code than replacing the list. There are never more than a handful.
+     */
+    await tx.execute(sql`DELETE FROM lab_signatories`)
+    let order = 0
+    for (const row of rows) {
+      if (!row.name.trim()) continue
+      await tx.execute(sql`
+        INSERT INTO lab_signatories
+          (name, qualification, designation, registration, signature, display_order)
+        VALUES (${row.name.trim()}, ${row.qualification ?? null}, ${row.designation ?? null},
+                ${row.registration ?? null}, ${row.signature ?? null}, ${order++})`)
+    }
+    return signatories()
+  })
 }

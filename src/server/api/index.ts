@@ -39,6 +39,8 @@ import { extraBackupDir, setExtraBackupDir, checkExtraDir, backupDir } from '../
 import {
   labQueue, parametersFor, saveParameters, consumablesFor, saveConsumables,
   collectSample, startTest, saveResults, verifyResult, reportFor, labStats,
+  interpretationsFor, saveInterpretations, signatories, saveSignatories,
+  reportNoteFor, saveReportNote,
   collectVisit, visitWork, LabError, LAB_STATUS
 } from '../services/lab'
 import { labReportPdf, getLabFooter, DEFAULT_FOOTER } from '../services/lab-pdf'
@@ -790,6 +792,78 @@ api.get('/visits/:id/ward-labels/pdf',
         `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
         `filename="ward-labels-${c.req.param('id')}.pdf"`
     }
+  })
+})
+
+/* ------------------------------------------- what a test's result means */
+
+api.get('/services/:id/interpretations', async (c) =>
+  c.json(await interpretationsFor(Number(c.req.param('id')))))
+
+/*
+ * Set by the laboratory, like the reference ranges. They are the people who
+ * know what their own method reports.
+ */
+api.put('/services/:id/interpretations',
+  allow('admin', 'lab_tech', 'radiology'), async (c) => {
+  const b = z.object({
+    rows: z.array(z.object({ title: z.string(), rangeText: z.string() }))
+  }).parse(await c.req.json())
+  return c.json(await saveInterpretations(Number(c.req.param('id')), b.rows))
+})
+
+/* ------------------------------------------------------ report signatures */
+
+/** The note printed under this test, worded by the laboratory. */
+api.get('/services/:id/report-note', async (c) =>
+  c.json(await reportNoteFor(Number(c.req.param('id')))))
+
+api.put('/services/:id/report-note',
+  allow('admin', 'lab_tech', 'radiology'), async (c) => {
+  const b = z.object({
+    noteHeading: z.string().nullable().optional(),
+    noteText: z.string().max(4000).nullable().optional()
+  }).parse(await c.req.json())
+  return c.json(await saveReportNote(Number(c.req.param('id')), b))
+})
+
+api.get('/lab/signatories', async (c) => c.json(await signatories()))
+
+api.put('/lab/signatories', allow('admin', 'lab_tech', 'radiology'), async (c) => {
+  const b = z.object({
+    rows: z.array(z.object({
+      name: z.string(),
+      qualification: z.string().nullable().optional(),
+      designation: z.string().nullable().optional(),
+      registration: z.string().nullable().optional(),
+      // A scanned signature as a data URI, capped so a photograph cannot be
+      // pasted in by mistake.
+      signature: z.string().max(400_000).nullable().optional()
+    }))
+  }).parse(await c.req.json())
+  return c.json(await saveSignatories(b.rows))
+})
+
+/** Headings and defaults the laboratory can word for itself. */
+api.get('/lab/report-settings', async (c) => c.json({
+  noteHeading: (await getSetting('lab.noteHeading')) || 'Note',
+  noteDefault: (await getSetting('lab.noteDefault')) || '',
+  logoPosition: (await getSetting('lab.logoPosition')) || 'right'
+}))
+
+api.put('/lab/report-settings', allow('admin', 'lab_tech', 'radiology'), async (c) => {
+  const b = z.object({
+    noteHeading: z.string().optional(),
+    noteDefault: z.string().optional(),
+    logoPosition: z.enum(['left', 'right', 'none']).optional()
+  }).parse(await c.req.json())
+  for (const [k, v] of Object.entries(b)) {
+    if (v !== undefined) await setSetting(`lab.${k}`, String(v))
+  }
+  return c.json({
+    noteHeading: (await getSetting('lab.noteHeading')) || 'Note',
+    noteDefault: (await getSetting('lab.noteDefault')) || '',
+    logoPosition: (await getSetting('lab.logoPosition')) || 'right'
   })
 })
 

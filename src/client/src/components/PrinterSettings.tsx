@@ -49,6 +49,25 @@ export function PrinterSettingsCard({ module, label }: { module: string; label: 
           </select>
         </Field>
 
+        {/*
+          The page length, which has to match the Windows form the printer is
+          set to. A thermal printer feeds to the end of its page whatever the
+          browser asks for, and a driver left on 80 x 3276mm feeds three metres
+          of blank roll after every receipt.
+        */}
+        <Field label={tr('Page length')}
+          hint={tr('Match this to the paper size set on the printer itself')}>
+          <select value={s.length ?? 'content'}
+            onChange={(e) => set({ length: e.target.value as any })}
+            className="field">
+            <option value="content">{tr('As long as the receipt (needs a custom form)')}</option>
+            <option value="100">100 mm</option>
+            <option value="150">150 mm</option>
+            <option value="210">210 mm</option>
+            <option value="297">297 mm</option>
+          </select>
+        </Field>
+
         <Field label={tr('Copies')} hint={tr('Two is usual where one goes in the file')}>
           <select value={s.copies} onChange={(e) => set({ copies: Number(e.target.value) })}
             className="field num">

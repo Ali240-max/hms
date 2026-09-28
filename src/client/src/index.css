@@ -285,67 +285,28 @@ html.lang-ur .num { @apply font-sans; }
  */
 @media print {
   /*
-   * Only the copy in #print-root is printed.
+   * Printing does not go through this document any more.
    *
-   * The application is removed from the page entirely rather than made
-   * invisible. `visibility: hidden` keeps an element's box, so with a page
-   * height of `auto` a thermal printer fed out the whole height of the
-   * application as blank roll with the slip at the top. `display: none`
-   * collapses it, so the document is exactly as tall as the slip.
+   * A slip is printed from its own off-screen iframe, which is given these
+   * stylesheets and the slip markup and nothing else. Three earlier attempts
+   * tried to print the slip out of this page — hiding the application with
+   * `visibility: hidden` (which kept every hidden box's height and fed metres
+   * of blank roll), then with `display: none` (which left the slip laid out
+   * inside the app's own flex and height rules, halfway down the page), then
+   * measuring it here (at the wrong width). The document being printed has to
+   * contain the slip and nothing else, which is what the iframe gives.
+   *
+   * What remains is for anybody who presses Ctrl+P on a screen by hand: hide
+   * the parts that make no sense on paper and let the browser do the rest.
    */
-  #root { display: none !important; }
-  #print-root { display: block !important; }
-
-  html, body {
-    height: auto !important;
-    overflow: visible !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #fff !important;
-  }
-
-  /* Roll printers are fed a page exactly as wide as the paper. */
-  @page { size: var(--print-paper, 80mm) auto; margin: 0; }
-
   .no-print { display: none !important; }
 
-  #print-root .print-area {
-    position: static !important;
-    width: var(--print-width, 72mm) !important;
-    max-width: none !important;
-    max-height: none !important;
-    overflow: visible !important;
-    margin: 0 !important;
-    border: 0 !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    /* Thermal paper is white and the head only prints black; forcing both
-       stops a dark-mode screen producing a grey, half-legible slip. */
+  .print-area {
     background: #fff !important;
     color: #000 !important;
   }
-  #print-root .print-area * {
+  .print-area * {
     background: transparent !important;
     color: #000 !important;
-    overflow: visible !important;
-    max-height: none !important;
   }
-
-  /*
-   * A report is an A4 document, not a till slip. Paper width belongs to the
-   * kind of document, not to whichever printer was last configured.
-   */
-  #print-root .print-sheet {
-    width: auto !important;
-    font-size: 9.5pt !important;
-  }
-  #print-root .print-sheet table { width: 100% !important; table-layout: auto !important; }
-  #print-root .print-sheet thead { display: table-header-group; }
-  #print-root .print-sheet tr { break-inside: avoid; page-break-inside: avoid; }
-
-  /* A prescription goes on A5, and a sticker on its own die-cut sheet. */
-  #print-root .print-area:has(.nuskha), #print-root .print-area.nuskha {
-    width: 148mm !important;
-  }
-  #print-root .print-area:has(.label-sticker) { width: 50mm !important; }
 }

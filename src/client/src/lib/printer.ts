@@ -16,8 +16,26 @@
 
 export type PaperWidth = '58mm' | '80mm' | 'A4'
 
+/**
+ * How long a page the printer is set to.
+ *
+ * A thermal printer feeds to the end of the page its driver is set to,
+ * whatever the browser asks for: Chrome only offers the paper sizes the
+ * driver exposes, so `@page { size: 72mm 104mm }` is ignored unless a form of
+ * that size exists. A driver left on 80 x 3276mm feeds three metres of blank
+ * roll after every receipt, which is exactly what happened here.
+ *
+ * Setting this to the length of the Windows form the printer is actually on
+ * makes the browser's page match it, so nothing is scaled or split. Setting
+ * it to `content` asks for a page exactly as tall as the slip, which works
+ * only where a matching custom form exists — see DEPLOY-WINDOWS-OFFLINE.md.
+ */
+export type PaperLength = 'content' | '100' | '150' | '210' | '297'
+
 export type PrinterSettings = {
   paper: PaperWidth
+  /** Matches the Windows form the printer is set to. See PaperLength. */
+  length?: PaperLength
   copies: number
   /** Skip the on-screen preview and open the print dialog immediately. */
   autoPrint: boolean
@@ -29,6 +47,7 @@ export type PrinterSettings = {
 
 export const DEFAULTS: PrinterSettings = {
   paper: '80mm',
+  length: 'content',
   copies: 1,
   autoPrint: false,
   showLetterhead: true,
@@ -70,45 +89,148 @@ export function applyPaper(paper: PaperWidth) {
 }
 
 /**
- * Copy what is to be printed into the print host, print, then clear it.
+ * Print one element, and nothing else, on a page exactly its own size.
  *
- * The browser prints the whole document, so the document has to *be* the slip.
- * Hiding the application with `visibility: hidden` left every hidden element
- * occupying its height, and a thermal printer on a continuous roll fed out
- * that entire height as blank paper with the slip at the very top. One press
- * of Print wasted most of a roll.
+ * Three attempts got this wrong, each in a different way, and all three
+ * failed for the same underlying reason: the browser prints the *document*,
+ * and the document was the application. Hiding the rest of it with
+ * `visibility: hidden` left every hidden box occupying its height, so a
+ * thermal printer fed out the whole application as blank roll. Hiding it with
+ * `display: none` fixed the height but left the slip laid out inside the
+ * app's own flex and height rules, so it landed halfway down a page whose
+ * length the printer driver had chosen. Measuring the slip in the app's
+ * layout measured it at the wrong width.
  *
- * Copying the node means the on-screen preview is untouched and the printed
- * document contains nothing else at all.
+ * So the slip is printed from its own document instead. An off-screen iframe
+ * is given the application's stylesheets, the slip markup, and nothing else:
+ * no #root, no flex parents, no inherited heights, no toast container. Its
+ * body is exactly as tall as the slip, and that measured height becomes the
+ * page size. There is nothing left for a driver to pad out and nothing to
+ * push the slip down the page.
+ *
+ * It also means an accidental Ctrl+P anywhere in the application prints the
+ * page the user is looking at, not a stale slip, because nothing is copied
+ * into the main document at all.
  */
-function withPrintHost(run: () => void) {
-  const host = document.getElementById('print-root')
-  const source = document.querySelector('.print-area')
+export function printElement(
+  source: Element,
+  widthCss: string,
+  copies = 1,
+  now = false,
+  lengthMm: PaperLength = 'content'
+) {
+  const frame = document.createElement('iframe')
+  frame.setAttribute('aria-hidden', 'true')
+  frame.style.cssText =
+    'position:fixed;left:-10000px;top:0;width:' + widthCss + ';height:10px;border:0;'
+  document.body.appendChild(frame)
 
-  if (!host || !source) {
-    // Nothing identified as printable. Printing the application by accident is
-    // exactly the failure this function exists to prevent.
-    console.warn('Nothing to print: no .print-area on the page')
-    return
+  const doc = frame.contentDocument
+  if (!doc) { frame.remove(); return }
+
+  /*
+   * The application's own stylesheets are copied in.
+   *
+   * The slip is styled with the same classes as everything else, so without
+   * them it would print as unstyled text. `<base>` keeps relative font URLs
+   * resolving against the real page rather than about:blank.
+   */
+  const styles = [...document.querySelectorAll('link[rel="stylesheet"], style')]
+    .map((n) => n.outerHTML).join('\n')
+
+  doc.open()
+  doc.write(
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<base href="' + document.baseURI + '">' +
+    styles +
+    '<style>' +
+      'html,body{margin:0;padding:0;background:#fff;height:auto;width:' + widthCss + ';}' +
+      '*{box-shadow:none !important;}' +
+      '.no-print{display:none !important;}' +
+    '</style>' +
+    '</head><body></body></html>')
+  doc.close()
+
+  doc.body.appendChild(doc.importNode(source, true))
+
+  const finish = () => {
+    /*
+     * Measured inside the frame, at the paper's own width.
+     *
+     * This is the number that was wrong before: measuring in the application
+     * measured the slip at whatever width the screen gave it, and a slip laid
+     * out at 1200px wraps to a fraction of the height it has at 72mm.
+     */
+    const px = Math.max(
+      doc.body.scrollHeight,
+      doc.documentElement.scrollHeight,
+      (doc.body.firstElementChild as HTMLElement)?.offsetHeight ?? 0
+    )
+    const measured = Math.max(Math.ceil((px / 96) * 25.4) + 2, 20)
+
+    /*
+     * The page length.
+     *
+     * `content` asks for a page exactly as tall as the slip. Chrome will only
+     * honour it if the printer driver has a form that size, so where it does
+     * not, the driver's own length wins and the slip is followed by blank
+     * roll. Naming the length the printer is actually set to makes the two
+     * agree, which stops the browser scaling or splitting the slip.
+     */
+    const mm = lengthMm === 'content' ? measured : Number(lengthMm)
+
+    const page = doc.createElement('style')
+    page.textContent =
+      '@page{size:' + widthCss + ' ' + mm + 'mm;margin:0;}' +
+      /* Nothing is allowed to spill onto a second page. */
+      'html,body{max-height:' + mm + 'mm;overflow:hidden;}'
+    doc.head.appendChild(page)
+
+    try {
+      frame.contentWindow?.focus()
+      for (let i = 0; i < Math.max(1, copies); i++) frame.contentWindow?.print()
+    } finally {
+      /*
+       * Removed late. Chrome returns from print() before the preview has
+       * finished rendering, and tearing the frame down early gives a blank
+       * preview — which is its own kind of wasted roll.
+       */
+      setTimeout(() => frame.remove(), 60_000)
+      frame.contentWindow?.addEventListener('afterprint', () => {
+        setTimeout(() => frame.remove(), 500)
+      })
+    }
   }
 
-  host.replaceChildren(source.cloneNode(true))
-  try {
-    run()
-  } finally {
-    // Cleared straight away. A slip left here would be printed again by the
-    // next unrelated Ctrl+P anywhere in the application.
-    host.replaceChildren()
+  /*
+   * Give the copied stylesheets and any web fonts a moment to apply.
+   *
+   * `now` skips the wait; it exists so the mechanism can be exercised
+   * synchronously by a test, which is how the four things that were wrong
+   * here last time are now checked on every run.
+   */
+  if (now) { finish(); return frame }
+  if ((doc as any).fonts?.ready) {
+    (doc as any).fonts.ready.then(() => setTimeout(finish, 30)).catch(() => finish())
+  } else {
+    setTimeout(finish, 120)
   }
+  return frame
+}
+
+/** The element on the page that is meant to be printed. */
+function printable(): Element | null {
+  const node = document.querySelector('.print-area')
+  if (!node) console.warn('Nothing to print: no .print-area on the page')
+  return node
 }
 
 /** Print, honouring the copy count. */
 export function printNow(module: string) {
   const s = loadPrinter(module)
   applyPaper(s.paper)
-  withPrintHost(() => {
-    for (let i = 0; i < Math.max(1, s.copies); i++) window.print()
-  })
+  const node = printable()
+  if (node) printElement(node, PAPER_WIDTH[s.paper], s.copies, false, s.length ?? 'content')
 }
 
 /**
@@ -138,7 +260,8 @@ export function printSheet() {
   }
   window.addEventListener('afterprint', restore)
 
-  withPrintHost(() => window.print())
+  const node = printable()
+  if (node) printElement(node, '190mm')
   // Safari never fires afterprint from a programmatic print, so put the roll
   // settings back regardless once the dialog has had time to open.
   setTimeout(restore, 1500)

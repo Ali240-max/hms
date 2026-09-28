@@ -21,7 +21,12 @@ export function Slip({ children }: { children: ReactNode }) {
   return (
     <div className="flex justify-center">
       <div className="print-area bg-white font-mono text-[11px] leading-tight text-black"
-        style={{ width: SLIP_WIDTH, padding: '3mm' }}>
+        /*
+          Tighter at the top and bottom than at the sides.
+          Every millimetre here is a millimetre of roll on every slip printed
+          all day; the sides need the margin for legibility, the ends do not.
+        */
+        style={{ width: SLIP_WIDTH, padding: '1mm 3mm 2mm' }}>
         {children}
       </div>
     </div>

@@ -255,6 +255,22 @@ export const api = {
   saveLabFooter: (b: any) => req<any>('/lab/footer', { method: 'PUT', body: JSON.stringify(b) }),
 
   serviceParameters: (serviceId: number) => req<any[]>(`/services/${serviceId}/parameters`),
+
+  /* What a result means, who signs for it, and how the report is worded. */
+  interpretations: (id: number) => req<any[]>(`/services/${id}/interpretations`),
+  saveInterpretations: (id: number, rows: any[]) =>
+    req<any[]>(`/services/${id}/interpretations`, {
+      method: 'PUT', body: JSON.stringify({ rows })
+    }),
+  reportNote: (id: number) => req<any>(`/services/${id}/report-note`),
+  saveReportNote: (id: number, b: any) =>
+    req<any>(`/services/${id}/report-note`, { method: 'PUT', body: JSON.stringify(b) }),
+  labSignatories: () => req<any[]>('/lab/signatories'),
+  saveLabSignatories: (rows: any[]) =>
+    req<any[]>('/lab/signatories', { method: 'PUT', body: JSON.stringify({ rows }) }),
+  labReportSettings: () => req<any>('/lab/report-settings'),
+  saveLabReportSettings: (b: any) =>
+    req<any>('/lab/report-settings', { method: 'PUT', body: JSON.stringify(b) }),
   saveServiceParameters: (serviceId: number, parameters: any[]) =>
     req<any[]>(`/services/${serviceId}/parameters`, { method: 'PUT',
       body: JSON.stringify({ parameters }) }),

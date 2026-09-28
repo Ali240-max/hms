@@ -231,3 +231,63 @@ Start-Service hms
 Deleting `dist` and `node_modules` before unzipping matters: `Expand-Archive`
 overwrites files but never removes ones that are no longer in the bundle, and a
 file left behind from an older version is the hardest kind of bug to see.
+
+---
+
+## Thermal printers: stopping the blank roll
+
+A thermal printer feeds paper to the end of the page its **driver** is set to.
+The browser cannot override that: Chrome only offers the paper sizes the
+driver exposes, so asking for a page 104mm long is ignored unless a form of
+that size exists on the machine.
+
+A driver left on its default of **80 x 3276 mm** therefore feeds over three
+metres of blank roll after every receipt. That is not a fault in the software;
+it is the printer doing exactly what it was told.
+
+### Check what it is set to
+
+Settings → Printers & scanners → your printer → Printing preferences → Paper
+size. If it reads 3276mm or 99999mm, that is the problem.
+
+### The quick fix, with some waste
+
+Set the paper size to **80 x 210 mm**, and in the application set
+**Printing → Page length → 210 mm** to match. A receipt of 100mm then wastes
+110mm of roll. Acceptable, not ideal.
+
+### The proper fix: a form the size of a receipt
+
+Windows lets you define your own paper size, and the printer then feeds only
+that much.
+
+1. Open **Print Management**, or run `printui /s /t1` as an administrator.
+2. On the **Forms** tab, tick **Create a new form**.
+3. Name it `Receipt 80x120`.
+4. Units: metric. Width **8.00 cm**, Height **12.00 cm**. Set all four margins
+   to 0.
+5. **Save Form**, then close.
+6. Printing preferences for the printer → Paper size → choose `Receipt 80x120`.
+7. In the application, Printing → Page length → the nearest value, or leave it
+   on "As long as the receipt" now that a matching form exists.
+
+Pick a height a little longer than your longest slip. A chit with several
+tests runs longer than a consultation receipt; 120mm covers most, 150mm covers
+almost all. Anything longer than the form is split across two pages, which is
+worse than a little waste, so err on the generous side.
+
+### Also worth setting
+
+- **Auto cut: after each page**, in the driver. Without it the roll has to be
+  torn by hand and the tear often takes the last line with it.
+- In Chrome's print dialog, **Margins: None** and **Headers and footers: off**.
+  Chrome remembers both per printer, so it is a one-off per machine. The
+  headers are what put the date and "localhost:5173" on the first receipts.
+
+### If you want no waste at all
+
+The only way to have the printer stop exactly at the last line is to talk to
+it directly in ESC/POS rather than through the browser's print system. That
+means a small print agent running on the counter PC. It is a real improvement
+for a busy counter and a day's work to build; ask when the trial is over and
+you know how much roll this is actually costing.

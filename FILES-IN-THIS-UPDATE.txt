@@ -1,25 +1,39 @@
-17 files. One migration (0017_departments.sql). No new dependencies.
+28 files. One migration (0019_service_notes.sql). Replaces v20.
 
-THE PRINTING FIX IS THE IMPORTANT ONE. Apply this before printing again.
+DELETE THIS FILE AFTER UNZIPPING — left over from an older round, and it
+breaks `npm run typecheck`:
 
-New:
-  drizzle/0017_departments.sql   22 common departments, added only where missing
-  DEPLOY-CADDY.md                short address instead of an IP and port
+  src/client/src/components/PdfPreview.tsx
 
-Changed:
-  src/client/index.html          adds #print-root, the print host
-  src/client/src/index.css       prints ONLY the slip, not the hidden app
-  src/client/src/lib/printer.ts  copies the slip into the host before printing
-  src/client/src/components/Chit.tsx, CounterBill.tsx   inline preview
-  src/client/src/components/Labels.tsx, Nuskha.tsx      route through printNow
-  src/client/src/screens/counter/Billing.tsx            slip shown after billing
-  src/client/src/screens/Admin.tsx                      staff edit/delete, depts
-  src/server/services/auth.ts          updateStaff, deleteStaff
-  src/server/services/admin-perms.ts   password reset is now guarded; root guard
-  src/server/api/index.ts              PATCH/DELETE staff, DELETE department
-  src/client/src/lib/api.ts, lib/prefs.tsx, verify-admin-access.mjs
+THE BLANK ROLL
+==============
 
-Nothing to delete.
+Your driver was set to 80 x 3276 mm. A thermal printer feeds to the end of the
+page its driver is set to, and the browser cannot override that: Chrome only
+offers the paper sizes the driver exposes, so asking for a 104mm page is
+ignored unless a form that size exists on the machine.
 
+Two things in this update:
+
+  * Printing → Page length, so the browser's page matches the form the printer
+    is actually on. Nothing is scaled or split.
+  * DEPLOY-WINDOWS-OFFLINE.md now has the steps to create a Windows form of
+    80 x 120 mm, after which the printer feeds only that much. That is the
+    only way to remove the waste entirely short of talking ESC/POS to the
+    printer directly.
+
+Also: Chrome's Margins → None and Headers and footers → off, once per machine.
+The date and "localhost:5173" at the top of your first receipts were Chrome's
+headers, not ours.
+
+ALSO IN HERE
+============
+
+  * The logo upload for lab reports, in Administration → Settings. It was
+    missing from your tree entirely.
+  * Note heading and note text moved to the Interpretation dialog, per test.
+  * The print path rewritten to use an isolated iframe (see verify-print.mjs).
+
+  npm install
   npm run typecheck
-  npm run verify:admin
+  npm run verify:print

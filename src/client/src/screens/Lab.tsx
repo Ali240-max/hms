@@ -8,8 +8,9 @@ import { Sidebar, type NavItem } from '../components/Sidebar'
 
 import { Reports } from './pharma/Reports'
 import { TestSetupTab } from './lab/TestSetupTab'
+import { LabReportSetup } from './lab/ReportSetup'
 import {
-  ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2, Sliders,
+  ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2, Sliders, FileSignature,
   Clock, AlertTriangle, FileText, ArrowLeft, Save
 } from 'lucide-react'
 
@@ -751,12 +752,13 @@ function trim(v: any) {
  */
 export function Lab({ me }: { me: SessionUser }) {
   const isRadiology = me.role === 'radiology'
-  const [tab, setTab] = useState<'queue' | 'setup' | 'reports'>('queue')
+  const [tab, setTab] = useState<'queue' | 'setup' | 'report' | 'reports'>('queue')
 
   const items: NavItem[] = [
     { id: 'queue', label: isRadiology ? 'Imaging list' : 'Work list',
       glyph: isRadiology ? 'X' : 'L', icon: isRadiology ? ScanLine : FlaskConical },
     { id: 'setup', label: 'Test setup', glyph: 'S', icon: Sliders },
+    { id: 'report', label: 'Report layout', glyph: 'L', icon: FileSignature },
     { id: 'reports', label: 'Reports', glyph: 'R', icon: BarChart3 }
   ]
 
@@ -767,6 +769,7 @@ export function Lab({ me }: { me: SessionUser }) {
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'queue' ? <LabQueue me={me} />
           : tab === 'setup' ? <TestSetupTab me={me} />
+          : tab === 'report' ? <LabReportSetup me={me} />
           : <Reports me={me} />}
       </div>
     </div>

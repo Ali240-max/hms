@@ -48,6 +48,41 @@ const SESSION_HOURS = 12
  */
 const cache = new Map<string, { user: SessionUser; expires: number }>()
 
+/**
+ * Whether the sessions table is usable on this database.
+ *
+ * It normally is. It is not when the table was created by one PostgreSQL role
+ * and the application connects as another — the table exists, so the
+ * migration is recorded as applied and never runs again, but every query
+ * against it is refused. The symptom is that nobody can sign in at all, with
+ * "permission denied for table sessions" and a 500.
+ *
+ * Rather than leave a hospital unable to open its own system, sessions fall
+ * back to this process's memory, which is how they worked before they were
+ * persisted. Everyone stays signed in until the server restarts, and the
+ * console says exactly what to run to fix it properly.
+ */
+let sessionsUsable = true
+
+function sessionTableUnusable(e: any) {
+  const msg = String(e?.message ?? e)
+  if (!/permission denied|does not exist/i.test(msg)) return false
+  if (sessionsUsable) {
+    sessionsUsable = false
+    console.error(
+      '\n  The sessions table cannot be used: ' + msg +
+      '\n  Signing in still works, but everyone is signed out when the server restarts.' +
+      '\n' +
+      '\n  It is almost always a table owned by a different PostgreSQL role than' +
+      '\n  the one in DATABASE_URL. Fix it by running, as the owner or a superuser:' +
+      '\n' +
+      '\n    GRANT ALL ON ALL TABLES IN SCHEMA public TO <the role in DATABASE_URL>;' +
+      '\n    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO <the role in DATABASE_URL>;' +
+      '\n')
+  }
+  return true
+}
+
 export async function hashPassword(pw: string) {
   const salt = randomBytes(16)
   return `scrypt$${salt.toString('hex')}$${(await scryptAsync(pw, salt, 64)).toString('hex')}`
@@ -131,20 +166,33 @@ export async function login(username: string, password: string) {
   const token = randomBytes(32).toString('hex')
   const expires = Date.now() + SESSION_HOURS * 3600_000
 
-  await db.execute(sql`
-    INSERT INTO sessions (token, staff_id, expires_at)
-    VALUES (${token}, ${user.id}, ${new Date(expires).toISOString()})`)
+  // The cache is written first, so a signed-in session works even if the
+  // table below cannot be reached.
   cache.set(token, { user, expires })
 
-  // Old rows are cleared on the way past rather than by a scheduled job.
-  await db.execute(sql`DELETE FROM sessions WHERE expires_at < now()`)
+  if (sessionsUsable) {
+    try {
+      await db.execute(sql`
+        INSERT INTO sessions (token, staff_id, expires_at)
+        VALUES (${token}, ${user.id}, ${new Date(expires).toISOString()})`)
+      // Old rows are cleared on the way past rather than by a scheduled job.
+      await db.execute(sql`DELETE FROM sessions WHERE expires_at < now()`)
+    } catch (e) {
+      if (!sessionTableUnusable(e)) throw e
+    }
+  }
 
   return { token, user }
 }
 
 export async function logout(token: string) {
   cache.delete(token)
-  await db.execute(sql`DELETE FROM sessions WHERE token = ${token}`)
+  if (!sessionsUsable) return
+  try {
+    await db.execute(sql`DELETE FROM sessions WHERE token = ${token}`)
+  } catch (e) {
+    if (!sessionTableUnusable(e)) throw e
+  }
 }
 
 /**
@@ -163,14 +211,22 @@ export async function sessionFor(token?: string): Promise<SessionUser | null> {
     cache.delete(token)
   }
 
-  const row = ((await db.execute<any>(sql`
-    SELECT s.expires_at, st.id, st.username, st.display_name, st.role, st.department_id,
-           d.name AS department_name,
-           (SELECT doc.id FROM doctors doc WHERE doc.staff_id = st.id) AS doctor_id
-    FROM sessions s
-    JOIN staff st ON st.id = s.staff_id AND st.is_active
-    LEFT JOIN departments d ON d.id = st.department_id
-    WHERE s.token = ${token} AND s.expires_at > now()`)).rows as any[])[0]
+  if (!sessionsUsable) return null
+
+  let row: any
+  try {
+    row = ((await db.execute<any>(sql`
+      SELECT s.expires_at, st.id, st.username, st.display_name, st.role, st.department_id,
+             d.name AS department_name,
+             (SELECT doc.id FROM doctors doc WHERE doc.staff_id = st.id) AS doctor_id
+      FROM sessions s
+      JOIN staff st ON st.id = s.staff_id AND st.is_active
+      LEFT JOIN departments d ON d.id = st.department_id
+      WHERE s.token = ${token} AND s.expires_at > now()`)).rows as any[])[0]
+  } catch (e) {
+    if (sessionTableUnusable(e)) return null
+    throw e
+  }
   if (!row) return null
 
   const user: SessionUser = {
@@ -194,11 +250,21 @@ export async function sessionFor(token?: string): Promise<SessionUser | null> {
  * once they sign out, so a ticket cannot outlive the session it came from.
  */
 export async function sessionForUser(staffId: number): Promise<SessionUser | null> {
-  const row = ((await db.execute<any>(sql`
-    SELECT token FROM sessions
-    WHERE staff_id = ${staffId} AND expires_at > now()
-    ORDER BY last_seen_at DESC LIMIT 1`)).rows as any[])[0]
-  return row ? sessionFor(row.token) : null
+  // The cache first, so this keeps working when the table cannot be read.
+  for (const sess of cache.values()) {
+    if (sess.user.id === staffId && sess.expires > Date.now()) return sess.user
+  }
+  if (!sessionsUsable) return null
+  try {
+    const row = ((await db.execute<any>(sql`
+      SELECT token FROM sessions
+      WHERE staff_id = ${staffId} AND expires_at > now()
+      ORDER BY last_seen_at DESC LIMIT 1`)).rows as any[])[0]
+    return row ? sessionFor(row.token) : null
+  } catch (e) {
+    if (sessionTableUnusable(e)) return null
+    throw e
+  }
 }
 
 /**
@@ -210,7 +276,12 @@ export async function sessionForUser(staffId: number): Promise<SessionUser | nul
  */
 async function dropSessionsFor(staffId: number) {
   for (const [token, sess] of cache) if (sess.user.id === staffId) cache.delete(token)
-  await db.execute(sql`DELETE FROM sessions WHERE staff_id = ${staffId}`)
+  if (!sessionsUsable) return
+  try {
+    await db.execute(sql`DELETE FROM sessions WHERE staff_id = ${staffId}`)
+  } catch (e) {
+    if (!sessionTableUnusable(e)) throw e
+  }
 }
 
 export async function listStaff() {

@@ -35,7 +35,8 @@
     "verify:wipe": "node verify-wipe.mjs",
     "verify:tabs": "node verify-tabs.mjs",
     "bundle": "node scripts/bundle.mjs",
-    "verify:admin": "node verify-admin-access.mjs"
+    "verify:admin": "node verify-admin-access.mjs",
+    "verify:print": "tsx verify-print.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
