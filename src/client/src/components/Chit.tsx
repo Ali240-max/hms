@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, rs } from '../lib/api'
-import { Modal, Badge, ErrorNote } from './ui'
+import { Modal, Badge, ErrorNote, PrintButton } from './ui'
 import { Slip, SlipHeader, SlipTopBar, SlipRow, SlipItems, SlipTotal, SlipFooter, Rule } from './Slip'
 import { printNow, applyPaper, loadPrinter } from '../lib/printer'
 import { t as tr } from '../lib/prefs'
@@ -54,13 +54,11 @@ export function ChitPreview({ chitId, onClose, onPaid, canTakePayment = false, i
         <div className="no-print mb-3 flex items-center justify-between">
           <span className="text-2xs font-medium text-heading">{categoryLabel} {tr('chit')}</span>
           <span className="text-2xs text-muted">
-            {loadPrinter('pharmacy').paper} · {tr('preview is exact')}
+            {tr('preview is exact')}
           </span>
         </div>
         <ChitSlip chit={chit} lines={lines} hospital={hospital} categoryLabel={categoryLabel} />
-        <button onClick={() => printNow('pharmacy')} className="btn-primary no-print mt-3 w-full">
-          {tr('Print chit')}
-        </button>
+        <PrintButton onPrint={() => api.printChit(chit.id, 'counter')} label={tr('Print chit')} />
       </div>
     )
   }

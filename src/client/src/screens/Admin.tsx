@@ -6,6 +6,7 @@ import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Tabs, Th } from '../
 import { useT } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
+import { useModules } from '../lib/modules'
 import { BackupLocationCard, DangerZoneCard } from './admin/DangerZone'
 import { AdminAccess } from './admin/AdminAccess'
 import {
@@ -1255,6 +1256,13 @@ function SettingsTab() {
  * hand against every test.
  */
 export function TestSetup({ service, onClose }: { service: any; onClose: () => void }) {
+  /*
+   * The recipe section is hidden when the hospital is not using Stores.
+   *
+   * "What it uses up" issues gauze and cuvettes from a store that does not
+   * exist for them, so it is noise on the screen and a save that does nothing.
+   */
+  const modules = useModules()
   const [params, setParams] = useState<any[]>([])
   const [recipe, setRecipe] = useState<any[]>([])
   const [items, setItems] = useState<any[]>([])
@@ -1287,7 +1295,7 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
           refHigh: p.refHigh === '' ? null : Number(p.refHigh),
           refText: p.refText.trim() || null
         })))
-      await api.saveServiceConsumables(service.id, recipe
+      if (modules.stores) await api.saveServiceConsumables(service.id, recipe
         .filter((r) => r.itemId && Number(r.qty) > 0)
         .map((r) => ({ itemId: r.itemId, qty: Number(r.qty) })))
       setSaved(true)
@@ -1345,6 +1353,7 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
         key: newId(), name: '', unit: '', refLow: '', refHigh: '', refText: '' }])}
         className="btn-ghost mt-2 text-2xs">{tr('Add a line')}</button>
 
+      {modules.stores && (
       <div className="mt-5 border-t-2 border-divide pt-4">
         <p className="label">{tr('What it uses up')}</p>
         <p className="mb-2 text-2xs text-muted">
@@ -1385,6 +1394,7 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
           ))}
         </select>
       </div>
+      )}
     </Modal>
   )
 }

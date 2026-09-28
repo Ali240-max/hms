@@ -1,39 +1,39 @@
-28 files. One migration (0019_service_notes.sql). Replaces v20.
+37 files. Replaces v25. One migration (0019_service_notes.sql).
 
-DELETE THIS FILE AFTER UNZIPPING — left over from an older round, and it
-breaks `npm run typecheck`:
-
+DELETE after unzipping — stale, breaks the typecheck:
   src/client/src/components/PdfPreview.tsx
 
-THE BLANK ROLL
-==============
+Then:  npm install && npm run build
 
-Your driver was set to 80 x 3276 mm. A thermal printer feeds to the end of the
-page its driver is set to, and the browser cannot override that: Chrome only
-offers the paper sizes the driver exposes, so asking for a 104mm page is
-ignored unless a form that size exists on the machine.
+WHAT CHANGED
+  * Bills and chits -> Print again now goes straight to the thermal printer.
+    It was the last button still opening the browser print dialog.
+  * Administration -> Settings -> "Clear all data" is now called
+    "Clear patients and billing", because that is what it does. See below.
+  * Printer settings are per PC, and now say so on screen.
 
-Two things in this update:
+TWO COUNTER PCs, TWO PRINTERS
+  Already works. Printer settings are keyed to the machine, not the account,
+  so each PC keeps its own share path, username and password. Set MC1 up at
+  MC1 and MC2 up at MC2.
 
-  * Printing → Page length, so the browser's page matches the form the printer
-    is actually on. Nothing is scaled or split.
-  * DEPLOY-WINDOWS-OFFLINE.md now has the steps to create a Windows form of
-    80 x 120 mm, after which the printer feeds only that much. That is the
-    only way to remove the waste entirely short of talking ESC/POS to the
-    printer directly.
+  Keyed to the machine on purpose: the printer is plugged into a PC. If it
+  followed the account, a cashier covering the other window would print onto
+  the printer next to their colleague. Five assertions cover this now.
 
-Also: Chrome's Margins → None and Headers and footers → off, once per machine.
-The date and "localhost:5173" at the top of your first receipts were Chrome's
-headers, not ours.
+  A PC that has never been set up falls back to the counter-wide setting, so
+  nothing that was already printing stops.
 
-ALSO IN HERE
-============
+CLEARING THE TRIAL DATA
+  Administration -> Settings -> Clear patients and billing.
 
-  * The logo upload for lab reports, in Administration → Settings. It was
-    missing from your tree entirely.
-  * Note heading and note text moved to the Interpretation dialog, per test.
-  * The print path rewritten to use an isolated iframe (see verify-print.mjs).
+  Removes: patients, visits, chits, bills, payments, lab orders and results,
+  prescriptions, sales, stock movements, doctor earnings, and resets the
+  numbering so the first real patient is number 1.
 
-  npm install
-  npm run typecheck
-  npm run verify:print
+  Keeps: staff, doctors, departments, services and prices, products,
+  suppliers, and every setting including the logo.
+
+  Guarded by three locks: the admin.wipe permission, your own password typed
+  again, and the hospital name typed exactly. It takes a backup first and
+  refuses to proceed if the backup fails.

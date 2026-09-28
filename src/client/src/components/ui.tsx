@@ -1,5 +1,5 @@
-import { Inbox } from 'lucide-react'
-import { useEffect } from 'react'
+import { Inbox, Printer } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { AnimatedNumber, DUR, SPRING, tapBuzz } from '../lib/motion'
 import type { ReactNode } from 'react'
@@ -284,6 +284,46 @@ export function Tabs({ tabs, value, onChange, id = 'tabs', className = '' }: {
           </button>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * Sends a receipt to the thermal printer and says what happened.
+ *
+ * Printing is a server call now rather than a browser dialog, so it can fail
+ * in ways a browser print never did — the printer is off, or unplugged, or
+ * nobody has set one for this counter. Those have to be visible at the
+ * counter, because a cashier who presses Print and sees nothing assumes it
+ * worked and hands the patient nothing.
+ */
+export function PrintButton({ onPrint, label }: {
+  onPrint: () => Promise<any>
+  label: string
+}) {
+  const [state, setState] = useState<'idle' | 'sending' | 'sent'>('idle')
+  const [err, setErr] = useState<string | null>(null)
+
+  return (
+    <div className="no-print mt-3">
+      <button
+        onClick={async () => {
+          setState('sending'); setErr(null)
+          try {
+            await onPrint()
+            setState('sent')
+            setTimeout(() => setState('idle'), 2500)
+          } catch (e: any) {
+            setErr(e.message)
+            setState('idle')
+          }
+        }}
+        disabled={state === 'sending'}
+        className="btn-primary flex w-full items-center justify-center gap-2">
+        <Printer size={15} />
+        {state === 'sending' ? 'Sending…' : state === 'sent' ? 'Sent to the printer' : label}
+      </button>
+      <ErrorNote>{err}</ErrorNote>
     </div>
   )
 }

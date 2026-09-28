@@ -317,18 +317,37 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
     doc.y += 8
     if (doc.y > doc.page.height - 220) { doc.addPage(); doc.y = MARGIN }
 
-    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(INK)
-       .text('Interpretation', MARGIN, doc.y, { lineBreak: false })
-    doc.y += 12
+    /*
+     * No heading above the bands.
+     *
+     * "Interpretation" over "Normal: 3.80 - 5.80" tells a reader nothing they
+     * cannot see, and it competed with the test name higher up the page.
+     *
+     * The label and its range are set close together rather than in two
+     * columns a third of the page apart. Read as a pair — "Good Control
+     * 5.5 - 6.8" — they scan in one movement; separated by four centimetres
+     * of white the eye has to travel, and on a row with a short label it is
+     * easy to read across to the wrong line.
+     */
+    const labelW = Math.max(...(r.interpretations as any[])
+      .map((b: any) => doc.font('Helvetica-Bold').fontSize(8.5)
+        .widthOfString(`${b.title}:`))) + 8
 
     for (const band of r.interpretations as any[]) {
-      doc.font('Helvetica').fontSize(8.5).fillColor(INK)
-         .text(`${band.title}:`, MARGIN + 8, doc.y,
-           { width: width * 0.45, lineBreak: false })
-      doc.font('Helvetica-Bold').fontSize(8.5)
-         .text(band.range_text ?? '', MARGIN + 8 + width * 0.45, doc.y,
-           { width: width * 0.5, lineBreak: false })
-      doc.y += 12
+      /*
+       * Both halves are pinned to the same baseline.
+       *
+       * `doc.text()` moves doc.y down as it draws, so reading doc.y again for
+       * the second half put the range on the line below its own label — which
+       * is how four tidy pairs became eight stray lines.
+       */
+      const y = doc.y
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(INK)
+         .text(`${band.title}:`, MARGIN + 8, y, { width: labelW, lineBreak: false })
+      doc.font('Helvetica').fontSize(8.5)
+         .text(band.range_text ?? '', MARGIN + 8 + labelW, y,
+           { width: width - labelW - 8, lineBreak: false })
+      doc.y = y + 11
     }
   }
 
@@ -392,6 +411,18 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
    */
   const sigY = doc.page.height - FOOT - SIG - 14
   const signers = (extra.signers ?? []).slice(0, 4)
+
+  /*
+   * The line that says a printed signature is not expected.
+   *
+   * Reports go out the moment they are ready, often before the pathologist is
+   * in the building, and a patient handed an unsigned form assumes it is
+   * incomplete. This is the standard wording on machine-issued reports in
+   * Pakistani laboratories and it saves the counter the argument.
+   */
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(INK)
+     .text('ELECTRONICALLY VERIFIED REPORT — NO SIGNATURE REQUIRED',
+       MARGIN, sigY - 16, { width, align: 'center', lineBreak: false })
 
   if (signers.length > 0) {
     const colW = width / signers.length

@@ -266,3 +266,61 @@ export function printSheet() {
   // settings back regardless once the dialog has had time to open.
   setTimeout(restore, 1500)
 }
+
+/* --------------------------------------------------------- workstation */
+
+/**
+ * Which PC this browser is.
+ *
+ * Printer settings were stored per module, so both main counter PCs shared
+ * one: setting the share path on the first changed it on the second, and only
+ * one of the two thermal printers could ever be registered.
+ *
+ * The identity that matters is the machine, not the person. A printer is
+ * plugged into a PC, and if a cashier signs in at the other window their
+ * receipts must come out of the printer next to them, not the one they used
+ * yesterday. Keying on the account would put the slip in the wrong queue every
+ * time somebody covered a colleague's break.
+ *
+ * So each browser gets an id of its own, kept in local storage, and printer
+ * settings hang off that. Clearing the browser's data loses it, which means
+ * re-picking the printer on that PC — a minute's work, and the same thing
+ * would be needed on a new machine anyway.
+ */
+const DEVICE_KEY = 'hms.device'
+const DEVICE_NAME_KEY = 'hms.device.name'
+
+export function deviceId(): string {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY)
+    if (!id) {
+      id = 'w' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4)
+      localStorage.setItem(DEVICE_KEY, id)
+    }
+    return id
+  } catch {
+    // Private browsing with storage blocked. Everything still works; the PC
+    // simply falls back to the counter-wide setting.
+    return ''
+  }
+}
+
+export function deviceName(): string {
+  try { return localStorage.getItem(DEVICE_NAME_KEY) ?? '' } catch { return '' }
+}
+
+export function setDeviceName(name: string) {
+  try { localStorage.setItem(DEVICE_NAME_KEY, name) } catch { /* nothing to do */ }
+}
+
+/**
+ * The key a counter's printer settings are stored under.
+ *
+ * `counter@w3k9f2` rather than `counter`. Where a browser has no id the plain
+ * module name is used, which is also what every existing installation already
+ * has — so nothing set up before this change is lost.
+ */
+export function printerScope(module: string): string {
+  const id = deviceId()
+  return id ? `${module}@${id}` : module
+}

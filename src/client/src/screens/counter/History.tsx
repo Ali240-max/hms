@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Search, Printer, Receipt, FileText, Tags } from 'lucide-react'
 import { api, rs, today, type SessionUser } from '../../lib/api'
-import { Card, Empty, ErrorNote, Modal, Stat, Tabs, Th, SkeletonRows } from '../../components/ui'
+import { Card, Empty, ErrorNote, Modal, PrintButton, Stat, Tabs, Th, SkeletonRows } from '../../components/ui'
 import { ChitPreview } from '../../components/Chit'
 import { CounterBillPreview } from '../../components/CounterBill'
 import { t as tr } from '../../lib/prefs'
@@ -154,11 +154,17 @@ export function CounterHistory({ me }: { me: SessionUser }) {
                         not charged a second time and the day's takings still
                         reconcile.
                       */}
-                      <button
-                        onClick={() => b.chit_id ? setChit(b.chit_id) : setBill(b.id)}
-                        className="btn-ghost inline-flex items-center gap-1.5 px-2 py-1 text-2xs">
-                        <Printer size={13} /> {tr('Print again')}
-                      </button>
+                      {/*
+                        Straight to the thermal printer, like every other
+                        Print in the system. This one still opened the browser
+                        print dialog, which is the behaviour the whole ESC/POS
+                        change existed to remove.
+                      */}
+                      <PrintButton
+                        label={tr('Print again')}
+                        onPrint={() => b.chit_id
+                          ? api.printChit(b.chit_id)
+                          : api.printBill(b.id)} />
                     </td>
                   </tr>
                 ))}

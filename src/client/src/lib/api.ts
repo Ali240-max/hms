@@ -8,6 +8,39 @@ let token: string | null = null
 export const setToken = (t: string | null) => { token = t }
 export const getToken = () => token
 
+/**
+ * A name for this PC, kept in its own browser storage.
+ *
+ * Printer settings belong to a machine, not to a counter and not to a person.
+ * A main counter with two windows has two PCs and two thermal printers, and
+ * one shared setting meant the second window silently overwrote the first, so
+ * only one printer could ever be registered.
+ *
+ * Keying it to whoever is signed in would break the moment both windows use
+ * the same account, which is normal, and would follow a cashier to the other
+ * window when they moved. The printer does not move, so the setting stays
+ * with the machine.
+ *
+ * Clearing browser data makes a PC forget which printer is its own. That is a
+ * two-minute fix at the counter and not worth more machinery than this.
+ */
+export function deviceId(): string {
+  const KEY = 'hms.device'
+  try {
+    let id = localStorage.getItem(KEY)
+    if (!id) {
+      id = 'pc-' + Math.random().toString(36).slice(2, 8) +
+        Date.now().toString(36).slice(-4)
+      localStorage.setItem(KEY, id)
+    }
+    return id
+  } catch {
+    // Storage blocked. Everything still works; this PC just shares the
+    // counter-wide printer setting rather than having one of its own.
+    return ''
+  }
+}
+
 let onSignedOut: (() => void) | null = null
 export const setSignedOutHandler = (fn: () => void) => { onSignedOut = fn }
 
@@ -16,6 +49,9 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      // Which PC this came from, so printing goes to the printer attached to
+      // it rather than to whichever one was configured last.
+      'X-Device-Id': deviceId(),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {})
     }
@@ -327,6 +363,20 @@ export const api = {
     req<any>(`/visits/${visitId}/vitals`, { method: 'PATCH', body: JSON.stringify(b) }),
   receptionOverview: (hours = 24) => req<any>(`/reception/overview?hours=${hours}`),
   /** A one-minute ticket so the browser can fetch a document by itself. */
+  /* Printing happens on the server, in ESC/POS, straight to the printer. */
+  printerConfig: (module: string) => req<any>(`/printing/config/${module}`),
+  savePrinterConfig: (module: string, b: any) =>
+    req<any>(`/printing/config/${module}`, { method: 'PUT', body: JSON.stringify(b) }),
+  availablePrinters: () => req<any>('/printing/available'),
+  testPrint: (module: string) =>
+    req<any>(`/printing/test/${module}`, { method: 'POST' }),
+  printChit: (id: number, module = 'counter') =>
+    req<any>(`/printing/chit/${id}?module=${module}`, { method: 'POST' }),
+  printBill: (id: number, module = 'counter') =>
+    req<any>(`/printing/bill/${id}?module=${module}`, { method: 'POST' }),
+  printSale: (id: number, module = 'pharmacy') =>
+    req<any>(`/printing/sale/${id}?module=${module}`, { method: 'POST' }),
+
   documentTicket: (path: string) =>
     req<{ ticket: string }>('/tickets', { method: 'POST', body: JSON.stringify({ path }) }),
   modules: () => req<Record<string, boolean>>('/modules'),

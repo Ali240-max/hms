@@ -128,7 +128,7 @@ export function DangerZoneCard({ me }: { me: SessionUser }) {
             className="mt-3 inline-flex items-center gap-1.5 rounded-xl border-2 border-bad
                        bg-bad/10 px-3 py-2 text-2xs font-medium text-bad transition-colors
                        hover:bg-bad hover:text-white">
-            <Trash2 size={14} /> {tr('Clear all data…')}
+            <Trash2 size={14} /> {tr('Clear patients and billing…')}
           </button>
         </div>
       </div>
@@ -176,7 +176,7 @@ function WipeDialog({ me, onClose }: { me: SessionUser; onClose: () => void }) {
   }
 
   return (
-    <Modal title={tr('Clear all data?')} wide onClose={onClose}
+    <Modal title={tr('Clear patients and billing?')} wide onClose={onClose}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
         <button disabled={busy || !ready}

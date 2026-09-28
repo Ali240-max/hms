@@ -57,5 +57,33 @@ console.log('\n— overlays may still use it, they are not a module shell —')
   ok('the modal does not wait either', !/mode=["']wait["']/.test(ui))
 }
 
+console.log('\n— settings screens actually contain their fields —')
+{
+  /*
+   * A field that is missing renders perfectly well.
+   *
+   * The credential boxes for a shared printer were written, shipped, and never
+   * appeared, because the edit that added them silently matched nothing. Every
+   * other check passed: it typechecked, it rendered, the tests were green. The
+   * only thing that would have caught it is asking whether the field is there.
+   */
+  const printer = strip(readFileSync(join(ROOT, 'components/PrinterSettings.tsx'), 'utf8'))
+
+  for (const [what, needle] of [
+    ['the share path', 'target.unc'],
+    ['a username for the PC holding the printer', 'target.user'],
+    ['a password for it', 'target.pass'],
+    ['the network host', 'target.host'],
+    ['a test print button', 'testPrint']
+  ]) {
+    ok(`printer settings offer ${what}`, printer.includes(needle))
+  }
+
+  // The two credential boxes are useless unless the server is told about them.
+  const printing = strip(
+    readFileSync(join('src/server/services', 'printing.ts'), 'utf8'))
+  ok('and the server reads them back', /user/.test(printing) && /pass/.test(printing))
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, rs } from '../lib/api'
-import { Modal, ErrorNote } from './ui'
+import { Modal, ErrorNote, PrintButton } from './ui'
 import { Slip, SlipHeader, SlipRow, SlipTotal, SlipFooter, Rule, SlipTopBar } from './Slip'
 import { loadPrinter, printNow, applyPaper } from '../lib/printer'
 import { t as tr } from '../lib/prefs'
@@ -26,15 +26,14 @@ export function CounterBillPreview({ billId, onClose, inline = false }: {
       <div className="panel p-4">
         <div className="no-print mb-3 flex items-center justify-between">
           <span className="text-2xs font-medium text-heading">{tr('Receipt')}</span>
-          <span className="text-2xs text-muted">{s.paper} · {tr('preview is exact')}</span>
+          <span className="text-2xs text-muted">{tr('preview is exact')}</span>
         </div>
         <ErrorNote>{err}</ErrorNote>
         {!data ? <p className="text-2xs text-muted">{tr('Loading…')}</p> : (
           <>
             <CounterBillSlip bill={data.bill} items={data.items} hospital={data.hospital} />
-            <button onClick={() => printNow('counter')} className="btn-primary no-print mt-3 w-full">
-              {tr('Print receipt')}
-            </button>
+            <PrintButton onPrint={() => api.printBill(data.bill.id, 'counter')}
+              label={tr('Print receipt')} />
           </>
         )}
       </div>

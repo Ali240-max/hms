@@ -1,5 +1,6 @@
 import { sql, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { db } from '../db/client'
 import { dateSegment } from './numbering'
 import * as s from '../db/schema'
 
@@ -391,4 +392,26 @@ export async function createSale(db: NodePgDatabase<typeof s>, input: NewSaleInp
 
     return { sale, items: pending.length }
   })
+}
+
+/**
+ * One sale with its lines, for printing.
+ *
+ * Its own function rather than reusing the screen's query, because the printed
+ * copy needs the product name resolved and nothing else: a receipt does not
+ * care about schedules, batches or stock levels.
+ */
+export async function saleForPrint(saleId: number) {
+  const sale = ((await db.execute<any>(sql`
+    SELECT * FROM sales WHERE id = ${saleId}`)).rows as any[])[0]
+  if (!sale) throw new Error('No such invoice')
+
+  const items = (await db.execute<any>(sql`
+    SELECT si.*, p.name AS product_name, p.unit_label, p.sub_unit_label
+    FROM sale_items si
+    JOIN products p ON p.id = si.product_id
+    WHERE si.sale_id = ${saleId}
+    ORDER BY si.id`)).rows
+
+  return { sale, items }
 }

@@ -32,6 +32,12 @@ import { createTicket, checkTicket } from '../services/tickets'
 import { wipePreview, wipeTradingData, WipeError } from '../services/wipe'
 import { patientStickers, wardLabels } from '../services/labels-pdf'
 import {
+  printerConfig, savePrinterConfig, allPrinterConfigs, sendToPrinter,
+  windowsPrinters, PrintError
+} from '../services/printing'
+import { chitReceipt, billReceipt, saleReceipt, testPage } from '../services/escpos'
+import { saleForPrint } from '../services/sales'
+import {
   ADMIN_PERMISSIONS, adminPermissionsFor, saveAdminPermissions, adminAccounts,
   hasAdminPermission, guardRootAccount
 } from '../services/admin-perms'
@@ -867,6 +873,120 @@ api.put('/lab/report-settings', allow('admin', 'lab_tech', 'radiology'), async (
   })
 })
 
+/* ---------------------------------------------------------- printing */
+
+/**
+ * Receipts are printed by the server, in ESC/POS, straight to the printer.
+ *
+ * Not through the browser. A browser prints pages, and a thermal printer feeds
+ * to the end of whatever page its driver is set to — which is why a receipt
+ * used to be followed by three metres of blank roll. ESC/POS has no pages: the
+ * printer prints what it is sent and cuts where it is told.
+ */
+/** Which PC is asking. Sent by the browser, kept in its own storage. */
+const device = (c: any) => c.req.header('x-device-id') || c.req.query('device') || null
+
+api.get('/printing/config/:module', async (c) =>
+  c.json(await printerConfig(c.req.param('module'), device(c))))
+
+api.get('/printing/configs', adminOnly, async (c) => c.json(await allPrinterConfigs()))
+
+api.put('/printing/config/:module',
+  allow('admin', 'main_counter', 'pharmacist', 'pharmacy_admin', 'lab_tech', 'radiology'),
+  async (c) => {
+    /*
+     * A half-filled setting is allowed to be saved.
+     *
+     * The address was required here, which meant choosing "Network printer"
+     * from the dropdown — which saves the choice before there is anywhere to
+     * type an address — was rejected outright, and the dropdown snapped back
+     * to "Not set". There was no order in which the form could be filled in.
+     *
+     * Configuration is a draft until it works. What must not be half-filled
+     * is a print, and that is checked when one is attempted: an empty address
+     * is refused there with a message naming the counter.
+     */
+    const b = z.object({
+      target: z.union([
+        z.object({ kind: z.literal('network'), host: z.string(),
+                   port: z.number().int().optional() }),
+        z.object({
+          kind: z.literal('share'), unc: z.string(),
+          // For the PC holding the printer, not for this system.
+          user: z.string().nullable().optional(),
+          pass: z.string().nullable().optional()
+        }),
+        z.object({ kind: z.literal('local'), unc: z.string() }),
+        z.object({ kind: z.literal('none') })
+      ]).optional(),
+      width: z.enum(['58mm', '80mm']).optional(),
+      copies: z.number().int().min(1).max(5).optional(),
+      feedLines: z.number().int().min(0).max(10).optional(),
+      kickDrawer: z.boolean().optional()
+    }).parse(await c.req.json())
+    const b2 = b as any
+    return c.json(await savePrinterConfig(c.req.param('module'), b2, device(c)))
+  })
+
+/** What this server can see. A printer missing here cannot be printed to. */
+api.get('/printing/available', async (c) => c.json({
+  platform: process.platform,
+  printers: await windowsPrinters()
+}))
+
+const printFailed = (c: any, e: any) => {
+  if (e instanceof PrintError) return c.json({ error: e.message, code: e.code }, 409)
+  throw e
+}
+
+api.post('/printing/test/:module', async (c) => {
+  const cfg = await printerConfig(c.req.param('module'), device(c))
+  try {
+    const r = await sendToPrinter(c.req.param('module'),
+      testPage(await getHospitalInfo(), cfg.width), { copies: 1, device: device(c) })
+    return c.json({ ok: true, ...r })
+  } catch (e) { return printFailed(c, e) }
+})
+
+api.post('/printing/chit/:id', async (c) => {
+  const module = c.req.query('module') || 'counter'
+  const cfg = await printerConfig(module, device(c))
+  const data = await chitForPrint(Number(c.req.param('id')))
+  try {
+    const r = await sendToPrinter(module, chitReceipt({
+      ...data, hospital: await getHospitalInfo(),
+      width: cfg.width, feedLines: cfg.feedLines
+    }), { copies: cfg.copies, device: device(c) })
+    return c.json({ ok: true, ...r })
+  } catch (e) { return printFailed(c, e) }
+})
+
+api.post('/printing/bill/:id', async (c) => {
+  const module = c.req.query('module') || 'counter'
+  const cfg = await printerConfig(module, device(c))
+  const data = await billForPrint(Number(c.req.param('id')))
+  try {
+    const r = await sendToPrinter(module, billReceipt({
+      bill: data.bill, items: data.items, hospital: await getHospitalInfo(),
+      width: cfg.width, feedLines: cfg.feedLines
+    }), { copies: cfg.copies, device: device(c) })
+    return c.json({ ok: true, ...r })
+  } catch (e) { return printFailed(c, e) }
+})
+
+api.post('/printing/sale/:id', async (c) => {
+  const module = c.req.query('module') || 'pharmacy'
+  const cfg = await printerConfig(module, device(c))
+  const data = await saleForPrint(Number(c.req.param('id')))
+  try {
+    const r = await sendToPrinter(module, saleReceipt({
+      sale: data.sale, items: data.items, hospital: await getHospitalInfo(),
+      width: cfg.width, feedLines: cfg.feedLines
+    }), { copies: cfg.copies, device: device(c) })
+    return c.json({ ok: true, ...r })
+  } catch (e) { return printFailed(c, e) }
+})
+
 api.get('/lab/footer', async (c) => c.json(await getLabFooter()))
 
 api.put('/lab/footer', adminOnly, async (c) => {
@@ -909,7 +1029,16 @@ api.put('/services/:id/parameters', allow('admin', 'lab_tech', 'radiology'), asy
 api.get('/services/:id/consumables', async (c) =>
   c.json(await consumablesFor(Number(c.req.param('id')))))
 
-api.put('/services/:id/consumables', adminOnly, async (c) => {
+/*
+ * The laboratory sets what a test uses up, alongside its reference ranges.
+ *
+ * This was administrators only, which broke saving from the lab's own Test
+ * setup screen: the dialog saves parameters and consumables together, so the
+ * whole save was refused with "your role cannot do this" even though the
+ * ranges themselves were allowed. Whoever runs the test knows how many
+ * cuvettes it takes; an administrator does not.
+ */
+api.put('/services/:id/consumables', allow('admin', 'lab_tech', 'radiology'), async (c) => {
   const b = z.object({
     consumables: z.array(z.object({
       itemId: z.number().int(), qty: z.number().int().min(1)
