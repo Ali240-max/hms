@@ -16,6 +16,10 @@ import { lazy, Suspense } from 'react'
  */
 const ReportBars = lazy(() =>
   import('../../components/charts').then((m) => ({ default: m.ReportBars })))
+const ReportRing = lazy(() =>
+  import('../../components/charts').then((m) => ({ default: m.ReportRing })))
+const ReportArea = lazy(() =>
+  import('../../components/charts').then((m) => ({ default: m.ReportArea })))
 
 /**
  * Reports.
@@ -191,8 +195,23 @@ export function Reports({ me }: { me: SessionUser }) {
                 : `${data.rows.length} ${data.rows.length === 1 ? tr('row') : tr('rows')}`}${
               /paisa/.test(data.chart.value) ? ` · ${tr('rupees')}` : ''}`}>
             <Suspense fallback={<div className="loading-bar my-6" />}>
-              <ReportBars rows={data.rows} labelKey={data.chart.label} valueKey={data.chart.value}
+              {/*
+                The shape the report asked for.
+                A department split is a question about proportion, a month of
+                takings is a question about shape, and a list of products is a
+                question about size. Drawing bars for all three answered only
+                the last one.
+              */}
+              {data.chart.kind === 'ring' ? (
+                <ReportRing rows={data.rows} labelKey={data.chart.label}
+                  valueKey={data.chart.value} money={/paisa/.test(data.chart.value)} />
+              ) : data.chart.kind === 'area' ? (
+                <ReportArea rows={data.rows} labelKey={data.chart.label}
+                  valueKey={data.chart.value} money={/paisa/.test(data.chart.value)} />
+              ) : (
+                <ReportBars rows={data.rows} labelKey={data.chart.label} valueKey={data.chart.value}
                 money={/paisa/.test(data.chart.value)} speed="report" />
+              )}
             </Suspense>
           </Card>
         )}

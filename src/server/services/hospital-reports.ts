@@ -467,3 +467,122 @@ export async function goodsReceivedSummary(w: Window, q: Record<string, string>)
     ORDER BY p.invoice_date DESC, p.id DESC LIMIT 600`)
   return r.rows
 }
+
+/* ------------------------------------------- departments, at a glance */
+
+/**
+ * One line per department: how many patients, and how much was taken.
+ *
+ * The question a hospital owner asks first, and the one the old system could
+ * only answer by adding up three separate printouts. Patients are counted
+ * distinctly, so a patient who had a consultation and two tests in the same
+ * department counts once — otherwise the busiest department is simply the one
+ * that orders the most tests.
+ */
+export async function salesByDepartment(w: Window) {
+  const r = await db.execute<any>(sql`
+    WITH work AS (
+      /* Consultations sit on the visit; tests and scans sit on the order. */
+      SELECT d.name                          AS department,
+             v.patient_id,
+             cb.total_paisa,
+             cb.discount_paisa
+      FROM counter_bills cb
+      JOIN visits v       ON v.id = cb.visit_id
+      LEFT JOIN departments d ON d.id = v.department_id
+      /*
+       * A counter bill has no status. The row is written when the money is
+       * taken, so its existence is the payment — there is no unpaid one to
+       * filter out.
+       */
+      WHERE cb.created_at >= ${w.from} AND cb.created_at < ${w.to}
+
+      UNION ALL
+
+      -- sv.category is an enum, so it is cast to text before a default can
+      -- be supplied: COALESCE on the enum itself is rejected outright.
+      -- The service's own department when one is set, otherwise its broad
+      -- category. The fallback is what lets this report work on a hospital
+      -- that has not filled the new field in yet.
+      SELECT COALESCE(sd.name, INITCAP(sv.category::text), 'Other') AS department,
+             ch.patient_id,
+             ch.total_paisa,
+             0 AS discount_paisa
+      FROM chits ch
+      JOIN service_orders so ON so.chit_id = ch.id
+      JOIN services sv       ON sv.id = so.service_id
+      LEFT JOIN departments sd ON sd.id = sv.department_id
+      WHERE ch.created_at >= ${w.from} AND ch.created_at < ${w.to}
+        AND ch.status = 'paid'
+    )
+    SELECT COALESCE(department, 'Unassigned')        AS department,
+           COUNT(DISTINCT patient_id)::int           AS patients,
+           COALESCE(SUM(total_paisa), 0)::bigint     AS received_paisa
+    FROM work
+    GROUP BY 1
+    ORDER BY received_paisa DESC, department`)
+  return r.rows
+}
+
+/**
+ * Every patient seen, grouped by department.
+ *
+ * One row per piece of work rather than per patient, because that is what a
+ * head of department checks against: the name, who saw them, what was done
+ * and what was taken for it. The table breaks by department, which is what
+ * `groupBy` on the report definition does with it.
+ */
+export async function patientsByDepartment(w: Window) {
+  const r = await db.execute<any>(sql`
+    SELECT COALESCE(d.name, 'Unassigned')            AS department,
+           COALESCE(st.display_name, '—')            AS doctor_name,
+           p.name                                    AS patient_name,
+           'Consultation'                            AS procedure_name,
+           p.mrn,
+           cb.total_paisa                            AS received_paisa,
+           cb.discount_paisa,
+           cb.created_at
+    FROM counter_bills cb
+    JOIN visits v        ON v.id = cb.visit_id
+    JOIN patients p      ON p.id = v.patient_id
+    LEFT JOIN departments d ON d.id = v.department_id
+    LEFT JOIN doctors doc   ON doc.id = v.doctor_id
+    LEFT JOIN staff st      ON st.id = doc.staff_id
+    WHERE cb.created_at >= ${w.from} AND cb.created_at < ${w.to}
+
+    UNION ALL
+
+    /*
+     * Tests and scans name the test in the procedure column, as asked: on a
+     * laboratory sheet "Consultation" against every line would tell a
+     * pathologist nothing.
+     */
+    SELECT COALESCE(sd.name, INITCAP(sv.category::text), 'Other') AS department,
+           COALESCE(st.display_name, '—')            AS doctor_name,
+           p.name                                    AS patient_name,
+           so.service_name                           AS procedure_name,
+           p.mrn,
+           so.price_paisa                            AS received_paisa,
+           0                                         AS discount_paisa,
+           ch.created_at
+    FROM service_orders so
+    JOIN chits ch        ON ch.id = so.chit_id
+    JOIN patients p      ON p.id = ch.patient_id
+    JOIN services sv     ON sv.id = so.service_id
+    LEFT JOIN departments sd ON sd.id = sv.department_id
+    LEFT JOIN visits v   ON v.id = ch.visit_id
+    LEFT JOIN doctors doc ON doc.id = v.doctor_id
+    LEFT JOIN staff st    ON st.id = doc.staff_id
+    WHERE ch.created_at >= ${w.from} AND ch.created_at < ${w.to}
+      AND ch.status = 'paid'
+
+    ORDER BY 1, created_at`)
+
+  // Numbered within each department, so a printed sheet can be read out.
+  let dept = ''
+  let n = 0
+  return (r.rows as any[]).map((row) => {
+    if (row.department !== dept) { dept = row.department; n = 0 }
+    return { ...row, no: ++n }
+  })
+}

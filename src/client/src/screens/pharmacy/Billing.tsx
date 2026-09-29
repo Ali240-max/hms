@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, rs, toPaisa, type SearchHit, type SessionUser } from '../../lib/api'
 import { useCart, totals as cartTotals } from '../../lib/cart'
 import { ExpiryPill } from '../../components/Expiry'
-import { Badge, ErrorNote } from '../../components/ui'
+import { Badge, ErrorNote, PrintButton } from '../../components/ui'
 import { ReceiptPreview } from '../../components/Chit'
 import { LabelPreview } from '../../components/Labels'
 import { t as tr } from '../../lib/prefs'
@@ -100,6 +100,24 @@ export function Billing({ me, pending, onConsumed }: {
     // every sale records zero cash received.
   }, [cart, tendered, total, linked])
 
+  /*
+   * Printed once, when the sale first completes.
+   *
+   * Keyed on the invoice so a re-render cannot print a second copy, which is
+   * the way this kind of effect usually goes wrong: a state change somewhere
+   * else in the screen and the customer has two receipts.
+   */
+  const printedFor = useRef<string | null>(null)
+  useEffect(() => {
+    const id = done?.sale?.invoiceNo
+    if (!id || printedFor.current === id) return
+    printedFor.current = id
+    api.printSale(done.sale.id).catch(() => {
+      // Silent: the panel already offers Print again, and a printer that is
+      // off should not stop the cashier taking the next customer.
+    })
+  }, [done])
+
   if (done) {
     return (
       <div className="flex h-full items-center justify-center p-6">
@@ -113,8 +131,17 @@ export function Billing({ me, pending, onConsumed }: {
               <p className="num text-3xl font-semibold text-ok">Rs {rs(done.change)}</p>
             </div>
           )}
+          {/*
+            The receipt goes to the printer as the sale completes.
+            A pharmacy counter sells to somebody standing in front of it, and
+            making the cashier press Preview and then Print puts two clicks
+            between the money and the paper. Print again is there for the
+            times it jams or the customer asks for a second copy.
+          */}
+          <PrintButton label={tr('Print again')}
+            onPrint={() => api.printSale(done.sale.id)} />
           <button onClick={() => setReceipt(done.sale.id)}
-            className="btn-ghost mt-5 w-full">{tr('Preview receipt')}</button>
+            className="btn-ghost mt-2 w-full">{tr('Preview receipt')}</button>
           {/*
             Offered on every sale, not just prescriptions: the patient reads
             the box, not the bill.

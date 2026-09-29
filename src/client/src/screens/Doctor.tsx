@@ -3,16 +3,26 @@ import { api, rs, today, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th } from '../components/ui'
 import { NuskhaPreview } from '../components/Nuskha'
 import { Sidebar, type NavItem } from '../components/Sidebar'
-import { Stethoscope, Wallet } from 'lucide-react'
+import { Reports } from './pharma/Reports'
+import { Stethoscope, Wallet, BarChart3 } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
 const DOCTOR_NAV: NavItem[] = [
   { id: 'queue', label: 'My patients', glyph: 'Q', icon: Stethoscope },
-  { id: 'earnings', label: 'Earnings', glyph: 'E', icon: Wallet }
+  { id: 'earnings', label: 'Earnings', glyph: 'E', icon: Wallet },
+  /*
+   * Every login has a Reports tab now, doctors included.
+   *
+   * What is inside it is decided per account under Administration, Report
+   * access. A doctor starts with none, so the tab is empty until somebody
+   * grants them something — which is the point: the hospital decides, rather
+   * than the decision being frozen into which screens exist.
+   */
+  { id: 'reports', label: 'Reports', glyph: 'R', icon: BarChart3 }
 ]
 
 export function Doctor({ me }: { me: SessionUser }) {
-  const [tab, setTab] = useState<'queue' | 'earnings'>('queue')
+  const [tab, setTab] = useState<'queue' | 'earnings' | 'reports'>('queue')
   const [openVisit, setOpenVisit] = useState<number | null>(null)
 
   if (openVisit) {
@@ -21,10 +31,13 @@ export function Doctor({ me }: { me: SessionUser }) {
 
   return (
     <div className="flex h-full min-h-0">
-      <Sidebar items={DOCTOR_NAV} active={tab} onSelect={(id: string) => setTab(id as 'queue' | 'earnings')}
+      <Sidebar items={DOCTOR_NAV} active={tab}
+        onSelect={(id: string) => setTab(id as 'queue' | 'earnings' | 'reports')}
         title="Consultation" subtitle={me.displayName} />
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
-        {tab === 'queue' ? <Queue onOpen={setOpenVisit} /> : <Earnings me={me} />}
+        {tab === 'queue' ? <Queue onOpen={setOpenVisit} />
+          : tab === 'reports' ? <Reports me={me} />
+          : <Earnings me={me} />}
       </div>
     </div>
   )

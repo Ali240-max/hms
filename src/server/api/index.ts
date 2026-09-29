@@ -31,6 +31,8 @@ import { getModules, saveModules, getHospitalInfo, saveHospitalInfo, setSetting,
 import { createTicket, checkTicket } from '../services/tickets'
 import { wipePreview, wipeTradingData, WipeError } from '../services/wipe'
 import { patientStickers, wardLabels } from '../services/labels-pdf'
+import { createCrossMatch, crossMatch, crossMatches } from '../services/cross-match'
+import { crossMatchPdf } from '../services/cross-match-pdf'
 import {
   printerConfig, savePrinterConfig, allPrinterConfigs, sendToPrinter,
   windowsPrinters, PrintError
@@ -409,6 +411,9 @@ api.post('/services', adminOnly, async (c) => {
     category: z.enum(['lab', 'radiology', 'procedure', 'other']),
     pricePaisa: z.number().int().min(0),
     defaultShareBp: z.number().int().min(0).max(10000),
+    // Which department owns it, so reports can split an ECG from an X-ray
+    // rather than lumping both under "radiology".
+    departmentId: z.number().int().nullable().optional(),
     isActive: z.boolean().optional()
   }).parse(await c.req.json())
   return c.json(await upsertService(b), b.id ? 200 : 201)
@@ -709,6 +714,22 @@ api.get('/lab/orders/:id/pdf', async (c) => {
 })
 
 /** Every finished report on one visit, each on its own page. */
+/**
+ * "Sami Ullah LAB-000351.pdf".
+ *
+ * A folder of MRN-000597-lab-report.pdf is unsearchable by the one thing
+ * anybody remembers. Punctuation Windows refuses in a filename is stripped
+ * rather than escaped, because a report saved with a slash in its name simply
+ * fails to save.
+ */
+function labFileName(row: any) {
+  const clean = (s: any) => String(s ?? '')
+    .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim()
+  const name = clean(row?.patient_name) || 'Lab report'
+  const no = clean(row?.report_no)
+  return `${name}${no ? ' ' + no : ''}.pdf`
+}
+
 api.get('/lab/visits/:id/pdf', async (c) => {
   const visitId = Number(c.req.param('id'))
 
@@ -742,7 +763,9 @@ api.get('/lab/visits/:id/pdf', async (c) => {
        */
       'content-disposition':
         `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
-        `filename="lab-visit-${visitId}.pdf"`
+        // Named for the patient and report number, same as the client asks
+        // for, so a file saved from either route lands with the same name.
+        `filename="${labFileName(ready[0])}"`
     }
   })
 })
@@ -985,6 +1008,59 @@ api.post('/printing/sale/:id', async (c) => {
     }), { copies: cfg.copies, device: device(c) })
     return c.json({ ok: true, ...r })
   } catch (e) { return printFailed(c, e) }
+})
+
+/* -------------------------------------------------------- cross match */
+
+api.get('/lab/cross-matches', allow('admin', 'lab_tech', 'reports'), async (c) =>
+  c.json(await crossMatches({ q: c.req.query('q') })))
+
+api.get('/lab/cross-matches/:id', allow('admin', 'lab_tech', 'reports'), async (c) =>
+  c.json(await crossMatch(Number(c.req.param('id')))))
+
+api.post('/lab/cross-matches', allow('admin', 'lab_tech'), async (c) => {
+  const b = z.object({
+    patientId: z.number().int(),
+    visitId: z.number().int().nullable().optional(),
+    patientGroup: z.string().nullable().optional(),
+    patientRh: z.string().nullable().optional(),
+    donorName: z.string().min(1),
+    donorAge: z.number().int().nullable().optional(),
+    donorSex: z.string().nullable().optional(),
+    donorGroup: z.string().nullable().optional(),
+    donorRh: z.string().nullable().optional(),
+    donorHb: z.string().nullable().optional(),
+    bloodBagNo: z.string().nullable().optional(),
+    hbsag: z.string().nullable().optional(),
+    antiHcv: z.string().nullable().optional(),
+    hiv: z.string().nullable().optional(),
+    vdrl: z.string().nullable().optional(),
+    mp: z.string().nullable().optional(),
+    directPhase: z.string().nullable().optional(),
+    albuminPhase: z.string().nullable().optional(),
+    conclusion: z.string().nullable().optional(),
+    notes: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  try {
+    return c.json(await createCrossMatch(b, me(c).displayName), 201)
+  } catch (e: any) {
+    return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 400)
+  }
+})
+
+api.get('/lab/cross-matches/:id/pdf', async (c) => {
+  const r = await crossMatch(Number(c.req.param('id')))
+  const pdf = await crossMatchPdf(Number(c.req.param('id')))
+  const clean = (s: any) => String(s ?? '')
+    .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim()
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="${clean(r.patient_name)} ${clean(r.report_no)}.pdf"`
+    }
+  })
 })
 
 api.get('/lab/footer', async (c) => c.json(await getLabFooter()))

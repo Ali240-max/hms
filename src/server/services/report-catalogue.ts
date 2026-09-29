@@ -8,7 +8,8 @@ import {
   labRegister, labBy, labSummary, labOutstanding, labTurnaround, labAbnormal,
   counterSummary, counterBy, counterRegister, patientRegister, unpaidChits,
   doctorEarnings, hospitalIncome, hospitalDaily,
-  goodsReceivedDetail, goodsReceivedSummary
+  goodsReceivedDetail, goodsReceivedSummary,
+  salesByDepartment, patientsByDepartment
 } from './hospital-reports'
 import type { Column } from './report-pdf'
 
@@ -40,7 +41,15 @@ export type ReportDef = {
   permission: string
   columns: Column[]
   /** Column to plot, and the column to label bars with. */
-  chart?: { label: string; value: string; kind: 'bar' | 'line' }
+  /**
+   * How to draw it.
+   *
+   * `bar` compares sizes, `ring` shows shares of a whole, `area` shows a run
+   * over time. Picking per report rather than drawing bars for everything:
+   * a department split is a question about proportion, and a month of daily
+   * takings is a question about shape.
+   */
+  chart?: { label: string; value: string; kind: 'bar' | 'line' | 'ring' | 'area' }
   totalKeys?: string[]
   groupBy?: string
   groupLabel?: string
@@ -71,7 +80,7 @@ export const REPORTS: ReportDef[] = [
     columns: [text('label', 'Date', 12), num('invoices', 'Invoices', 9),
       money('revenue_paisa', 'Revenue'), money('discount_paisa', 'Discount'),
       money('margin_paisa', 'Margin'), money('average_paisa', 'Avg Bill')],
-    chart: { label: 'label', value: 'revenue_paisa', kind: 'bar' },
+    chart: { label: 'label', value: 'revenue_paisa', kind: 'area' },
     totalKeys: ['invoices', 'revenue_paisa', 'discount_paisa', 'margin_paisa'],
     run: (w) => salesBy(w, 'day'), stats: (w) => salesSummary(w)
   },
@@ -82,7 +91,7 @@ export const REPORTS: ReportDef[] = [
     columns: [text('label', 'Month', 10), num('invoices', 'Invoices', 9),
       money('revenue_paisa', 'Revenue'), money('discount_paisa', 'Discount'),
       money('margin_paisa', 'Margin')],
-    chart: { label: 'label', value: 'revenue_paisa', kind: 'bar' },
+    chart: { label: 'label', value: 'revenue_paisa', kind: 'area' },
     totalKeys: ['invoices', 'revenue_paisa', 'discount_paisa', 'margin_paisa'],
     run: (w) => salesBy(w, 'month')
   },
@@ -92,7 +101,7 @@ export const REPORTS: ReportDef[] = [
     permission: 'report.sales', dated: true,
     columns: [text('label', 'Hour', 8), num('invoices', 'Invoices', 9),
       money('revenue_paisa', 'Revenue'), money('average_paisa', 'Avg Bill')],
-    chart: { label: 'label', value: 'invoices', kind: 'bar' },
+    chart: { label: 'label', value: 'invoices', kind: 'area' },
     totalKeys: ['invoices', 'revenue_paisa'],
     run: (w) => salesBy(w, 'hour')
   },
@@ -184,7 +193,7 @@ export const REPORTS: ReportDef[] = [
     columns: [text('label', 'Date', 12), num('deliveries', 'GRNs', 7),
       num('packs', 'Packs', 8), num('bonus_packs', 'Bonus', 7),
       money('total_paisa', 'Total Value')],
-    chart: { label: 'label', value: 'total_paisa', kind: 'bar' },
+    chart: { label: 'label', value: 'total_paisa', kind: 'area' },
     totalKeys: ['deliveries', 'packs', 'bonus_packs', 'total_paisa'],
     run: (w) => purchaseBy(w, 'day'), stats: (w) => purchaseSummary(w)
   },
@@ -455,7 +464,7 @@ const COUNTER: ReportDef[] = [
     columns: [text('label', 'Date', 12), num('bills', 'Bills', 8),
       num('cash_bills', 'Cash', 7), money('average_paisa', 'Avg Bill'),
       money('taken_paisa', 'Collected')],
-    chart: { label: 'label', value: 'taken_paisa', kind: 'bar' },
+    chart: { label: 'label', value: 'taken_paisa', kind: 'area' },
     totalKeys: ['bills', 'taken_paisa'],
     run: (w) => counterBy(w, 'day'), stats: (w) => counterSummary(w)
   },
@@ -494,13 +503,43 @@ const COUNTER: ReportDef[] = [
     run: (w) => counterBy(w, 'department')
   },
   {
+    id: 'dept-summary', group: 'Counter', module: 'counter',
+    title: 'Department Summary',
+    blurb: 'Patients and money taken, one line per department, with the totals underneath.',
+    permission: 'report.counter', dated: true,
+    columns: [text('department', 'Department', 30), num('patients', 'Total patients', 14),
+      money('received_paisa', 'Received')],
+    chart: { label: 'department', value: 'received_paisa', kind: 'ring' },
+    totalKeys: ['patients', 'received_paisa'],
+    run: (w) => salesByDepartment(w)
+  },
+  {
+    id: 'dept-patients', group: 'Counter', module: 'counter',
+    title: 'Patients by Department',
+    blurb: 'Every patient seen, in a separate table per department, with what was done and taken.',
+    permission: 'report.counter', dated: true, landscape: true,
+    /*
+     * Broken into a table per department rather than one long list with a
+     * department column. A head of department reads their own sheet and
+     * nothing else, and the totals under each table are the ones they are
+     * asked about.
+     */
+    groupBy: 'department', groupLabel: 'Department',
+    columns: [num('no', 'No', 5), text('doctor_name', 'Doctor', 22),
+      text('patient_name', 'Patient', 22), text('procedure_name', 'Procedure', 26),
+      text('mrn', 'MRN', 16), money('received_paisa', 'Received'),
+      money('discount_paisa', 'Discount')],
+    totalKeys: ['received_paisa', 'discount_paisa'],
+    run: (w) => patientsByDepartment(w)
+  },
+  {
     id: 'counter-by-hour', group: 'Counter', module: 'counter',
     title: 'Counter Busy Hours',
     blurb: 'When the window is busy. Useful for deciding when to open a second counter.',
     permission: 'report.counter', dated: true,
     columns: [text('label', 'Hour', 8), num('bills', 'Bills', 8),
       money('taken_paisa', 'Collected')],
-    chart: { label: 'label', value: 'bills', kind: 'bar' },
+    chart: { label: 'label', value: 'bills', kind: 'area' },
     totalKeys: ['bills', 'taken_paisa'],
     run: (w) => counterBy(w, 'hour')
   },
@@ -577,7 +616,7 @@ const HOSPITAL: ReportDef[] = [
     columns: [text('label', 'Date', 12), num('patients', 'Patients', 9),
       num('lab_tests', 'Lab tests', 10), money('counter_paisa', 'Counter'),
       money('pharmacy_paisa', 'Pharmacy'), money('total_paisa', 'Total')],
-    chart: { label: 'label', value: 'total_paisa', kind: 'bar' },
+    chart: { label: 'label', value: 'total_paisa', kind: 'area' },
     totalKeys: ['patients', 'lab_tests', 'counter_paisa', 'pharmacy_paisa', 'total_paisa'],
     run: (w) => hospitalDaily(w)
   }

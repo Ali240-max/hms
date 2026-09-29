@@ -297,15 +297,19 @@ export function Tabs({ tabs, value, onChange, id = 'tabs', className = '' }: {
  * counter, because a cashier who presses Print and sees nothing assumes it
  * worked and hands the patient nothing.
  */
-export function PrintButton({ onPrint, label }: {
+export function PrintButton({ onPrint, label, disabled = false, block = true }: {
   onPrint: () => Promise<any>
   label: string
+  /** While the slip is still loading there is nothing to print yet. */
+  disabled?: boolean
+  /** Full width in a dialog footer; inline in a table row. */
+  block?: boolean
 }) {
   const [state, setState] = useState<'idle' | 'sending' | 'sent'>('idle')
   const [err, setErr] = useState<string | null>(null)
 
   return (
-    <div className="no-print mt-3">
+    <div className={`no-print ${block ? 'mt-3' : 'inline-block'}`}>
       <button
         onClick={async () => {
           setState('sending'); setErr(null)
@@ -318,8 +322,9 @@ export function PrintButton({ onPrint, label }: {
             setState('idle')
           }
         }}
-        disabled={state === 'sending'}
-        className="btn-primary flex w-full items-center justify-center gap-2">
+        disabled={disabled || state === 'sending'}
+        className={`btn-primary flex items-center justify-center gap-2 ${
+          block ? 'w-full' : ''}`}>
         <Printer size={15} />
         {state === 'sending' ? 'Sending…' : state === 'sent' ? 'Sent to the printer' : label}
       </button>

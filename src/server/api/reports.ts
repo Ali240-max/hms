@@ -1,6 +1,10 @@
 import { Hono } from 'hono'
 import { REPORTS, reportById } from '../services/report-catalogue'
 import { reportPdf } from '../services/report-pdf'
+import {
+  reportsFor, saveReportsFor, reportCatalogue, reportAccounts
+} from '../services/report-access'
+import { hasAdminPermission } from '../services/admin-perms'
 
 /**
  * Every report in the system, in one place.
@@ -32,13 +36,21 @@ function modulesFor(role: string): string[] | 'all' {
   }
 }
 
-function visible(c: any) {
-  const allowed = modulesFor(me(c).role)
-  return allowed === 'all' ? REPORTS : REPORTS.filter((r) => allowed.includes(r.module))
+/**
+ * The reports this account may open.
+ *
+ * The role decides the starting point and an administrator adjusts it per
+ * account, so a cashier can be given the day's takings without the doctors'
+ * shares. Read fresh on every request rather than cached on the session: a
+ * report taken away has to disappear at once, not at next sign-in.
+ */
+async function visible(c: any) {
+  const ids = new Set(await reportsFor(me(c).id))
+  return REPORTS.filter((r) => ids.has(r.id))
 }
 
-function mayRun(c: any, id: string) {
-  return visible(c).some((r) => r.id === id)
+async function mayRun(c: any, id: string) {
+  return (await visible(c)).some((r) => r.id === id)
 }
 
 function window_(c: any) {
@@ -46,15 +58,47 @@ function window_(c: any) {
   return { from: c.req.query('from') || today, to: c.req.query('to') || today }
 }
 
-reports.get('/', (c) =>
-  c.json(visible(c).map((r) => ({
+reports.get('/', async (c) =>
+  c.json((await visible(c)).map((r) => ({
     id: r.id, group: r.group, module: r.module, title: r.title, blurb: r.blurb,
     dated: r.dated, columns: r.columns, chart: r.chart, totalKeys: r.totalKeys
   }))))
 
+/* ------------------------------------------- who may see which report */
+
+/** The whole catalogue, grouped. For the access screen only. */
+reports.get('/catalogue', async (c) => {
+  if (me(c).role !== 'admin') return c.json({ error: 'Administrators only' }, 403)
+  return c.json(reportCatalogue())
+})
+
+reports.get('/access/accounts', async (c) => {
+  if (me(c).role !== 'admin') return c.json({ error: 'Administrators only' }, 403)
+  return c.json(await reportAccounts())
+})
+
+reports.get('/access/:staffId', async (c) => {
+  if (me(c).role !== 'admin') return c.json({ error: 'Administrators only' }, 403)
+  return c.json({ allowed: await reportsFor(Number(c.req.param('staffId'))) })
+})
+
+reports.put('/access/:staffId', async (c) => {
+  /*
+   * Only an administrator holding admin.access, which is the same guard the
+   * rest of the access screens use. Somebody who can grant themselves reports
+   * they were not meant to see has been granted everything by mistake.
+   */
+  if (me(c).role !== 'admin' || !(await hasAdminPermission(me(c).id, 'admin.access'))) {
+    return c.json({ error: 'Your account is not set up to do that' }, 403)
+  }
+  const b = await c.req.json()
+  const ids: string[] = Array.isArray(b?.ids) ? b.ids : []
+  return c.json({ allowed: await saveReportsFor(Number(c.req.param('staffId')), ids) })
+})
+
 reports.get('/run/:id', async (c) => {
   const id = c.req.param('id')
-  if (!mayRun(c, id)) return c.json({ error: 'That report is not yours to open' }, 403)
+  if (!(await mayRun(c, id))) return c.json({ error: 'That report is not yours to open' }, 403)
   const def = reportById(id)!
   const w = window_(c)
   const q = Object.fromEntries(new URL(c.req.url).searchParams.entries())
@@ -72,7 +116,7 @@ reports.get('/run/:id', async (c) => {
 
 reports.get('/print/:id/pdf', async (c) => {
   const id = c.req.param('id')
-  if (!mayRun(c, id)) return c.json({ error: 'That report is not yours to open' }, 403)
+  if (!(await mayRun(c, id))) return c.json({ error: 'That report is not yours to open' }, 403)
   const def = reportById(id)!
   const w = window_(c)
   const q = Object.fromEntries(new URL(c.req.url).searchParams.entries())
@@ -94,6 +138,7 @@ reports.get('/print/:id/pdf', async (c) => {
     groupBy: def.groupBy, groupLabel: def.groupLabel,
     subGroupBy: def.subGroupBy, subGroupLabel: def.subGroupLabel,
     landscape: def.landscape, notes,
+    chart: def.chart,
     user: me(c).displayName
   })
 

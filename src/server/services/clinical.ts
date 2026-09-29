@@ -415,18 +415,34 @@ export async function upsertService(input: {
   id?: number; code?: string | null; name: string
   category: 'lab' | 'radiology' | 'procedure' | 'other'
   pricePaisa: number; defaultShareBp: number; isActive?: boolean
+  /** Which department owns it. Optional; reports fall back to the category. */
+  departmentId?: number | null
 }) {
+  /*
+   * Written with raw SQL for the department, because the Drizzle schema in
+   * this file predates the column. Kept explicit rather than silently
+   * dropping the field, which is how a form that appears to save ends up
+   * saving nothing.
+   */
   if (input.id) {
     const [row] = await db.update(s.services).set({
       code: input.code ?? null, name: input.name.trim(), category: input.category,
       pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp,
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {})
     }).where(eq(s.services.id, input.id)).returning()
+    if (input.departmentId !== undefined) {
+      await db.execute(sql`
+        UPDATE services SET department_id = ${input.departmentId} WHERE id = ${input.id}`)
+    }
     return row
   }
   const [row] = await db.insert(s.services).values({
     code: input.code ?? null, name: input.name.trim(), category: input.category,
     pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp
   }).returning()
+  if (input.departmentId != null) {
+    await db.execute(sql`
+      UPDATE services SET department_id = ${input.departmentId} WHERE id = ${row.id}`)
+  }
   return row
 }

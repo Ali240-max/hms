@@ -77,7 +77,8 @@ export function ChitPreview({ chitId, onClose, onPaid, canTakePayment = false, i
             {busy ? 'Saving…' : 'Take payment'}
           </button>
         )}
-        <button onClick={() => printNow('pharmacy')} className="btn-primary">{tr('Print')}</button>
+        <PrintButton label={tr('Print')}
+          onPrint={() => api.printChit(chitId)} />
       </>}>
       <div className="mb-3 flex items-center justify-between">
         <Badge tone={chit.status === 'completed' ? 'ok' : chit.status === 'paid' ? 'primary' : 'warn'}>
@@ -218,7 +219,13 @@ export function ReceiptPreview({ saleId, onClose }: { saleId: number; onClose: (
     <Modal title={tr('Receipt')} hint={data?.sale?.invoiceNo} onClose={onClose}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Close')}</button>
-        <button onClick={() => printNow('pharmacy')} disabled={!data} className="btn-primary">{tr('Print')}</button>
+        {/*
+          Straight to the thermal printer, like every other Print in the
+          system. This one still opened the browser dialog, which is the
+          behaviour the whole ESC/POS change existed to remove.
+        */}
+        <PrintButton label={tr('Print')} disabled={!data}
+          onPrint={() => api.printSale(saleId)} />
       </>}>
       <ErrorNote>{err}</ErrorNote>
       {!data ? <p className="text-2xs text-muted">{tr('Loading…')}</p> : (

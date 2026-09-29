@@ -1,39 +1,49 @@
-37 files. Replaces v25. One migration (0019_service_notes.sql).
+57 files. Three migrations (0019, 0020, 0021_cross_match.sql).
 
 DELETE after unzipping — stale, breaks the typecheck:
   src/client/src/components/PdfPreview.tsx
 
-Then:  npm install && npm run build
+Then:  npm install && npm run build && npm run verify
 
-WHAT CHANGED
-  * Bills and chits -> Print again now goes straight to the thermal printer.
-    It was the last button still opening the browser print dialog.
-  * Administration -> Settings -> "Clear all data" is now called
-    "Clear patients and billing", because that is what it does. See below.
-  * Printer settings are per PC, and now say so on screen.
+CROSS MATCH — now has its screen
+  Laboratory sidebar > Cross match. Its own tab rather than a button on the
+  work list, because a cross match is not a test somebody ordered and paid
+  for at the counter: it is a check run against a bag of blood, with a donor
+  on one side who is not a patient of the hospital at all. Radiology does not
+  see the tab.
 
-TWO COUNTER PCs, TWO PRINTERS
-  Already works. Printer settings are keyed to the machine, not the account,
-  so each PC keeps its own share path, username and password. Set MC1 up at
-  MC1 and MC2 up at MC2.
+  The list shows every report with a green or red result badge, searchable by
+  patient, MRN, donor or blood bag number.
 
-  Keyed to the machine on purpose: the printer is plugged into a PC. If it
-  followed the account, a cashier covering the other window would print onto
-  the printer next to their colleague. Five assertions cover this now.
+  New cross match: find the patient, fill in the donor, five screening
+  answers, two phases. Everything defaults to what is written nearly every
+  time, so a normal report is a name, a bag number and Save.
 
-  A PC that has never been set up falls back to the counter-wide setting, so
-  nothing that was already printing stops.
+  Three things it says out loud:
+   * the conclusion, shown live and derived from the two phases — never typed
+   * a blood group or RH mismatch between donor and patient, as a WARNING not
+     a block, since O negative to anybody is deliberate
+   * a positive screening result, in red, saying the bag should not be issued
 
-CLEARING THE TRIAL DATA
-  Administration -> Settings -> Clear patients and billing.
+  Saving prints the PDF straight away.
 
-  Removes: patients, visits, chits, bills, payments, lab orders and results,
-  prescriptions, sales, stock movements, doctor earnings, and resets the
-  numbering so the first real patient is number 1.
+  npm run verify:crossmatch — 22 assertions, no server needed.
 
-  Keeps: staff, doctors, departments, services and prices, products,
-  suppliers, and every setting including the logo.
+ALSO IN HERE
+  Report filenames as "Sami Ullah LAB-000351.pdf".
+  WhatsApp button beside each finished report (half-automatic — see below).
+  Report access per login, per-PC printers, department reports, new charts.
 
-  Guarded by three locks: the admin.wipe permission, your own password typed
-  again, and the hospital name typed exactly. It takes a backup first and
-  refuses to proceed if the backup fails.
+WHATSAPP IS HALF-AUTOMATIC
+  It saves the PDF and opens the patient's chat with the message written. YOU
+  DRAG THE FILE IN. WhatsApp Web takes a number and a line of text from a
+  link and nothing else; there is no attachment parameter, by design. Fully
+  automatic needs the WhatsApp Business API, which needs internet.
+
+VERIFIED
+  npm run verify passes every offline check on a copy of your tree:
+  typecheck, 72 renders, translations, tabs, print, cross match, roles, LAN.
+  Build clean. Both cross match PDFs generated and read back.
+
+  The thirteen HTTP suites still could not run here — my sandbox lost its
+  loopback networking. Run `npm run verify` with the server up.

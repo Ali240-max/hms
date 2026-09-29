@@ -9,6 +9,7 @@ import { Reports } from './pharma/Reports'
 import { useModules } from '../lib/modules'
 import { BackupLocationCard, DangerZoneCard } from './admin/DangerZone'
 import { AdminAccess } from './admin/AdminAccess'
+import { ReportAccess } from './admin/ReportAccess'
 import {
   LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
   Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle,
@@ -17,7 +18,7 @@ import {
 import { t as tr } from '../lib/prefs'
 
 const TABS = ['Overview', 'Staff', 'Services', 'Doctor shares', 'Departments',
-  'Reports', 'Access', 'Demo data', 'Settings'] as const
+  'Reports', 'Access', 'Report access', 'Demo data', 'Settings'] as const
 type Tab = typeof TABS[number]
 
 const NAV: (NavItem & { id: Tab })[] = [
@@ -28,6 +29,7 @@ const NAV: (NavItem & { id: Tab })[] = [
   { id: 'Services', label: 'Services', glyph: 'Sv', icon: ClipboardList, section: 'Setup' },
   { id: 'Departments', label: 'Departments', glyph: 'Dp', icon: Building2 },
   { id: 'Access', label: 'Access', glyph: 'Ac', icon: ShieldCheck },
+  { id: 'Report access', label: 'Report access', glyph: 'Ra', icon: BarChart3 },
   { id: 'Settings', label: 'Settings', glyph: 'St', icon: Settings },
   { id: 'Demo data', label: 'Demo data', glyph: 'Dm', icon: Database }
 ]
@@ -96,6 +98,7 @@ export function Admin({ me }: { me: SessionUser }) {
       {tab === 'Settings' && <DangerZoneCard me={me} />}
       {tab === 'Reports' && <Reports me={me} />}
       {tab === 'Access' && <AdminAccess me={me} />}
+      {tab === 'Report access' && <ReportAccess me={me} />}
       </motion.div>
     </div>
   )
@@ -513,6 +516,7 @@ const TAB_PERMISSION: Record<string, string> = {
   'Doctor shares': 'admin.shares',
   'Departments': 'admin.departments',
   'Access': 'admin.access',
+  'Report access': 'admin.access',
   'Demo data': 'admin.demo',
   'Settings': 'admin.settings'
 }
@@ -634,10 +638,13 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
     category: initial?.category ?? defaultCategory ?? 'lab',
     price: initial ? rs(initial.price_paisa) : '',
     share: initial ? bpToPct(initial.default_share_bp) : '0',
+    departmentId: initial?.department_id ? String(initial.department_id) : '',
     isActive: initial ? initial.is_active : true
   })
+  const [depts, setDepts] = useState<any[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  useEffect(() => { api.departments().then(setDepts).catch(() => {}) }, [])
   const share = Math.round(toPaisa(f.price) * pctToBp(f.share) / 10000)
 
   return (
@@ -653,7 +660,8 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
                   ...(initial ? { id: initial.id } : {}),
                   name: f.name.trim(), code: f.code.trim() || null,
                   category: f.category, pricePaisa: toPaisa(f.price),
-                  defaultShareBp: pctToBp(f.share), isActive: f.isActive
+                  defaultShareBp: pctToBp(f.share), isActive: f.isActive,
+                  departmentId: f.departmentId ? Number(f.departmentId) : null
                 })
                 onDone()
               } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
@@ -672,6 +680,20 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
               <option value="radiology">{tr('Radiology')}</option>
               <option value="procedure">{tr('Procedure')}</option>
               <option value="other">{tr('Other')}</option>
+            </select>
+          </Field>
+          {/*
+            Which department owns it.
+            The category routes a service to the right screen; the department
+            is what reports break on, so an ECG and an X-ray can be told
+            apart instead of both appearing as "radiology".
+          */}
+          <Field label={tr('Department')} hint={tr('Used by the department reports')}>
+            <select value={f.departmentId ?? ''}
+              onChange={(e) => setF({ ...f, departmentId: e.target.value })}
+              className="field">
+              <option value="">{tr('Not set — reports use the category')}</option>
+              {depts.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </Field>
           <Field label={tr('Code')}>

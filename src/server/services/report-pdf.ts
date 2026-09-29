@@ -32,6 +32,14 @@ export type Column = {
 export type ReportSpec = {
   title: string
   subtitle?: string
+  /**
+   * What to draw at the back, and how.
+   *
+   * Carried through from the report definition so the printed chart and the
+   * one on screen are the same shape — a report that shows a ring on screen
+   * and bars on paper is two reports.
+   */
+  chart?: { label: string; value: string; kind: 'bar' | 'line' | 'ring' | 'area' }
   from?: string
   to?: string
   columns: Column[]
@@ -252,6 +260,25 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
     }
   }
 
+  /* ------------------------------------------------------------ chart */
+
+  /*
+   * Drawn at the end, on its own page.
+   *
+   * A chart above the table pushes the numbers onto page two, and the numbers
+   * are what a report is for — somebody checking a figure should not have to
+   * turn past a picture to reach it. At the back it is there for whoever
+   * wants the shape of the month without being in the way of whoever wants
+   * the total.
+   *
+   * Drawn with rectangles rather than an image library: the values are
+   * already here, and adding a rendering dependency to draw twenty bars would
+   * be a lot of machinery for a page nobody prints alone.
+   */
+  if (spec.chart && spec.rows.length > 1) {
+    drawChart(doc, spec, width, headerBottom)
+  }
+
   /* ----------------------------------------------------------- footer */
 
   const range = doc.bufferedPageRange()
@@ -272,4 +299,113 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
 function fmt(d: string) {
   const [y, m, day] = d.split('-')
   return `${day}/${m}/${y}`
+}
+
+/* ------------------------------------------------------------- charts */
+
+const money0 = (paisa: number) => {
+  const n = Math.abs(paisa)
+  if (n >= 10_000_000_00) return `${(paisa / 10_000_000_00).toFixed(1)}Cr`
+  if (n >= 100_000_00) return `${(paisa / 100_000_00).toFixed(1)}L`
+  if (n >= 1_000_00) return `${Math.round(paisa / 1_000_00)}k`
+  return String(Math.round(paisa / 100))
+}
+
+/**
+ * The report's own chart, on a fresh page at the back.
+ *
+ * Bars for a comparison, a filled run for a series over time, and a stacked
+ * bar for a share of a whole — the same three shapes the screen uses, so a
+ * printed copy and the screen do not disagree about what the report is
+ * saying.
+ */
+function drawChart(doc: any, spec: any, width: number, headerBottom: number) {
+  const key = spec.chart.value
+  const labelKey = spec.chart.label
+  const isMoney = /paisa/.test(key)
+
+  const rows = spec.rows
+    .map((r: any) => ({
+      label: String(r[labelKey] ?? ''),
+      value: Number(r[key] ?? 0)
+    }))
+    .filter((r: any) => Number.isFinite(r.value))
+
+  if (rows.length < 2) return
+
+  const shown = spec.chart.kind === 'area' ? rows.slice(0, 40)
+    : [...rows].sort((a, b) => b.value - a.value).slice(0, 14)
+  const peak = Math.max(...shown.map((r: any) => r.value), 1)
+
+  doc.addPage()
+  const top = MARGIN + 16
+
+  doc.font(MONO_BOLD).fontSize(10).fillColor('#000')
+     .text(String(spec.title ?? 'Chart').toUpperCase(), MARGIN, top, { lineBreak: false })
+  doc.font(MONO).fontSize(7.5).fillColor('#555')
+     .text(spec.chart.kind === 'area' ? 'Over the period' : 'Largest first',
+       MARGIN, top + 13, { lineBreak: false })
+
+  const plotTop = top + 34
+  const plotH = 300
+  const plotBottom = plotTop + plotH
+  const labelW = 120
+  const barArea = width - labelW - 60
+
+  /*
+   * Horizontal bars with the label beside each one, rather than vertical bars
+   * with labels underneath. Department and product names do not fit under a
+   * vertical bar and end up rotated or truncated; beside the bar they simply
+   * read.
+   */
+  if (spec.chart.kind !== 'area') {
+    const rowH = Math.min(22, plotH / shown.length)
+    shown.forEach((r: any, i: number) => {
+      const y = plotTop + i * rowH
+      const w = Math.max(1, (r.value / peak) * barArea)
+
+      doc.font(MONO).fontSize(7.5).fillColor('#000')
+         .text(r.label.slice(0, 22), MARGIN, y + 3,
+           { width: labelW - 6, lineBreak: false })
+
+      doc.rect(MARGIN + labelW, y, w, rowH - 6).fill('#333')
+      doc.font(MONO).fontSize(7.5).fillColor('#000')
+         .text(isMoney ? money0(r.value) : String(r.value),
+           MARGIN + labelW + w + 4, y + 3, { lineBreak: false })
+    })
+    return
+  }
+
+  /* A filled run over time. */
+  const stepX = barArea / Math.max(1, shown.length - 1)
+  const pointY = (v: number) => plotBottom - (v / peak) * plotH
+
+  doc.moveTo(MARGIN + 30, plotBottom).lineTo(MARGIN + 30 + barArea, plotBottom)
+     .lineWidth(0.5).strokeColor('#999').stroke()
+
+  doc.moveTo(MARGIN + 30, plotBottom)
+  shown.forEach((r: any, i: number) => {
+    doc.lineTo(MARGIN + 30 + i * stepX, pointY(r.value))
+  })
+  doc.lineTo(MARGIN + 30 + (shown.length - 1) * stepX, plotBottom)
+     .fillOpacity(0.18).fill('#333').fillOpacity(1)
+
+  doc.moveTo(MARGIN + 30, pointY(shown[0].value))
+  shown.forEach((r: any, i: number) => {
+    doc.lineTo(MARGIN + 30 + i * stepX, pointY(r.value))
+  })
+  doc.lineWidth(1).strokeColor('#000').stroke()
+
+  // Only the ends and the peak are labelled: forty dates along an axis is a
+  // smudge, and those three are the ones anybody reads off.
+  const peakAt = shown.findIndex((r: any) => r.value === peak)
+  for (const i of [...new Set([0, peakAt, shown.length - 1])]) {
+    if (i < 0) continue
+    doc.font(MONO).fontSize(6.5).fillColor('#555')
+       .text(shown[i].label.slice(0, 12), MARGIN + 30 + i * stepX - 22, plotBottom + 5,
+         { width: 44, align: 'center', lineBreak: false })
+  }
+  doc.font(MONO).fontSize(7).fillColor('#000')
+     .text(isMoney ? money0(peak) : String(peak), MARGIN, pointY(peak) - 3,
+       { width: 26, align: 'right', lineBreak: false })
 }

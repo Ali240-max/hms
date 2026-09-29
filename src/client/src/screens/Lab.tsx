@@ -9,10 +9,10 @@ import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
 import { TestSetupTab } from './lab/TestSetupTab'
 import { LabReportSetup } from './lab/ReportSetup'
+import { CrossMatch } from './lab/CrossMatch'
 import {
   ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2, Sliders, FileSignature,
-  Clock, AlertTriangle, FileText, ArrowLeft, Save
-} from 'lucide-react'
+  Clock, AlertTriangle, FileText, ArrowLeft, Save, MessageCircle, Droplet } from 'lucide-react'
 
 const FILTERS: [string, string][] = [
   ['active', 'On the bench'], ['pending', 'Awaiting sample'],
@@ -63,13 +63,65 @@ function LabQueue({ me }: { me: SessionUser }) {
    * empty frame, and printing that frame printed the viewer rather than the
    * report. The file itself has neither problem.
    */
+  /**
+   * Send a report to the patient on WhatsApp.
+   *
+   * What is possible, and what is not.
+   *
+   * WhatsApp Web cannot be handed a file by a link. `wa.me` and
+   * `web.whatsapp.com/send` accept a phone number and a line of text and
+   * nothing else — there is no parameter for an attachment, by design, or
+   * every website would be posting files into people's chats. Attaching
+   * automatically needs the WhatsApp Business API: a verified business
+   * number, message templates approved in advance, per-message charges, and
+   * an internet connection the hospital does not have.
+   *
+   * So this does the two steps a person would otherwise do by hand: it saves
+   * the PDF, and it opens the patient's chat with a message already written.
+   * The attach itself is one drag of the downloaded file into the chat.
+   * Honest about being half-automatic, and it still turns a minute of
+   * looking up a number into one click.
+   */
+  async function whatsappReport(g: any) {
+    const digits = String(g.phone ?? '').replace(/\D/g, '')
+    if (!digits) { setErr(tr('This patient has no phone number on file.')); return }
+
+    /*
+     * Pakistani numbers are written 0300-1234567 locally and have to go to
+     * WhatsApp as 923001234567. A number already carrying the country code is
+     * left alone.
+     */
+    const intl = digits.startsWith('92') ? digits
+      : digits.startsWith('0') ? '92' + digits.slice(1)
+      : digits.length === 10 ? '92' + digits
+      : digits
+
+    await downloadReport(g)
+
+    const text = encodeURIComponent(
+      `${g.patient_name}, your laboratory report is ready. It is attached.`)
+    window.open(`https://web.whatsapp.com/send?phone=${intl}&text=${text}`, '_blank')
+  }
+
   async function downloadReport(g: any) {
     try {
       const path = `/lab/visits/${g.visit_id}/pdf`
       const { ticket } = await api.documentTicket(path)
       const a = document.createElement('a')
       a.href = `/api${path}?download=1&ticket=${encodeURIComponent(ticket)}`
-      a.download = `${g.mrn}-lab-report.pdf`
+      /*
+       * Named for the patient and the report number.
+       *
+       * A folder of files called MRN-000597-lab-report.pdf is unsearchable by
+       * the one thing anybody remembers, which is the name. The report number
+       * keeps two reports for the same patient apart, and the punctuation is
+       * stripped because Windows refuses a filename with a slash or a colon
+       * in it.
+       */
+      const safe = (s: string) => String(s ?? '')
+        .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim()
+      const reportNo = g.tests?.find((x: any) => x.report_no)?.report_no ?? g.mrn
+      a.download = `${safe(g.patient_name)} ${safe(reportNo)}.pdf`
       document.body.appendChild(a); a.click(); a.remove()
     } catch (e: any) { setErr(e.message) }
   }
@@ -316,13 +368,28 @@ function LabQueue({ me }: { me: SessionUser }) {
                               to lose on the way to their doctor.
                             */}
                             {reported.length > 0 && (
-                              <button
-                                onClick={() => downloadReport(g)}
-                                className="btn-ghost w-full px-2 py-1 text-2xs">
-                                {reported.length > 1
-                                  ? `${tr('Report')} (${reported.length} ${tr('tests')})`
-                                  : tr('Report')}
-                              </button>
+                              <div className="flex w-full gap-1">
+                                <button
+                                  onClick={() => downloadReport(g)}
+                                  className="btn-ghost flex-1 px-2 py-1 text-2xs">
+                                  {reported.length > 1
+                                    ? `${tr('Report')} (${reported.length} ${tr('tests')})`
+                                    : tr('Report')}
+                                </button>
+                                {/*
+                                  Saves the report and opens the patient's
+                                  chat with the message written. The attach is
+                                  one drag: WhatsApp Web takes a number and a
+                                  line of text from a link, never a file.
+                                */}
+                                {g.phone && (
+                                  <button onClick={() => whatsappReport(g)}
+                                    title={tr('Save the report and open WhatsApp')}
+                                    className="btn-ghost shrink-0 px-2 py-1 text-2xs text-ok">
+                                    <MessageCircle size={13} />
+                                  </button>
+                                )}
+                              </div>
                             )}
                           </div>
                         )}
@@ -752,12 +819,24 @@ function trim(v: any) {
  */
 export function Lab({ me }: { me: SessionUser }) {
   const isRadiology = me.role === 'radiology'
-  const [tab, setTab] = useState<'queue' | 'setup' | 'report' | 'reports'>('queue')
+  const [tab, setTab] =
+    useState<'queue' | 'setup' | 'crossmatch' | 'report' | 'reports'>('queue')
 
   const items: NavItem[] = [
     { id: 'queue', label: isRadiology ? 'Imaging list' : 'Work list',
       glyph: isRadiology ? 'X' : 'L', icon: isRadiology ? ScanLine : FlaskConical },
     { id: 'setup', label: 'Test setup', glyph: 'S', icon: Sliders },
+    /*
+     * Its own tab rather than a button on the work list.
+     *
+     * A cross match is not a test somebody ordered and paid for at the
+     * counter, so it never appears in that list. It is a check the laboratory
+     * runs against a bag of blood, with a donor on one side who is not a
+     * patient of the hospital at all. Radiology has no use for it.
+     */
+    ...(isRadiology ? [] : [{
+      id: 'crossmatch', label: 'Cross match', glyph: 'XM', icon: Droplet
+    } as NavItem]),
     { id: 'report', label: 'Report layout', glyph: 'L', icon: FileSignature },
     { id: 'reports', label: 'Reports', glyph: 'R', icon: BarChart3 }
   ]
@@ -769,6 +848,7 @@ export function Lab({ me }: { me: SessionUser }) {
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'queue' ? <LabQueue me={me} />
           : tab === 'setup' ? <TestSetupTab me={me} />
+          : tab === 'crossmatch' ? <CrossMatch me={me} />
           : tab === 'report' ? <LabReportSetup me={me} />
           : <Reports me={me} />}
       </div>

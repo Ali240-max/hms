@@ -1,6 +1,6 @@
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis
+  ResponsiveContainer, Tooltip, XAxis, YAxis, Legend
 } from 'recharts'
 import { rs } from '../lib/api'
 
@@ -204,6 +204,99 @@ export function Sparkline({ data, color = 'rgb(var(--c-primary))' }: {
       <BarChart data={data.map((v, i) => ({ i, v }))}>
         <Bar dataKey="v" fill={color} radius={[2, 2, 0, 0]} animationDuration={DRAW.live} />
       </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
+/* ------------------------------------------------------- other shapes */
+
+/**
+ * A share of a whole, as a ring.
+ *
+ * For reports where the rows add up to something meaningful — takings split
+ * across departments, sales across payment methods. A bar chart answers
+ * "which is biggest"; a ring answers "how much of the total", which is the
+ * question actually being asked of a department split.
+ *
+ * Capped at eight slices with the rest gathered into one, because a ring with
+ * twenty segments is a colour wheel rather than a chart.
+ */
+export function ReportRing({ rows, labelKey, valueKey, money, speed = 'report' }: {
+  rows: any[]; labelKey: string; valueKey: string; money?: boolean
+  speed?: keyof typeof DRAW
+}) {
+  const all = rows
+    .map((r) => ({ label: String(r[labelKey] ?? ''), value: Number(r[valueKey] ?? 0) }))
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value)
+
+  const top = all.slice(0, 8)
+  const rest = all.slice(8).reduce((n, r) => n + r.value, 0)
+  const data = rest > 0 ? [...top, { label: 'Everything else', value: rest }] : top
+  const total = data.reduce((n, r) => n + r.value, 0)
+
+  /* Stepped through one hue so the order round the ring reads as an order. */
+  const shade = (i: number) => `rgb(var(--c-primary) / ${1 - (i / (data.length + 2)) * 0.8})`
+
+  return (
+    <ResponsiveContainer width="100%" height={250}>
+      <PieChart>
+        <Pie data={data} dataKey="value" nameKey="label"
+          cx="50%" cy="50%" innerRadius={58} outerRadius={95} paddingAngle={2}
+          animationDuration={DRAW[speed]}>
+          {data.map((_, i) => <Cell key={i} fill={shade(i)} stroke="none" />)}
+        </Pie>
+        <Tooltip content={<ChartTooltip money={money} />}
+          formatter={(v: any) => [v, '']} />
+        <Legend verticalAlign="middle" align="right" layout="vertical"
+          iconType="circle" iconSize={8}
+          formatter={(value: string, entry: any) => {
+            const pct = total ? Math.round((entry?.payload?.value / total) * 100) : 0
+            return `${value} · ${pct}%`
+          }}
+          wrapperStyle={{ fontSize: 11, color: 'rgb(var(--c-muted))' }} />
+      </PieChart>
+    </ResponsiveContainer>
+  )
+}
+
+/**
+ * A run of values over time, filled.
+ *
+ * For anything dated and continuous — takings by day, tests by day. A line
+ * with the area under it filled reads as a quantity accumulating, which a row
+ * of separate bars does not.
+ */
+export function ReportArea({ rows, labelKey, valueKey, money, speed = 'report' }: {
+  rows: any[]; labelKey: string; valueKey: string; money?: boolean
+  speed?: keyof typeof DRAW
+}) {
+  const data = rows.slice(0, 60).map((r) => ({
+    label: String(r[labelKey] ?? ''),
+    value: Number(r[valueKey] ?? 0)
+  }))
+  const fmt = money ? axisMoney : axisCount
+
+  return (
+    <ResponsiveContainer width="100%" height={250}>
+      <AreaChart data={data} margin={{ top: 12, right: 10, left: 4, bottom: 4 }}>
+        <defs>
+          <linearGradient id="area-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgb(var(--c-primary))" stopOpacity={0.55} />
+            <stop offset="100%" stopColor="rgb(var(--c-primary))" stopOpacity={0.04} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid vertical={false} stroke="rgb(var(--c-divide))" strokeDasharray="3 3" />
+        <XAxis dataKey="label" {...AXIS} tick={{ fontSize: 11 }}
+          interval={data.length > 14 ? Math.floor(data.length / 10) : 0}
+          tickFormatter={axisLabel} />
+        <YAxis {...AXIS} width={money ? 52 : 40} tick={{ fontSize: 11 }} tickFormatter={fmt} />
+        <Tooltip content={<ChartTooltip money={money} />}
+          cursor={{ stroke: 'rgb(var(--c-primary))', strokeOpacity: 0.3 }} />
+        <Area type="monotone" dataKey="value" name="Value"
+          stroke="rgb(var(--c-primary))" strokeWidth={2}
+          fill="url(#area-fill)" animationDuration={DRAW[speed]} />
+      </AreaChart>
     </ResponsiveContainer>
   )
 }

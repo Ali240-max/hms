@@ -27,6 +27,8 @@ import { CounterBilling } from '../src/client/src/screens/counter/Billing'
 import { PrinterSettingsCard } from '../src/client/src/components/PrinterSettings'
 import { CounterBillSlip } from '../src/client/src/components/CounterBill'
 import { ChitSlip, ReceiptSlip } from '../src/client/src/components/Chit'
+import { CrossMatch } from '../src/client/src/screens/lab/CrossMatch'
+import { ReportAccess } from '../src/client/src/screens/admin/ReportAccess'
 
 /**
  * Every screen and every sub-view, rendered once.
@@ -54,6 +56,8 @@ const chitDone = { ...chitPaid, status: 'completed', completed_by: 'Radiographer
 
 const cases: [string, () => any][] = [
   ['SignIn', () => <SignIn onSignedIn={noop} />],
+  ['CrossMatch', () => <CrossMatch me={user('lab_tech')} />],
+  ['ReportAccess', () => <ReportAccess me={user('admin')} />],
   ['Doctor (queue)', () => <Doctor me={user('doctor')} />],
   ['Doctor (earnings)', () => <Earnings me={user('doctor')} />],
   ['MainCounter', () => <MainCounter me={user('main_counter')} />],

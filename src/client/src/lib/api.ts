@@ -301,6 +301,13 @@ export const api = {
   reportNote: (id: number) => req<any>(`/services/${id}/report-note`),
   saveReportNote: (id: number, b: any) =>
     req<any>(`/services/${id}/report-note`, { method: 'PUT', body: JSON.stringify(b) }),
+  /* Cross match: checking a bag of blood against the patient it is for. */
+  crossMatches: (q = '') =>
+    req<any[]>(`/lab/cross-matches${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  crossMatch: (id: number) => req<any>(`/lab/cross-matches/${id}`),
+  createCrossMatch: (b: any) =>
+    req<any>('/lab/cross-matches', { method: 'POST', body: JSON.stringify(b) }),
+
   labSignatories: () => req<any[]>('/lab/signatories'),
   saveLabSignatories: (rows: any[]) =>
     req<any[]>('/lab/signatories', { method: 'PUT', body: JSON.stringify({ rows }) }),
@@ -376,6 +383,13 @@ export const api = {
     req<any>(`/printing/bill/${id}?module=${module}`, { method: 'POST' }),
   printSale: (id: number, module = 'pharmacy') =>
     req<any>(`/printing/sale/${id}?module=${module}`, { method: 'POST' }),
+
+  /* Which reports each login may open. Administration only. */
+  reportAccessCatalogue: () => req<any[]>('/reports/catalogue'),
+  reportAccounts: () => req<any[]>('/reports/access/accounts'),
+  reportsFor: (staffId: number) => req<any>(`/reports/access/${staffId}`),
+  saveReportsFor: (staffId: number, ids: string[]) =>
+    req<any>(`/reports/access/${staffId}`, { method: 'PUT', body: JSON.stringify({ ids }) }),
 
   documentTicket: (path: string) =>
     req<{ ticket: string }>('/tickets', { method: 'POST', body: JSON.stringify({ path }) }),
