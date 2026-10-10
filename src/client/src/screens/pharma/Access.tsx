@@ -72,7 +72,10 @@ export function Access({ me }: { me: SessionUser }) {
   }
 
   return (
-    <div className="grid gap-4 p-4 lg:grid-cols-[260px_1fr]">
+    <div className="space-y-4 p-4">
+      <TillRules />
+
+    <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
       <Card title={tr('Pharmacy staff')} hint={`${staff.length} ${tr('accounts')}`}>
         {staff.length === 0 ? (
           <Empty title={tr('No pharmacy accounts yet')}
@@ -164,5 +167,92 @@ export function Access({ me }: { me: SessionUser }) {
         )}
       </Card>
     </div>
+    </div>
+  )
+}
+
+/**
+ * How the till behaves, as against who may use it.
+ *
+ * Discounts live here rather than with the per-person ticks because they are
+ * a rule about the shop: "nobody gives more than five per cent" is not a
+ * property of a cashier. The permission to give a discount at all is still
+ * per person, in the list below — these two settings sit on top of it.
+ */
+function TillRules() {
+  const [s, setS] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.ph.pharmacySettings().then(setS).catch((e: any) => setErr(e.message))
+  }, [])
+
+  async function save() {
+    setBusy(true); setErr(null); setSaved(false)
+    try {
+      setS(await api.ph.savePharmacySettings({
+        discountEnabled: !!s.discountEnabled,
+        discountMaxPct: Math.max(0, Math.min(100, Number(s.discountMaxPct) || 0))
+      }))
+      setSaved(true)
+    } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Card title={tr('Discounts at the counter')}
+      hint={tr('A rule about the shop, not about one person. Who may give a discount at all is set per account below.')}
+      action={<button onClick={save} disabled={busy || !s} className="btn-primary">
+        {busy ? tr('Saving…') : saved ? tr('Saved') : tr('Save')}
+      </button>}>
+      <ErrorNote>{err}</ErrorNote>
+      {!s ? <p className="text-2xs text-muted">{tr('Loading…')}</p> : (
+        <div className="space-y-3">
+          <label className="flex items-start gap-2">
+            <input type="checkbox" checked={!!s.discountEnabled} className="mt-0.5"
+              onChange={(e) => { setSaved(false); setS({ ...s, discountEnabled: e.target.checked }) }} />
+            <span>
+              <span className="block text-sm text-heading">
+                {tr('Allow discounts on a pharmacy bill')}
+              </span>
+              <span className="block text-2xs text-muted">
+                {tr('Switched off, the counter cannot reduce a bill at all and the server refuses it too.')}
+              </span>
+            </span>
+          </label>
+
+          {s.discountEnabled && (
+            <div>
+              <p className="text-sm text-heading">{tr('Most that can be taken off a bill')}</p>
+              <div className="mt-1 flex items-center gap-2">
+                <input inputMode="numeric" value={s.discountMaxPct ?? 0}
+                  onChange={(e) => { setSaved(false); setS({
+                    ...s,
+                    discountMaxPct: Math.max(0, Math.min(100,
+                      Number(e.target.value.replace(/[^\d]/g, '')) || 0))
+                  }) }}
+                  className="field num w-20 py-1 text-right" />
+                <span className="text-2xs text-muted">%</span>
+                <span className="text-2xs text-muted">
+                  {Number(s.discountMaxPct) > 0
+                    ? `${tr('of the bill total. A bill of Rs 1,000 could be reduced by at most Rs')} ${
+                        (Number(s.discountMaxPct) * 10).toLocaleString('en-PK')}.`
+                    /*
+                     * Zero is no ceiling, not "no discount". The switch above
+                     * is for that, and conflating the two would make "zero
+                     * per cent" mean two opposite things.
+                     */
+                    : tr('Leave at zero for no limit.')}
+                </span>
+              </div>
+              <p className="mt-1.5 text-2xs text-muted">
+                {tr('Measured against the whole bill, so a big discount cannot be split across lines to get past it.')}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   )
 }

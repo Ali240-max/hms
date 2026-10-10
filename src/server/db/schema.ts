@@ -28,7 +28,7 @@ import {
  */
 export const staffRole = pgEnum('staff_role',
   ['admin', 'main_counter', 'receptionist', 'ipd_counter', 'store_keeper', 'lab_tech', 'radiology',
-   'doctor', 'pharmacist', 'pharmacy_admin', 'reports'])
+   'doctor', 'ward', 'kiosk', 'pharmacist', 'pharmacy_admin', 'reports'])
 
 export const departments = pgTable(
   'departments',
@@ -101,6 +101,14 @@ export const services = pgTable(
     pricePaisa: bigint('price_paisa', { mode: 'number' }).notNull().default(0),
     /** House default share for the ordering doctor. */
     defaultShareBp: integer('default_share_bp').notNull().default(0),
+    /**
+     * Cannot be billed without naming a doctor.
+     *
+     * For procedures, mostly: somebody performs a dressing or an ECG, and
+     * that person has a share in it. Billed with nobody named, the share has
+     * nowhere to go and is lost silently.
+     */
+    requiresDoctor: boolean('requires_doctor').notNull().default(false),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
@@ -611,6 +619,22 @@ export const purchases = pgTable(
     totalPaisa: bigint('total_paisa', { mode: 'number' }).notNull().default(0),
     note: text('note'),
     receivedBy: text('received_by'),
+    /**
+     * The order this delivery answers, where there was one.
+     *
+     * Nullable on purpose: a rep turning up unannounced, or something urgent
+     * fetched by hand, is an ordinary delivery and not a mistake.
+     */
+    purchaseOrderId: integer('purchase_order_id'),
+    /**
+     * Whatever the distributor adds at the bottom of the invoice.
+     *
+     * A further sales tax, a withholding line, a levy. It applies to the
+     * invoice total rather than to any one medicine, so it is kept apart from
+     * the per-line tax instead of being spread across the lines.
+     */
+    extraTaxBp: integer('extra_tax_bp').notNull().default(0),
+    extraTaxPaisa: bigint('extra_tax_paisa', { mode: 'number' }).notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => ({
@@ -625,7 +649,80 @@ export const purchaseItems = pgTable('purchase_items', {
   batchId: integer('batch_id').notNull().references(() => batches.id, { onDelete: 'restrict' }),
   qty: integer('qty').notNull(),
   unitCostPaisa: bigint('unit_cost_paisa', { mode: 'number' }).notNull(),
-  bonusQty: integer('bonus_qty').notNull().default(0)
+  bonusQty: integer('bonus_qty').notNull().default(0),
+  /** Sales tax this medicine carries, applied to this line. */
+  taxRateBp: integer('tax_rate_bp').notNull().default(0),
+  lineTaxPaisa: bigint('line_tax_paisa', { mode: 'number' }).notNull().default(0)
+})
+
+/* ---------------------------------------------------------- ordering */
+
+/** Which companies a distributor actually carries. */
+export const supplierCompanies = pgTable('supplier_companies', {
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  /*
+   * No .references() here: the manufacturers table is reached by raw SQL
+   * everywhere else and was never declared in this file. The foreign key is
+   * real, it is just declared in the migration rather than mirrored here.
+   */
+  manufacturerId: integer('manufacturer_id').notNull(),
+  addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow()
+})
+
+/**
+ * When a supplier takes orders. A standing weekly arrangement, not an instant.
+ *
+ * `weekday` is 0 = Sunday through 6 = Saturday, matching getDay() so the
+ * screen needs no translation table of its own, and `atTime` is wall-clock
+ * with no date and no zone — "Saturday 7pm" does not move when the clocks do.
+ */
+export const supplierBookingSlots = pgTable('supplier_booking_slots', {
+  id: serial('id').primaryKey(),
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  weekday: integer('weekday').notNull(),
+  atTime: text('at_time').notNull(),
+  note: text('note')
+})
+
+export const purchaseOrders = pgTable('purchase_orders', {
+  id: serial('id').primaryKey(),
+  orderNo: text('order_no').notNull(),
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id),
+  /** open | received | cancelled */
+  status: text('status').notNull().default('open'),
+  /** How many days of sales the suggested quantities came from. */
+  windowDays: integer('window_days').notNull().default(7),
+  note: text('note'),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  closedBy: text('closed_by'),
+  closedAt: timestamp('closed_at', { withTimezone: true })
+})
+
+export const purchaseOrderItems = pgTable('purchase_order_items', {
+  id: serial('id').primaryKey(),
+  orderId: integer('order_id').notNull()
+    .references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+  productId: integer('product_id').notNull().references(() => products.id),
+  /**
+   * PACKS. What the order actually asks the distributor for.
+   *
+   * This was units, on the reasoning that a pharmacist thinks in tablets.
+   * The pharmacy corrected it: an order goes to a depot, a depot ships packs,
+   * and the number on the sheet has to be packs or somebody there does the
+   * division.
+   */
+  orderPacks: integer('order_packs').notNull(),
+  /** The same quantity in units, kept because the shelf is counted in them. */
+  orderUnits: integer('order_units').notNull(),
+  /** What the suggestion was built from, frozen when the order was raised. */
+  soldUnits: integer('sold_units').notNull().default(0),
+  stockUnits: integer('stock_units').notNull().default(0),
+  productName: text('product_name').notNull(),
+  manufacturer: text('manufacturer'),
+  packSize: integer('pack_size').notNull().default(1),
+  packLabel: text('pack_label'),
+  displayOrder: integer('display_order').notNull().default(0)
 })
 
 /* ================================================================ shared */

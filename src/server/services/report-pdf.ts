@@ -78,6 +78,17 @@ const money = (v: any) => {
 }
 
 function cell(v: any, col: Column): string {
+  /*
+   * A money cell left blank rather than printed as 0.00.
+   *
+   * The adjustment report has an Added column and a Removed column, and every
+   * row fills exactly one of them. Printing "0.00" in the other puts a column
+   * of zeroes down the page that reads as real figures and hides the one that
+   * matters. null means "not this column"; an actual zero still prints.
+   */
+  if (col.money && (v === null || v === undefined || v === '')) {
+    return ''.padStart(col.width)
+  }
   let s = col.money ? money(v) : String(v ?? '')
   if (s.length > col.width) s = s.slice(0, col.width - 1) + '.'
   return col.align === 'right' || col.money

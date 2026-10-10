@@ -14,6 +14,13 @@ import { REPORTS, reportById } from '../services/report-catalogue'
 import {
   returnableSale, createReturn, listReturns, returnForPrint, ReturnError
 } from '../services/returns'
+import {
+  companiesFor, addCompany, removeCompany, slotsFor, addSlot, removeSlot,
+  suppliersWithTerms, orderSheet, createOrder, listOrders, orderDetail,
+  deleteOrder, setOpeningStock, openingSheet, OrderError
+} from '../services/ordering'
+import { purchaseOrderPdf } from '../services/order-pdf'
+import { getSetting, setSetting } from '../services/settings'
 import { reportPdf } from '../services/report-pdf'
 
 /**
@@ -29,6 +36,10 @@ const me = (c: any) => c.get('user')
 pharma.onError((err: any, c) => {
   if (err instanceof ReturnError) {
     return c.json({ error: err.message, code: err.code }, err.code === 'NOT_FOUND' ? 404 : 409)
+  }
+  if (err instanceof OrderError) {
+    return c.json({ error: err.message, detail: err.detail, code: err.code },
+      err.code === 'NOT_FOUND' ? 404 : 409)
   }
   if (err instanceof PharmaError) {
     return c.json({ error: err.message, code: err.code }, err.code === 'NOT_FOUND' ? 404 : 409)
@@ -188,6 +199,27 @@ pharma.get('/returns/lookup', async (c) => {
 })
 
 pharma.post('/returns', async (c) => {
+  /*
+   * The real check on giving money back, which until now did not exist.
+   *
+   * The Returns tab used to be hidden unless you held sale.return, and that
+   * hiding was doing all the work — this route never asked. Anyone who could
+   * reach the pharmacy at all could post a refund by calling it directly.
+   *
+   * Now that the tab is visible to everybody at the counter, as it should be
+   * (a customer with a strip to bring back is the most ordinary thing that
+   * happens at a till), the permission has to be enforced where it actually
+   * matters. Finding the screen and being allowed to refund are two
+   * different questions.
+   */
+  const u = me(c)
+  if (u.role !== 'admin' && !(await hasPermission(u.id, 'sale.return'))) {
+    return c.json({
+      error: 'Your account is not set up to give goods back. ' +
+        'Ask whoever manages access to tick "Take goods back".',
+      code: 'NOT_ALLOWED'
+    }, 403)
+  }
   const b = z.object({
     saleId: z.number().int(),
     lines: z.array(z.object({
@@ -287,4 +319,218 @@ pharma.get('/reports/overview', async (c) => {
   return c.json({ window: w, summary, daily,
     topProducts: topProducts.slice(0, 10),
     topManufacturers: topManufacturers.slice(0, 8), purchases })
+})
+
+/* ======================================================= supplier terms */
+
+/**
+ * Who supplies what, and when they take orders.
+ *
+ * Reads are open to anybody who can reach the pharmacy: the order screen
+ * needs them and the counter staff raising an order are not the people who
+ * manage suppliers. Writes need party.manage, same as creating a supplier.
+ */
+async function canManageParties(c: any) {
+  const u = me(c)
+  if (u.role === 'admin') return true
+  return hasPermission(u.id, 'party.manage')
+}
+
+const partyGuard = async (c: any) => {
+  if (!(await canManageParties(c))) {
+    return c.json({ error: 'You are not set up to manage suppliers', code: 'NOT_ALLOWED' }, 403)
+  }
+  return null
+}
+
+pharma.get('/suppliers/terms', async (c) => c.json(await suppliersWithTerms()))
+
+pharma.get('/suppliers/:id/companies', async (c) =>
+  c.json(await companiesFor(Number(c.req.param('id')))))
+
+pharma.post('/suppliers/:id/companies', async (c) => {
+  const no = await partyGuard(c); if (no) return no
+  const b = z.object({ manufacturerId: z.number().int() }).parse(await c.req.json())
+  return c.json(await addCompany(Number(c.req.param('id')), b.manufacturerId))
+})
+
+pharma.delete('/suppliers/:id/companies/:mfrId', async (c) => {
+  const no = await partyGuard(c); if (no) return no
+  return c.json(await removeCompany(
+    Number(c.req.param('id')), Number(c.req.param('mfrId'))))
+})
+
+pharma.get('/suppliers/:id/slots', async (c) =>
+  c.json(await slotsFor(Number(c.req.param('id')))))
+
+pharma.post('/suppliers/:id/slots', async (c) => {
+  const no = await partyGuard(c); if (no) return no
+  const b = z.object({
+    weekday: z.number().int().min(0).max(6),
+    atTime: z.string().min(3),
+    note: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  return c.json(await addSlot(Number(c.req.param('id')), b.weekday, b.atTime, b.note))
+})
+
+pharma.delete('/suppliers/:id/slots/:slotId', async (c) => {
+  const no = await partyGuard(c); if (no) return no
+  return c.json(await removeSlot(
+    Number(c.req.param('id')), Number(c.req.param('slotId'))))
+})
+
+/* ====================================================== purchase orders */
+
+/**
+ * The order sheet for one supplier.
+ *
+ * Needs purchase.receive rather than a permission of its own. Raising an
+ * order and booking the delivery against it are the same job done by the
+ * same person, and a separate tick would mean somebody can order but not
+ * receive, which describes nobody at this counter.
+ */
+async function canOrder(c: any) {
+  const u = me(c)
+  if (u.role === 'admin') return true
+  return hasPermission(u.id, 'purchase.receive')
+}
+
+const orderGuard = async (c: any) => {
+  if (!(await canOrder(c))) {
+    return c.json({ error: 'You are not set up to raise orders', code: 'NOT_ALLOWED' }, 403)
+  }
+  return null
+}
+
+pharma.get('/orders/sheet', async (c) => {
+  const no = await orderGuard(c); if (no) return no
+  return c.json(await orderSheet({
+    supplierId: Number(c.req.query('supplier') ?? 0),
+    windowDays: Number(c.req.query('days') ?? 7)
+  }))
+})
+
+pharma.get('/orders', async (c) => c.json(await listOrders({
+  status: c.req.query('status') ?? undefined,
+  supplierId: c.req.query('supplier') ? Number(c.req.query('supplier')) : undefined,
+  from: c.req.query('from') ?? undefined,
+  to: c.req.query('to') ?? undefined
+})))
+
+pharma.get('/orders/:id', async (c) => c.json(await orderDetail(Number(c.req.param('id')))))
+
+pharma.post('/orders', async (c) => {
+  const no = await orderGuard(c); if (no) return no
+  const b = z.object({
+    supplierId: z.number().int(),
+    windowDays: z.number().int().min(1).max(365).optional(),
+    note: z.string().nullable().optional(),
+    lines: z.array(z.object({
+      productId: z.number().int(),
+      /* PACKS. The distributor ships packs; the order asks in packs. */
+      orderPacks: z.number().int().min(0),
+      soldUnits: z.number().int().min(0).optional(),
+      stockUnits: z.number().int().min(0).optional()
+    })).min(1)
+  }).parse(await c.req.json())
+  // The person comes from the session, never the request body.
+  return c.json(await createOrder({ ...b, by: me(c).displayName }), 201)
+})
+
+pharma.delete('/orders/:id', async (c) => {
+  const no = await orderGuard(c); if (no) return no
+  return c.json(await deleteOrder(Number(c.req.param('id')), me(c).displayName))
+})
+
+pharma.get('/orders/:id/pdf', async (c) => {
+  const order = await orderDetail(Number(c.req.param('id')))
+  const pdf = await purchaseOrderPdf(order, me(c).displayName)
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="${order.order_no}.pdf"`
+    }
+  })
+})
+
+/* ======================================================= opening stock */
+
+/**
+ * Typing in what is already on the shelves, on the first day.
+ *
+ * Its own permission, off for everybody by default, because this is the one
+ * screen that can make stock appear with no delivery and no count behind it.
+ * The pharmacy administrator turns it on for whoever is doing the changeover
+ * and turns it off again afterwards.
+ */
+async function canOpen(c: any) {
+  const u = me(c)
+  if (u.role === 'admin') return true
+  return hasPermission(u.id, 'stock.opening')
+}
+
+pharma.get('/opening-stock', async (c) => {
+  if (!(await canOpen(c))) {
+    return c.json({ error: 'You are not set up to set opening stock', code: 'NOT_ALLOWED' }, 403)
+  }
+  return c.json(await openingSheet(c.req.query('q') ?? undefined))
+})
+
+pharma.put('/opening-stock', async (c) => {
+  if (!(await canOpen(c))) {
+    return c.json({ error: 'You are not set up to set opening stock', code: 'NOT_ALLOWED' }, 403)
+  }
+  const b = z.object({
+    lines: z.array(z.object({
+      productId: z.number().int(),
+      units: z.number().int().min(0)
+    })).min(1)
+  }).parse(await c.req.json())
+  return c.json(await setOpeningStock({ lines: b.lines, by: me(c).displayName }))
+})
+
+/* ===================================================== pharmacy settings */
+
+/**
+ * How the till behaves, rather than anything about a sale.
+ *
+ * Readable by anybody who can reach the pharmacy, because the billing screen
+ * needs to know whether to offer a discount box at all. Writable only by an
+ * administrator: a cashier who can raise their own discount ceiling does not
+ * have a ceiling.
+ */
+pharma.get('/settings', async (c) => c.json({
+  discountEnabled: ((await getSetting('pharmacy.discountEnabled')) ?? 'true') !== 'false',
+  /* Zero means no ceiling, which is how the till behaved before this existed. */
+  discountMaxPct: Number((await getSetting('pharmacy.discountMaxPct')) ?? '0')
+}))
+
+pharma.put('/settings', async (c) => {
+  const u = me(c)
+  if (u.role !== 'admin' && !(await hasPermission(u.id, 'staff.access'))) {
+    return c.json({
+      error: 'Only an administrator can change how the till behaves',
+      code: 'NOT_ALLOWED'
+    }, 403)
+  }
+  const b = z.object({
+    discountEnabled: z.boolean().optional(),
+    /* 0 to 100. Zero is no ceiling rather than "no discount allowed" — that
+     * is what the switch above is for, and conflating the two would make
+     * "zero per cent" ambiguous. */
+    discountMaxPct: z.number().int().min(0).max(100).optional()
+  }).parse(await c.req.json())
+
+  if (b.discountEnabled !== undefined) {
+    await setSetting('pharmacy.discountEnabled', b.discountEnabled ? 'true' : 'false')
+  }
+  if (b.discountMaxPct !== undefined) {
+    await setSetting('pharmacy.discountMaxPct', String(b.discountMaxPct))
+  }
+  return c.json({
+    discountEnabled: ((await getSetting('pharmacy.discountEnabled')) ?? 'true') !== 'false',
+    discountMaxPct: Number((await getSetting('pharmacy.discountMaxPct')) ?? '0')
+  })
 })

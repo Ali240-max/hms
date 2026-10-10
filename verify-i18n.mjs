@@ -23,7 +23,16 @@ const dict = new Set([...prefs.matchAll(/^\s*"((?:[^"\\]|\\.)*)":/gm)].map(m => 
 let missing = [], total = 0
 for (const f of walk('src/client/src')) {
   if (f.endsWith('prefs.tsx')) continue
+  /*
+   * Comments stripped first.
+   *
+   * A comment explaining how this checker works mentioned tr('...') as an
+   * example, and the checker dutifully reported "..." as an untranslated
+   * string. Anything written about a call site is not a call site.
+   */
   const src = readFileSync(f, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
   for (const m of src.matchAll(/\btr\('((?:[^'\\]|\\')*)'\)/g)) {
     const k = m[1].replace(/\\'/g, "'")
     total++

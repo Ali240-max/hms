@@ -460,9 +460,20 @@ export async function goodsReceivedSummary(w: Window, q: Record<string, string>)
                      WHERE pi.purchase_id = p.id), 0) AS packs,
            COALESCE((SELECT SUM(pi.bonus_qty)::int FROM purchase_items pi
                      WHERE pi.purchase_id = p.id), 0) AS bonus,
-           p.total_paisa, p.discount_paisa, p.received_by
+           p.total_paisa, p.discount_paisa, p.received_by,
+           /*
+            * When it was actually keyed in, as against the invoice date.
+            *
+            * These are routinely different: a delivery dated Tuesday gets
+            * booked on Thursday. The invoice date is the supplier's claim and
+            * the only one the report showed; this is ours, and it is the one
+            * that matters when somebody asks who entered a figure and when.
+            */
+           to_char(p.created_at, 'DD/MM/YY HH24:MI') AS booked_at,
+           COALESCE(po.order_no, '-') AS order_no
     FROM purchases p
     JOIN suppliers s ON s.id = p.supplier_id
+    LEFT JOIN purchase_orders po ON po.id = p.purchase_order_id
     WHERE ${where}
     ORDER BY p.invoice_date DESC, p.id DESC LIMIT 600`)
   return r.rows
@@ -495,7 +506,7 @@ export async function salesByDepartment(w: Window) {
        * taken, so its existence is the payment — there is no unpaid one to
        * filter out.
        */
-      WHERE cb.created_at >= ${w.from} AND cb.created_at < ${w.to}
+      WHERE ${between('cb.created_at', w)}
 
       UNION ALL
 
@@ -512,7 +523,7 @@ export async function salesByDepartment(w: Window) {
       JOIN service_orders so ON so.chit_id = ch.id
       JOIN services sv       ON sv.id = so.service_id
       LEFT JOIN departments sd ON sd.id = sv.department_id
-      WHERE ch.created_at >= ${w.from} AND ch.created_at < ${w.to}
+      WHERE ${between('ch.created_at', w)}
         AND ch.status = 'paid'
     )
     SELECT COALESCE(department, 'Unassigned')        AS department,
@@ -548,7 +559,7 @@ export async function patientsByDepartment(w: Window) {
     LEFT JOIN departments d ON d.id = v.department_id
     LEFT JOIN doctors doc   ON doc.id = v.doctor_id
     LEFT JOIN staff st      ON st.id = doc.staff_id
-    WHERE cb.created_at >= ${w.from} AND cb.created_at < ${w.to}
+    WHERE ${between('cb.created_at', w)}
 
     UNION ALL
 
@@ -573,7 +584,7 @@ export async function patientsByDepartment(w: Window) {
     LEFT JOIN visits v   ON v.id = ch.visit_id
     LEFT JOIN doctors doc ON doc.id = v.doctor_id
     LEFT JOIN staff st    ON st.id = doc.staff_id
-    WHERE ch.created_at >= ${w.from} AND ch.created_at < ${w.to}
+    WHERE ${between('ch.created_at', w)}
       AND ch.status = 'paid'
 
     ORDER BY 1, created_at`)

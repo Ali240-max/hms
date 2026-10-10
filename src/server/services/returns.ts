@@ -208,3 +208,63 @@ export async function returnForPrint(returnId: number) {
     SELECT * FROM sale_return_items WHERE return_id = ${returnId} ORDER BY id`)).rows
   return { head, items }
 }
+
+/**
+ * Returns for the reports, in two shapes.
+ *
+ * Separate from listReturns, which feeds the screen and is capped at 200 rows
+ * with a search box. A report over a date range needs every row in that
+ * range, needs the party name resolved, and in detail form needs one row per
+ * medicine rather than per return.
+ *
+ * `detail` picks the shape:
+ *   false  one row per return  — the register, for reconciling a day
+ *   true   one row per medicine — which medicines keep coming back
+ */
+export async function reportReturns(opts: {
+  from?: string; to?: string; detail?: boolean
+}) {
+  let where = sql`true`
+  if (opts.from && opts.to) {
+    where = sql`${where} AND r.returned_at >= ${opts.from}::date
+                       AND r.returned_at < (${opts.to}::date + interval '1 day')`
+  }
+
+  if (!opts.detail) {
+    const r = await db.execute<any>(sql`
+      SELECT r.id, r.return_no, r.returned_at, r.returned_by, r.reason,
+             r.total_paisa, r.customer_name, p.name AS party_name,
+             sa.invoice_no, sa.sale_kind,
+             (SELECT COUNT(*)::int FROM sale_return_items ri
+               WHERE ri.return_id = r.id) AS lines,
+             COALESCE((SELECT SUM(ri.qty)::int FROM sale_return_items ri
+               WHERE ri.return_id = r.id), 0) AS units,
+             COALESCE((SELECT SUM(ri.qty)::int FROM sale_return_items ri
+               WHERE ri.return_id = r.id AND NOT ri.restock), 0) AS written_off
+      FROM sale_returns r
+      LEFT JOIN sales sa ON sa.id = r.sale_id
+      LEFT JOIN parties p ON p.id = r.party_id
+      WHERE ${where}
+      ORDER BY r.returned_at DESC
+      LIMIT 2000`)
+    return r.rows
+  }
+
+  const r = await db.execute<any>(sql`
+    SELECT ri.id, ri.product_name, ri.qty, ri.restock,
+           ri.unit_price_paisa, ri.line_total_paisa,
+           r.return_no, r.returned_at, r.returned_by, r.reason,
+           sa.invoice_no,
+           COALESCE(p.name, r.customer_name, 'Walk-in') AS customer,
+           m.name AS manufacturer
+    FROM sale_return_items ri
+    JOIN sale_returns r ON r.id = ri.return_id
+    LEFT JOIN sales sa ON sa.id = r.sale_id
+    LEFT JOIN parties p ON p.id = r.party_id
+    LEFT JOIN products pr ON pr.id = ri.product_id
+    LEFT JOIN manufacturers m ON m.id = pr.manufacturer_id
+    WHERE ${where}
+    ORDER BY r.returned_at DESC, ri.id
+    LIMIT 4000`)
+  return r.rows
+}

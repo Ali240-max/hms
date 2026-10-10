@@ -139,5 +139,55 @@ r = await q('/pharma/returns','opd',{method:'POST',body:JSON.stringify({
   saleId: sale.id, lines:[{ saleItemId: line.id, qty: 1, restock: true }] })})
 ok('the OPD desk cannot take returns', r.status===403, `got ${r.status}`)
 
+console.log('\n— the tab is open to everyone, the refund is not —')
+{
+  /*
+   * The Returns tab is now visible to everybody at the counter, because a
+   * customer holding a strip they want to bring back is the most ordinary
+   * thing that happens at a till and the person serving them has to be able
+   * to look the bill up.
+   *
+   * That makes this route the only thing standing between "can find the
+   * screen" and "can take money out of the drawer" — and until this check
+   * was added it was standing nowhere: the route never asked for the
+   * permission at all, so anyone who could reach the pharmacy could post a
+   * refund by calling it directly. Tab visibility was doing the whole job.
+   *
+   * So: a pharmacist holds sale.return by default and may refund; strip it
+   * from them and the route must refuse, whatever the screen shows.
+   */
+  const admin = await login('admin', 'admin-demo-1')
+  const ah = { 'content-type': 'application/json', authorization: 'Bearer ' + admin }
+
+  const staff = await (await fetch(B + '/pharma/staff', { headers: ah })).json()
+  const ph = (Array.isArray(staff) ? staff : []).find((s) => s.username === 'pharmacy')
+  ok('the counter account is found to test against', !!ph)
+
+  if (ph) {
+    const before = (await (await fetch(`${B}/pharma/permissions/${ph.id}`,
+      { headers: ah })).json()).allowed ?? []
+    ok('a pharmacist may take goods back by default', before.includes('sale.return'),
+      'sale.return missing from the role default')
+
+    await fetch(`${B}/pharma/permissions/${ph.id}`, { method: 'PUT', headers: ah,
+      body: JSON.stringify({ allowed: before.filter((k) => k !== 'sale.return') }) })
+
+    const denied = await q('/pharma/returns','ph',{method:'POST',body:JSON.stringify({
+      saleId: sale.id, lines:[{ saleItemId: line.id, qty: 1, restock: true }] })})
+    ok('with the permission removed the refund is refused by the server',
+      denied.status===403, `got ${denied.status}`)
+    ok('and the message says what to do about it',
+      /Take goods back/.test(JSON.stringify(denied.body)),
+      JSON.stringify(denied.body).slice(0, 90))
+
+    /* Put it back, so the database is left as it was found. */
+    await fetch(`${B}/pharma/permissions/${ph.id}`, { method: 'PUT', headers: ah,
+      body: JSON.stringify({ allowed: before }) })
+    const after = (await (await fetch(`${B}/pharma/permissions/${ph.id}`,
+      { headers: ah })).json()).allowed ?? []
+    ok('and it is restored', after.includes('sale.return'))
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail?1:0)

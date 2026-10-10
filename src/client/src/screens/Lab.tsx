@@ -9,10 +9,21 @@ import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
 import { TestSetupTab } from './lab/TestSetupTab'
 import { LabReportSetup } from './lab/ReportSetup'
-import { CrossMatch } from './lab/CrossMatch'
+import { CrossMatch, CrossMatchResult } from './lab/CrossMatch'
 import {
   ClipboardList, FlaskConical, BarChart3, ScanLine, CheckCircle2, Sliders, FileSignature,
   Clock, AlertTriangle, FileText, ArrowLeft, Save, MessageCircle, Droplet } from 'lucide-react'
+
+/**
+ * The cross match line in a visit, if there is one.
+ *
+ * Matched on the service code rather than the name, because a hospital will
+ * rename it and the screen has to keep recognising it afterwards.
+ */
+function crossMatchIn(group: any) {
+  return (group?.tests ?? []).find((x: any) =>
+    x.service_code === 'XMATCH' || /cross\s*match/i.test(x.service_name ?? '')) ?? null
+}
 
 const FILTERS: [string, string][] = [
   ['active', 'On the bench'], ['pending', 'Awaiting sample'],
@@ -103,25 +114,45 @@ function LabQueue({ me }: { me: SessionUser }) {
     window.open(`https://web.whatsapp.com/send?phone=${intl}&text=${text}`, '_blank')
   }
 
+  /**
+   * The filename, built the same way in three places on purpose.
+   *
+   * It goes on the <a download> attribute, into the URL itself, and the
+   * server puts it in content-disposition. Three different pieces of software
+   * decide what a saved file is called and they read three different things:
+   *
+   *   Chrome, clicking the link        the download attribute
+   *   Chrome's PDF viewer, Ctrl+S      content-disposition
+   *   IDM and other download managers  the last segment of the URL
+   *
+   * The lab was getting "lab 001" because only two of the three were right.
+   * Anything Windows refuses in a filename is stripped rather than escaped,
+   * since a report saved with a colon in its name simply fails to save.
+   */
+  const reportFileName = (g: any) => {
+    const safe = (s: string) => String(s ?? '')
+      .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim()
+    const name = safe(g?.patient_name) || 'Lab report'
+    const mrn = safe(g?.mrn)
+    return `${name}${mrn ? ' ' + mrn : ''}.pdf`
+  }
+
   async function downloadReport(g: any) {
     try {
-      const path = `/lab/visits/${g.visit_id}/pdf`
+      const file = reportFileName(g)
+      /*
+       * The name is part of the path, not a query parameter.
+       *
+       * A download manager takes the last path segment, and ?name=... is not
+       * one. The server ignores the segment — it only names the file — and
+       * the ticket covers the whole path, so this cannot reach another
+       * patient's report.
+       */
+      const path = `/lab/visits/${g.visit_id}/pdf/${encodeURIComponent(file)}`
       const { ticket } = await api.documentTicket(path)
       const a = document.createElement('a')
       a.href = `/api${path}?download=1&ticket=${encodeURIComponent(ticket)}`
-      /*
-       * Named for the patient and the report number.
-       *
-       * A folder of files called MRN-000597-lab-report.pdf is unsearchable by
-       * the one thing anybody remembers, which is the name. The report number
-       * keeps two reports for the same patient apart, and the punctuation is
-       * stripped because Windows refuses a filename with a slash or a colon
-       * in it.
-       */
-      const safe = (s: string) => String(s ?? '')
-        .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim()
-      const reportNo = g.tests?.find((x: any) => x.report_no)?.report_no ?? g.mrn
-      a.download = `${safe(g.patient_name)} ${safe(reportNo)}.pdf`
+      a.download = file
       document.body.appendChild(a); a.click(); a.remove()
     } catch (e: any) { setErr(e.message) }
   }
@@ -165,7 +196,19 @@ function LabQueue({ me }: { me: SessionUser }) {
 
   if (entering) {
     return (
-      isRadiology
+      /*
+       * A cross match has its own result screen.
+       *
+       * It has no parameters and never will: it is a comparison between two
+       * people with a fixed set of questions, not a list of readings. Sent
+       * through the ordinary results form it showed an empty table, which is
+       * why one booked at the counter looked like it had vanished.
+       */
+      crossMatchIn(entering)
+        ? <CrossMatchResult group={entering} test={crossMatchIn(entering)}
+            onClose={() => setEntering(null)}
+            onDone={() => { setEntering(null); load() }} />
+        : isRadiology
         ? <ReportFindings group={entering}
             onBack={() => { setEntering(null); load() }}
             onDone={() => { setEntering(null); load() }} />
@@ -558,8 +601,14 @@ function EnterResults({ group, isRadiology, onBack, onDone }: {
                   ?? (byName.get(String(p.name).toLowerCase()) as any)?.value ?? '',
                 unit: p.unit,
                 refLow: p.ref_low, refHigh: p.ref_high,
-                refText: p.ref_text ?? (p.ref_low != null && p.ref_high != null
-                  ? `${trim(p.ref_low)} - ${trim(p.ref_high)}` : null)
+                /*
+                  The range the test is set up with, whichever kind it is.
+                  This screen used to build it from the low and high, so a
+                  written-range test showed a leftover numeric range and the
+                  technologist typing the result was checking it against the
+                  wrong thing.
+                */
+                refText: p.display_range || null
               }))
         })
       }
@@ -827,12 +876,11 @@ export function Lab({ me }: { me: SessionUser }) {
       glyph: isRadiology ? 'X' : 'L', icon: isRadiology ? ScanLine : FlaskConical },
     { id: 'setup', label: 'Test setup', glyph: 'S', icon: Sliders },
     /*
-     * Its own tab rather than a button on the work list.
-     *
-     * A cross match is not a test somebody ordered and paid for at the
-     * counter, so it never appears in that list. It is a check the laboratory
-     * runs against a bag of blood, with a donor on one side who is not a
-     * patient of the hospital at all. Radiology has no use for it.
+     * Cross match reports are billed at the counter like any other test, and
+     * the donor's details are taken there — the donor is only ever standing
+     * at the window, not in the laboratory. This tab remains as the place to
+     * find and finish them: the counter starts the report, the laboratory
+     * fills in the screening and the two phases.
      */
     ...(isRadiology ? [] : [{
       id: 'crossmatch', label: 'Cross match', glyph: 'XM', icon: Droplet

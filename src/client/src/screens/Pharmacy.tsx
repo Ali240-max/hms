@@ -10,6 +10,9 @@ import { Prescriptions } from './pharmacy/Prescriptions'
 import { Medicines } from './pharmacy/Medicines'
 import { Receive } from './pharmacy/Receive'
 import { StockScreen } from './pharmacy/Stock'
+import { Audits } from './pharmacy/Audits'
+import { Ordering } from './pharmacy/Ordering'
+import { Opening } from './pharmacy/Opening'
 import { Bills } from './pharmacy/Bills'
 import { Overview } from './pharmacy/Overview'
 import { PrinterSettingsCard } from '../components/PrinterSettings'
@@ -21,6 +24,7 @@ import { Returns } from './pharma/Returns'
 
 type Tab = 'billing' | 'prescriptions' | 'medicines' | 'receive' | 'stock' | 'bills'
   | 'returns' | 'overview' | 'reports' | 'ledgers' | 'access' | 'setup' | 'printing'
+  | 'audits' | 'ordering' | 'opening'
 
 /**
  * The rail, grouped by what a person is doing rather than alphabetically.
@@ -35,8 +39,17 @@ const NAV: (NavItem & { id: Tab })[] = [
   { id: 'returns', label: 'Returns', glyph: 'R' },
 
   { id: 'medicines', label: 'Medicines', glyph: 'M', section: 'Stock' },
+  { id: 'ordering', label: 'Order', glyph: 'PO' },
   { id: 'receive', label: 'Receive', glyph: 'in' },
   { id: 'stock', label: 'Stock', glyph: 'S' },
+  { id: 'audits', label: 'Audits', glyph: 'Au' },
+  /*
+   * Last in the Stock group, and invisible without its own permission.
+   *
+   * It belongs to the first morning of a changeover and nowhere else, so it
+   * sits below the tabs somebody uses every day rather than above them.
+   */
+  { id: 'opening', label: 'Opening stock', glyph: 'Op' },
 
   { id: 'overview', label: 'Overview', glyph: 'O', section: 'Money' },
   { id: 'bills', label: 'Bills', glyph: 'Bl' },
@@ -72,9 +85,33 @@ export type PendingFill = {
  */
 const TAB_PERMISSION: Partial<Record<Tab, string>> = {
   billing: 'sale.counter',
+  /*
+   * Off for a pharmacy running on its own.
+   *
+   * A standalone chemist has no doctors sending prescriptions through, so the
+   * tab is an empty screen somebody clicks once and never again. It is on by
+   * default, so a hospital pharmacy sees no change.
+   */
+  prescriptions: 'prescriptions.see',
+  audits: 'stock.view',
   receive: 'purchase.receive',
-  returns: 'sale.return',
+  /*
+   * Returns is deliberately NOT in this map.
+   *
+   * It was gated on sale.return, which is not granted by default, so the tab
+   * was invisible to everyone except a pharmacy administrator — and a
+   * customer standing at the counter with a strip they want to bring back is
+   * the most ordinary thing that happens at a till. The person serving them
+   * could not even find the screen to tell them no.
+   *
+   * The screen itself still refuses to post a return without the permission,
+   * which is the right place for that check: seeing the tab and being able
+   * to give money back are different questions, and only the second one is
+   * dangerous.
+   */
   stock: 'stock.view',
+  ordering: 'purchase.receive',
+  opening: 'stock.opening',
   bills: 'report.sales',
   overview: 'report.sales',
   reports: 'report.sales',
@@ -144,6 +181,9 @@ export function Pharmacy({ me }: { me: SessionUser }) {
         {tab === 'receive' && <Receive />}
         {tab === 'returns' && <Returns me={me} />}
         {tab === 'stock' && <StockScreen />}
+        {tab === 'audits' && <Audits me={me} />}
+        {tab === 'ordering' && <Ordering me={me} />}
+        {tab === 'opening' && <Opening me={me} />}
         {tab === 'bills' && <Bills />}
         {tab === 'overview' && <Overview />}
         {tab === 'reports' && <Reports me={me} />}

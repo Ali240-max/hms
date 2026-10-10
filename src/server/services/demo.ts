@@ -65,11 +65,27 @@ export async function loadDemoData(
     // x-rays ship with the software along with their reference ranges, and a
     // TRUNCATE ... CASCADE here took them and every range with them on each
     // reseed. The demo prices them by name instead of recreating them.
+    /*
+     * The counters are reset here, so everything holding a number FROM them
+     * has to go in the same breath.
+     *
+     * Three tables added after this list was written did not: stock audits,
+     * stock adjustments and purchase orders. A reset then left AUD-261009-01
+     * on the shelf while the counter went back to zero, and the next count
+     * sheet somebody tried to save failed with a duplicate key — a reset
+     * leaving the database in a state where a normal action is refused.
+     *
+     * Nothing reaches them by CASCADE from the rest of the list, because the
+     * parents reference neither patients nor products; only their item
+     * tables do.
+     */
     await db.execute(sql`
       TRUNCATE doctor_earnings, service_orders, prescription_items, prescriptions,
                visits, patients, doctor_service_shares, doctors, staff,
                departments, sale_items, sales, stock_ledger, purchase_items, purchases,
-               batches, products, suppliers, counters RESTART IDENTITY CASCADE`)
+               batches, products, suppliers,
+               stock_audits, stock_adjustments, purchase_orders,
+               counters RESTART IDENTITY CASCADE`)
   }
 
   /* ------------------------------------------------------------ people */
@@ -150,7 +166,14 @@ export async function loadDemoData(
     const existing = ((await db.execute<any>(sql`
       SELECT id FROM services WHERE lower(name) = lower(${name}) LIMIT 1`)).rows as any[])[0]
     await upsertService({
-      id: existing?.id, name, category: cat as any, pricePaisa: price, defaultShareBp: share
+      id: existing?.id, name, category: cat as any, pricePaisa: price, defaultShareBp: share,
+      /*
+       * Stated rather than left to the default, so a demo is the same on a
+       * fresh database and on one that has been seeded before. Services are
+       * deliberately not truncated by a reset, so these mostly take the
+       * update path, where an omitted flag keeps whatever was there.
+       */
+      requiresDoctor: cat === 'procedure'
     })
   }
   // Only what the demo priced. The rest of the shipped catalogue stays

@@ -10,7 +10,7 @@ const scryptAsync = promisify(scrypt) as (pw: string, salt: Buffer, len: number)
  * `main_counter` is the cash window; `receptionist` is the OPD desk.
  * The value name is kept for the OPD desk so existing staff rows stay valid.
  */
-export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'pharmacist' | 'pharmacy_admin' | 'reports'
+export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'ward' | 'kiosk' | 'pharmacist' | 'pharmacy_admin' | 'reports'
 
 export type SessionUser = {
   id: number
@@ -300,6 +300,10 @@ export async function listStaff() {
 export async function createStaff(input: {
   username: string; displayName: string; password: string; role: Role
   departmentId?: number | null; phone?: string | null
+  /** When they are expected, and whether they are expected at all. */
+  shiftStart?: string | null
+  shiftEnd?: string | null
+  attendanceRequired?: boolean
   doctor?: {
     specialisation?: string | null; qualification?: string | null; room?: string | null
     consultationFeePaisa?: number; consultationShareBp?: number; defaultServiceShareBp?: number
@@ -317,6 +321,20 @@ export async function createStaff(input: {
         departmentId: input.departmentId ?? null,
         phone: input.phone ?? null
       }).returning()
+
+      /*
+       * The shift is written straight after, not through the schema object.
+       *
+       * These three columns were added by a later migration and the generated
+       * schema does not carry them, so writing them here keeps one insert and
+       * avoids a schema regeneration the rest of the system does not need.
+       */
+      await tx.execute(sql`
+        UPDATE staff SET
+          shift_start = ${input.shiftStart || null},
+          shift_end = ${input.shiftEnd || null},
+          attendance_required = ${input.attendanceRequired ?? true}
+        WHERE id = ${row.id}`)
     } catch (e: any) {
       if (String(e?.message ?? '').includes('staff_username_uq')) {
         throw new AuthError(`The username "${input.username}" is already taken`, 'DUPLICATE')

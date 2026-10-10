@@ -112,7 +112,12 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
   const [registering, setRegistering] = useState(false)
   const [booking, setBooking] = useState<any | null>(null)
   const [editing, setEditing] = useState<any | null>(null)
-  const [direct, setDirect] = useState<any | null>(null)
+  /*
+   * The patient, and which kind of work the counter said they came for. The
+   * kind only narrows the list that opens; it is not a commitment.
+   */
+  const [direct, setDirect] = useState<
+    { patient: any; category: 'lab' | 'radiology' | 'procedure' | null } | null>(null)
   const [next, setNext] = useState<any | null>(null)
   const [labels, setLabels] = useState<any | null>(null)
   const search = useRef<HTMLInputElement>(null)
@@ -174,7 +179,8 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
                   Not everyone at the window needs a doctor. Somebody with a
                   form from another hospital just wants the test.
                 */}
-                <button onClick={() => setDirect(p)} className="btn-ghost shrink-0">
+                <button onClick={() => setDirect({ patient: p, category: null })}
+                  className="btn-ghost shrink-0">
                   {tr('Test only')}
                 </button>
                 {/*
@@ -297,14 +303,15 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
         <WhatFor patient={next}
           onClose={() => setNext(null)}
           onDoctor={() => { const p = next; setNext(null); setBooking(p) }}
-          onTests={() => { const p = next; setNext(null); setDirect(p) }} />
+          onTests={(category) => { const p = next; setNext(null); setDirect({ patient: p, category }) }} />
       )}
       {labels && (
         <PatientLabels patient={labels} visitId={labels.last_visit_id ?? null}
           onClose={() => setLabels(null)} />
       )}
       {direct && (
-        <DirectTests patient={direct} onClose={() => setDirect(null)}
+        <DirectTests patient={direct.patient} category={direct.category}
+          onClose={() => setDirect(null)}
           onDone={(chit: any) => {
             setDirect(null); setQ(''); setResults([]); refresh()
             if (chit) onBill({ kind: 'chit', chitId: chit.id })
@@ -1099,21 +1106,61 @@ function Key({ className, label }: { className: string; label: string }) {
  * list, the report, the day's takings — reads it exactly like any other chit,
  * because it is one.
  */
-function DirectTests({ patient, onClose, onDone }: {
-  patient: any; onClose: () => void; onDone: (chit: any) => void
+function DirectTests({ patient, category, onClose, onDone }: {
+  patient: any
+  /**
+   * Which kind of work the counter said they came for, so this list opens
+   * narrowed instead of showing everything the hospital does.
+   *
+   * Not a hard filter: "show everything" is still one tap away, because a
+   * patient who came for an x-ray sometimes needs a blood test with it and
+   * sending the cashier back to the start would be worse than a long list.
+   */
+  category?: 'lab' | 'radiology' | 'procedure' | null
+  onClose: () => void
+  onDone: (chit: any) => void
 }) {
   const [services, setServices] = useState<any[]>([])
   const [picked, setPicked] = useState<number[]>([])
   const [q, setQ] = useState('')
+  const [doctors, setDoctors] = useState<any[]>([])
+  const [doctorId, setDoctorId] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  useEffect(() => { api.services().then(setServices).catch(() => {}) }, [])
+  useEffect(() => {
+    api.services().then(setServices).catch(() => {})
+    api.doctors().then(setDoctors).catch(() => {})
+  }, [])
+
+  /*
+   * The counter bills a cross match and nothing more.
+   *
+   * The donor's details were asked for here at first, on the reasoning that
+   * the donor is standing at the window. In practice they are drawn and
+   * screened in the laboratory, so asking twenty seconds earlier only meant
+   * the cashier typing what the technologist would have to check anyway.
+   */
+
+  const [onlyKind, setOnlyKind] = useState<string | null>(category ?? null)
 
   const term = q.trim().toLowerCase()
   const shown = services.filter((s) =>
     s.category !== 'other' &&
+    (!onlyKind || s.category === onlyKind) &&
     (!term || s.name.toLowerCase().includes(term)))
+
+  /*
+   * Anything picked that cannot be billed without a doctor.
+   *
+   * Shown as it happens rather than discovered on save: the cashier has the
+   * patient in front of them and a queue behind, and a refusal after taking
+   * the money is the worst moment to find out. The server refuses it too —
+   * this is the courtesy, not the rule.
+   */
+  const needDoctor = services.filter(
+    (s) => picked.includes(s.id) && s.requires_doctor)
+  const blocked = needDoctor.length > 0 && !doctorId
 
   const total = services
     .filter((s) => picked.includes(s.id))
@@ -1122,7 +1169,8 @@ function DirectTests({ patient, onClose, onDone }: {
   async function save() {
     setBusy(true); setErr(null)
     try {
-      const r = await api.directServiceVisit(patient.id, picked)
+      const r = await api.directServiceVisit(patient.id, picked,
+        doctorId ? Number(doctorId) : null)
       onDone(r.chits[0] ?? null)
     } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
   }
@@ -1132,8 +1180,11 @@ function DirectTests({ patient, onClose, onDone }: {
       wide onClose={onClose}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
-        <button onClick={save} disabled={busy || picked.length === 0} className="btn-primary">
-          {busy ? tr('Saving…') : `${tr('Take payment')} — Rs ${rs(total)}`}
+        <button onClick={save} disabled={busy || picked.length === 0 || blocked}
+          className="btn-primary">
+          {busy ? tr('Saving…')
+            : blocked ? tr('Choose a doctor first')
+            : `${tr('Take payment')} — Rs ${rs(total)}`}
         </button>
       </>}>
       <ErrorNote>{err}</ErrorNote>
@@ -1141,6 +1192,55 @@ function DirectTests({ patient, onClose, onDone }: {
       <p className="text-2xs text-muted">
         {tr('No doctor and no consultation fee. The patient pays for the tests only, and the department sees them as soon as the bill is completed.')}
       </p>
+
+
+      {/*
+        Who prescribed them, if anybody.
+        None is the default and the usual answer — these are tests billed
+        without a consultation. Naming a doctor is what sends their share to
+        them; before this there was no way to say so and the share was lost.
+      */}
+      <Field label={needDoctor.length ? tr('Performed by') : tr('Prescribed by')} span
+        hint={needDoctor.length
+          ? tr('Required for what you have picked. Their share follows the name.')
+          : tr('Only if a doctor here asked for them. Their share follows the name.')}>
+        <select value={doctorId} onChange={(e) => setDoctorId(e.target.value)}
+          className={blocked ? 'field mt-1 border-rose-500' : 'field mt-1'}>
+          <option value="">
+            {needDoctor.length
+              ? tr('Choose a doctor')
+              : tr('None — walk-in or an outside slip')}
+          </option>
+          {doctors.map((d: any) => (
+            <option key={d.id} value={d.id}>{d.display_name ?? d.name}</option>
+          ))}
+        </select>
+        {blocked && (
+          <span className="mt-1 block text-2xs text-rose-600">
+            {needDoctor.map((s: any) => s.name).join(', ')}{' '}
+            {needDoctor.length === 1 ? tr('needs a doctor named.') : tr('need a doctor named.')}
+          </span>
+        )}
+      </Field>
+
+      {/*
+        The kind filter, with a way out of it.
+        
+        The counter already said what the patient came for, so the list opens
+        narrowed. Showing everything is one tap, for the patient who came for
+        an x-ray and leaves with a blood test too.
+      */}
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        {([['lab', tr('Lab')], ['radiology', tr('X-ray')],
+           ['procedure', tr('Procedures')], [null, tr('Everything')]] as
+           [string | null, string][]).map(([k, label]) => (
+          <button key={label} onClick={() => setOnlyKind(k)}
+            className={onlyKind === k ? 'btn-primary px-2.5 py-1 text-2xs'
+              : 'btn-ghost px-2.5 py-1 text-2xs'}>
+            {label}
+          </button>
+        ))}
+      </div>
 
       <input value={q} onChange={(e) => setQ(e.target.value)}
         placeholder={tr('Search a test')} className="field mt-3" />
@@ -1203,34 +1303,57 @@ function WhatFor({ patient, onClose, onDoctor, onTests }: {
   patient: any
   onClose: () => void
   onDoctor: () => void
-  onTests: () => void
+  /** The kind of work, so the list that opens next is already narrowed. */
+  onTests: (category: 'lab' | 'radiology' | 'procedure') => void
 }) {
+  /*
+   * Four boxes, not two.
+   *
+   * It used to be "see a doctor" or "tests only", and the second opened a
+   * list of everything the hospital does — lab tests, x-rays and procedures
+   * together, several hundred rows, to be searched. The cashier already
+   * knows which of the three the patient came for before they touch the
+   * screen, so asking turns that search into one tap.
+   *
+   * Procedures are their own box rather than hiding inside "tests" because
+   * they behave differently: most of them cannot be billed without naming
+   * who is performing them.
+   */
+  /*
+   * Translated here, with literal strings, not at render time from a
+   * variable. verify-i18n.mjs finds tr('...') by reading the source, so a
+   * string handed to tr() through a variable is invisible to it and would
+   * silently fall back to English with the check still passing.
+   */
+  const choices: [string, string, string, () => void][] = [
+    ['D', tr('See a doctor'),
+      tr('Consultation fee, then the queue. The doctor can order tests afterwards.'),
+      onDoctor],
+    ['L', tr('Lab test'),
+      tr('Blood, urine, culture. No consultation fee — they pay and go to the laboratory.'),
+      () => onTests('lab')],
+    ['X', tr('X-ray or scan'),
+      tr('Radiology only. No consultation fee, straight to the x-ray room.'),
+      () => onTests('radiology')],
+    ['P', tr('Procedure'),
+      tr('A dressing, an injection, an ECG. Most of these need the doctor performing it named.'),
+      () => onTests('procedure')]
+  ]
+
   return (
     <Modal title={tr('What are they here for?')}
       hint={`${patient.name} · ${patient.mrn}`} onClose={onClose}
       footer={<button onClick={onClose} className="btn-ghost">{tr('Decide later')}</button>}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <button onClick={onDoctor}
-          className="card-tint p-4 text-left transition-transform hover:-translate-y-0.5
-                     hover:shadow-md">
-          <span className="tile mb-2 inline-flex">D</span>
-          <span className="block text-sm font-medium text-heading">{tr('See a doctor')}</span>
-          <span className="block text-2xs text-muted">
-            {tr('Consultation fee, then the queue. The doctor can order tests afterwards.')}
-          </span>
-        </button>
-
-        <button onClick={onTests}
-          className="card-tint p-4 text-left transition-transform hover:-translate-y-0.5
-                     hover:shadow-md">
-          <span className="tile mb-2 inline-flex">T</span>
-          <span className="block text-sm font-medium text-heading">
-            {tr('Tests only — lab or x-ray')}
-          </span>
-          <span className="block text-2xs text-muted">
-            {tr('No doctor and no consultation fee. They pay for the tests and go straight to the department.')}
-          </span>
-        </button>
+        {choices.map(([glyph, title, blurb, go]) => (
+          <button key={title} onClick={go}
+            className="card-tint p-4 text-left transition-transform hover:-translate-y-0.5
+                       hover:shadow-md">
+            <span className="tile mb-2 inline-flex">{glyph}</span>
+            <span className="block text-sm font-medium text-heading">{title}</span>
+            <span className="block text-2xs text-muted">{blurb}</span>
+          </button>
+        ))}
       </div>
 
       <p className="mt-3 text-2xs text-muted">

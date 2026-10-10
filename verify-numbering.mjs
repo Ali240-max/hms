@@ -129,5 +129,31 @@ console.log('\n— an MRN says who and when, and is still unique —')
     /^AY00-/.test(single.mrn), single.mrn)
 }
 
+console.log('\n— a reset does not leave numbers behind —')
+{
+  /*
+   * The counters table is emptied by a demo reset, so every table holding a
+   * number issued FROM it has to be emptied with it.
+   *
+   * Three tables added after that list was written were not on it — stock
+   * audits, stock adjustments and purchase orders. A reset left AUD-261009-01
+   * on the shelf while the counter went back to zero, and the next count
+   * sheet anybody tried to save was refused with a duplicate key. A reset
+   * that leaves the database unable to do a normal thing is worse than no
+   * reset.
+   *
+   * Read from the source rather than performed, because running a reset here
+   * would wipe the database the rest of these suites are using.
+   */
+  const { readFileSync } = await import('node:fs')
+  const demo = readFileSync('src/server/services/demo.ts', 'utf8')
+  const truncate = (demo.match(/TRUNCATE[\s\S]*?RESTART IDENTITY CASCADE/) ?? [''])[0]
+  ok('the reset truncates the counters', /\bcounters\b/.test(truncate))
+  for (const t of ['stock_audits', 'stock_adjustments', 'purchase_orders']) {
+    ok(`and ${t}, which carries a counter-issued number`,
+      new RegExp(`\\b${t}\\b`).test(truncate))
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail?1:0)

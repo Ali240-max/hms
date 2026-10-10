@@ -389,6 +389,19 @@ export const PERMISSIONS: { group: string; key: string; label: string }[] = [
   { group: 'Stock',   key: 'stock.view',     label: 'See stock levels' },
   { group: 'Stock',   key: 'stock.adjust',   label: 'Adjust stock after a count' },
   { group: 'Stock',   key: 'stock.expiry',   label: 'Write off expired stock' },
+  /*
+   * Off for counter staff by default; the pharmacy administrator has it and
+   * hands it out.
+   *
+   * This is the one screen that can make stock appear with no delivery and
+   * no count behind it, which is exactly what a shop needs on its first
+   * morning and exactly what it must not have on any morning after. So it is
+   * granted to whoever is doing the changeover and taken back afterwards,
+   * rather than sitting on the pharmacist role where it would be inherited
+   * by every new assistant.
+   */
+  { group: 'Stock',   key: 'stock.opening',
+    label: 'Set opening stock (first-time setup)' },
 
   { group: 'Masters', key: 'product.add',    label: 'Add a medicine' },
   { group: 'Masters', key: 'product.edit',   label: 'Edit a medicine' },
@@ -406,6 +419,18 @@ export const PERMISSIONS: { group: string; key: string; label: string }[] = [
   { group: 'Reports', key: 'report.ledger',   label: 'Ledger and party reports' },
   { group: 'Reports', key: 'report.export',   label: 'Export a report to a file' },
 
+  /*
+   * The prescriptions tab, switched off for a pharmacy running on its own.
+   *
+   * A standalone chemist has no doctors sending prescriptions through, so
+   * the tab is an empty screen somebody clicks once and never again. It is a
+   * permission rather than a module setting because the same installation
+   * may serve a hospital pharmacy and a front shop, and only one of them
+   * wants it.
+   */
+  { group: 'Counter',  key: 'prescriptions.see',
+    label: 'See the prescriptions tab' },
+
   { group: 'Staff',   key: 'staff.access',   label: 'Decide what other staff can do' }
 ]
 
@@ -418,7 +443,32 @@ const ROLE_DEFAULTS: Record<string, string[]> = {
    */
   pharmacist: ['sale.counter', 'sale.reprint', 'sale.estimate', 'purchase.receive',
                'purchase.view', 'stock.view', 'product.add', 'product.edit',
-               'report.sales', 'report.stock'],
+               'report.sales', 'report.stock',
+               /*
+                * Taking goods back is part of serving a customer, so it is on
+                * by default now.
+                *
+                * It was not, and the Returns tab was hidden unless somebody
+                * held it — which meant the person actually standing at the
+                * till could not even find the screen when a customer arrived
+                * with a strip to bring back. Nobody decided that; it fell out
+                * of a cautious default meeting a hidden tab.
+                *
+                * What makes it safe to open is not the tick, it is the record:
+                * a return is always against the original bill, it is refunded
+                * at whatever that line was actually charged, and every one of
+                * them appears in the Sales Returns Register with the name of
+                * who took it and the minute they did. The tick remains, so a
+                * shop that wants refunds held back to a supervisor can still
+                * untick it per person.
+                */
+               'sale.return',
+               /*
+                * On by default, so nothing changes for a hospital pharmacy
+                * that already uses it. A standalone chemist turns it off once
+                * and it stays off.
+                */
+               'prescriptions.see'],
   pharmacy_admin: PERMISSIONS.map((p) => p.key),
   admin: PERMISSIONS.map((p) => p.key)
 }

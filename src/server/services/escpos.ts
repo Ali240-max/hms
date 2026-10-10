@@ -180,7 +180,14 @@ export function chitReceipt(input: {
   r.pair('Date', when(chit.paid_at ?? chit.created_at))
   r.rule('.')
 
-  r.pair('Patient', chit.patient_name ?? '')
+  /*
+   * The patient in bold, and the only bold row in this block.
+   *
+   * It is the one name a department has to match against the person standing
+   * in front of them, and at the same weight as the payment method it reads
+   * no louder. Bold costs nothing on a thermal printer.
+   */
+  r.bold(true).pair('Patient', chit.patient_name ?? '').bold(false)
   r.pair('MRN', chit.mrn ?? '')
   const age = [chit.age_years != null ? `${chit.age_years}y` : null, chit.gender]
     .filter(Boolean).join(' / ')
@@ -202,7 +209,11 @@ export function chitReceipt(input: {
   if (chit.status === 'paid') {
     r.pair('Paid', when(chit.paid_at))
     if (chit.pay_method) r.pair('Paid by', chit.pay_method)
-    if (chit.paid_by) r.pair('Received by', chit.paid_by)
+    /*
+     * No "Received by". It carried the same person as the Cashier row above,
+     * so the slip named them twice under two different words, which reads as
+     * two people and had staff asking which one took the money.
+     */
   }
 
   r.feed(1).align(1)
@@ -237,7 +248,8 @@ export function billReceipt(input: {
   if (bill.cashier_name) r.pair('Cashier', bill.cashier_name)
   r.rule('.')
 
-  r.pair('Patient', bill.patient_name ?? '')
+  /* Bold, as on the chit: the one name anyone reading this is matching. */
+  r.bold(true).pair('Patient', bill.patient_name ?? '').bold(false)
   r.pair('MRN', bill.mrn ?? '')
   if (bill.doctor_name) r.pair('Doctor', bill.doctor_name)
   r.rule('.')

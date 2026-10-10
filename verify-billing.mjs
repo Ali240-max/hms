@@ -281,5 +281,67 @@ console.log('\n— deleting a patient —')
   ok('the OPD desk cannot delete patients', r7.status===403, `got ${r7.status}`)
 }
 
+console.log('\n— a service that cannot be billed without a doctor —')
+{
+  /*
+   * Procedures are why this exists. A dressing, a nebulisation, an ECG:
+   * somebody performs them and has a share in them. Billed with nobody
+   * named, that share has nowhere to go and vanishes without trace — a month
+   * later the doctor asks why their earnings are short and there is nothing
+   * on the record to answer with.
+   *
+   * It is a flag per service rather than a rule about the procedure
+   * category, because the two do not line up: some procedures are nurse-led,
+   * and in a small hospital some tests genuinely are done by a named
+   * consultant. All four states are checked, including that nothing changed
+   * for an ordinary lab test.
+   */
+  const svcs = (await q('/services', 'mc')).body
+  const proc = svcs.find((s) => s.category === 'procedure' && s.requires_doctor)
+  const lab = svcs.find((s) => s.category === 'lab')
+  ok('a procedure ships needing a doctor', !!proc,
+    'no procedure has requires_doctor set')
+  ok('an ordinary lab test does not', !!lab && !lab.requires_doctor,
+    lab ? `${lab.name} requires_doctor=${lab.requires_doctor}` : 'no lab test')
+
+  if (proc && lab) {
+    const p = (await q('/patients', 'mc', { method: 'POST', body: JSON.stringify({
+      name: 'Doctor Required Test', gender: 'male', ageYears: 40 }) })).body
+    const pid = p.id ?? p.patient?.id
+    const doc = (await q('/doctors', 'mc')).body[0]
+
+    const bill = (serviceIds, doctorId) => q('/counter/direct', 'mc', {
+      method: 'POST', body: JSON.stringify({ patientId: pid, serviceIds, doctorId }) })
+
+    let r = await bill([proc.id], null)
+    ok('billing it with no doctor is refused',
+      r.status === 409 && r.body.code === 'DOCTOR_REQUIRED', `${r.status} ${r.body?.code}`)
+    ok('and the refusal names the service and says how to change it',
+      String(r.body?.error ?? '').includes(proc.name) &&
+      /doctor must be named/i.test(String(r.body?.error ?? '')),
+      String(r.body?.error ?? '').slice(0, 110))
+
+    r = await bill([proc.id], doc.id)
+    ok('naming a doctor lets it through', r.status === 201, `got ${r.status}`)
+
+    /* The point of the flag being per service: nothing else changed. */
+    r = await bill([lab.id], null)
+    ok('a lab test still bills with nobody named', r.status === 201, `got ${r.status}`)
+
+    /* And the flag can be taken off, for a nurse-led procedure. */
+    const save = (requiresDoctor) => q('/services', 'admin', { method: 'POST',
+      body: JSON.stringify({ id: proc.id, name: proc.name, category: 'procedure',
+        pricePaisa: Number(proc.price_paisa),
+        defaultShareBp: Number(proc.default_share_bp), requiresDoctor }) })
+
+    await save(false)
+    r = await bill([proc.id], null)
+    ok('with the flag off it bills with no doctor', r.status === 201, `got ${r.status}`)
+    await save(true)
+    const again = (await q('/services', 'mc')).body.find((s) => s.id === proc.id)
+    ok('and the flag survives being switched back on', !!again?.requires_doctor)
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail?1:0)

@@ -1,5 +1,6 @@
 import { Inbox, Printer } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
 import { AnimatedNumber, DUR, SPRING, tapBuzz } from '../lib/motion'
 import type { ReactNode } from 'react'
@@ -121,11 +122,32 @@ export function Modal({ title, hint, wide, onClose, children, footer }: {
     return () => { document.body.style.overflow = previous }
   }, [])
 
-  return (
+  /*
+   * Rendered into <body>, not where it is written.
+   *
+   * `position: fixed` resolves against the nearest ancestor carrying a
+   * transform, a filter or `contain` — and every module panel animates its
+   * position, which creates exactly that. So a dialog opened from inside one
+   * was fixed to the panel rather than to the window: squeezed into whatever
+   * box it happened to be written in, with the dim stopping at that box's
+   * edge. It is the same bug wherever it appears, and the only fix that holds
+   * is to take the dialog out of the tree.
+   */
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center overflow-auto p-0
-                    sm:items-start sm:p-6">
+                    sm:items-center sm:p-6">
+      {/*
+        `fixed`, not `absolute`.
+
+        The container scrolls when a dialog is taller than the window, and an
+        absolutely positioned backdrop is only as tall as that container's
+        first screenful — so scrolling down inside a long dialog ran off the
+        end of the dim and the page behind showed through, sharp and bright.
+        Fixed to the viewport, it covers whatever is behind it at every scroll
+        position.
+      */}
       <motion.div
-        className="absolute inset-0 bg-heading/40 backdrop-blur-[2px]"
+        className="fixed inset-0 bg-heading/40 backdrop-blur-[2px]"
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         transition={{ duration: DUR.pop }}
         onClick={onClose} />
@@ -141,8 +163,17 @@ export function Modal({ title, hint, wide, onClose, children, footer }: {
         dragElastic={{ top: 0, bottom: 0.6 }}
         dragListener={false}
         onDragEnd={(_, i) => { if (i.offset.y > 90 || i.velocity.y > 500) onClose() }}
+        /*
+          Capped and centred on a desktop too.
+
+          It was uncapped there, so a long dialog grew past the window and the
+          page scrolled behind it — which is what made the wipe confirmation,
+          with its two lists, arrive squeezed against the top with a scrollbar
+          down the side. Capped, it sits in the middle and scrolls its own
+          body, which is where the scrolling belongs.
+        */
         className={`panel relative flex max-h-[92dvh] w-full flex-col rounded-t-3xl
-                    sm:my-4 sm:max-h-none sm:rounded-2xl
+                    sm:my-4 sm:max-h-[90dvh] sm:rounded-2xl
                     ${wide ? 'sm:max-w-3xl' : 'sm:max-w-lg'}`}>
 
         {/* Only the handle drags, so a text selection inside does not close it. */}
@@ -175,7 +206,8 @@ export function Modal({ title, hint, wide, onClose, children, footer }: {
           </footer>
         )}
       </motion.div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

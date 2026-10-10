@@ -68,7 +68,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'pharmacist' | 'pharmacy_admin' | 'reports'
+export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'ward' | 'kiosk' | 'pharmacist' | 'pharmacy_admin' | 'reports'
 export type SessionUser = {
   id: number; username: string; displayName: string; role: Role
   departmentId: number | null; departmentName?: string | null; doctorId?: number | null
@@ -124,6 +124,53 @@ export const api = {
     },
     purchase: (id: number) => req<any>(`/pharmacy/purchases/${id}`),
     receiveGoods: (b: any) => req<any>('/pharmacy/purchases', { method: 'POST', body: JSON.stringify(b) }),
+
+    /* ------------------------------------------------- supplier terms */
+
+    supplierTerms: () => req<any[]>('/pharma/suppliers/terms'),
+    supplierCompanies: (id: number) => req<any[]>(`/pharma/suppliers/${id}/companies`),
+    addSupplierCompany: (id: number, manufacturerId: number) =>
+      req<any[]>(`/pharma/suppliers/${id}/companies`,
+        { method: 'POST', body: JSON.stringify({ manufacturerId }) }),
+    removeSupplierCompany: (id: number, manufacturerId: number) =>
+      req<any[]>(`/pharma/suppliers/${id}/companies/${manufacturerId}`, { method: 'DELETE' }),
+
+    supplierSlots: (id: number) => req<any[]>(`/pharma/suppliers/${id}/slots`),
+    addSupplierSlot: (id: number, b: { weekday: number; atTime: string; note?: string | null }) =>
+      req<any[]>(`/pharma/suppliers/${id}/slots`,
+        { method: 'POST', body: JSON.stringify(b) }),
+    removeSupplierSlot: (id: number, slotId: number) =>
+      req<any[]>(`/pharma/suppliers/${id}/slots/${slotId}`, { method: 'DELETE' }),
+
+    /* ----------------------------------------------- purchase orders */
+
+    orderSheet: (supplier: number, days: number) =>
+      req<{ windowDays: number; rows: any[] }>(
+        `/pharma/orders/sheet?supplier=${supplier}&days=${days}`),
+    pharmacySettings: () => req<any>('/pharma/settings'),
+    savePharmacySettings: (b: any) =>
+      req<any>('/pharma/settings', { method: 'PUT', body: JSON.stringify(b) }),
+    orders: (o: { status?: string; supplier?: number; from?: string; to?: string } = {}) => {
+      const p = new URLSearchParams()
+      if (o.status) p.set('status', o.status)
+      if (o.supplier) p.set('supplier', String(o.supplier))
+      if (o.from) p.set('from', o.from)
+      if (o.to) p.set('to', o.to)
+      return req<any[]>(`/pharma/orders?${p}`)
+    },
+    order: (id: number) => req<any>(`/pharma/orders/${id}`),
+    createOrder: (b: any) =>
+      req<any>('/pharma/orders', { method: 'POST', body: JSON.stringify(b) }),
+    deleteOrder: (id: number) =>
+      req<{ deleted: boolean; cancelled: boolean; orderNo: string; reason?: string }>(
+        `/pharma/orders/${id}`, { method: 'DELETE' }),
+
+    /* ------------------------------------------------- opening stock */
+
+    openingStock: (q = '') => req<any[]>(`/pharma/opening-stock?q=${encodeURIComponent(q)}`),
+    saveOpeningStock: (lines: { productId: number; units: number }[]) =>
+      req<{ changed: number; lines: any[] }>('/pharma/opening-stock',
+        { method: 'PUT', body: JSON.stringify({ lines }) }),
 
     sell: (b: any) => req<any>('/pharmacy/sales', { method: 'POST', body: JSON.stringify(b) }),
     sales: (o: any) => {
@@ -212,9 +259,10 @@ export const api = {
   draftForVisit: (visitId: number) => req<any>(`/counter/draft/visit/${visitId}`),
   draftForChit: (chitId: number) => req<any>(`/counter/draft/chit/${chitId}`),
   completeBill: (b: any) => req<any>('/counter/bills', { method: 'POST', body: JSON.stringify(b) }),
-  directServiceVisit: (patientId: number, serviceIds: number[]) =>
+  directServiceVisit: (patientId: number, serviceIds: number[],
+                      doctorId: number | null = null) =>
     req<any>('/counter/direct', { method: 'POST',
-      body: JSON.stringify({ patientId, serviceIds }) }),
+      body: JSON.stringify({ patientId, serviceIds, doctorId }) }),
   counterBills: (o: { q?: string; kind?: string; from?: string; to?: string } = {}) => {
     const p = new URLSearchParams()
     for (const k of ['q', 'kind', 'from', 'to'] as const) if (o[k]) p.set(k, String(o[k]))
@@ -293,18 +341,84 @@ export const api = {
   serviceParameters: (serviceId: number) => req<any[]>(`/services/${serviceId}/parameters`),
 
   /* What a result means, who signs for it, and how the report is worded. */
+  /* ------------------------------------------------------ attendance */
+  /* What the screen by the door polls: only what it has not shown yet. */
+  recentPunches: (since?: number) =>
+    req<any[]>(`/attendance/recent${since ? `?since=${since}` : ''}`),
+  attendanceDay: (date: string) => req<any[]>(`/attendance/day?date=${date}`),
+  attendanceOnSite: () => req<any[]>('/attendance/on-site'),
+  attendanceStaff: () => req<any[]>('/attendance/staff'),
+  attendanceMonth: (staffId: number, year: number, month: number) =>
+    req<any>(`/attendance/month?staffId=${staffId}&year=${year}&month=${month}`),
+  addAttendancePunch: (staffId: number, at: string, note: string | null = null) =>
+    req<any>('/attendance/punch', {
+      method: 'POST', body: JSON.stringify({ staffId, at, note })
+    }),
+  deleteAttendancePunch: (id: number) =>
+    req<any>(`/attendance/punch/${id}`, { method: 'DELETE' }),
+  attendanceDevices: () => req<any[]>('/attendance/devices'),
+  saveAttendanceDevice: (b: any) =>
+    req<any>('/attendance/devices', { method: 'POST', body: JSON.stringify(b) }),
+  saveFingerprint: (staffId: number, fingerIndex: number, template: string) =>
+    req<any>('/attendance/fingerprints', {
+      method: 'POST', body: JSON.stringify({ staffId, fingerIndex, template })
+    }),
+  deleteFingerprint: (id: number) =>
+    req<any>(`/attendance/fingerprints/${id}`, { method: 'DELETE' }),
+  attendanceFingerprints: (staffId: number) =>
+    req<any[]>(`/attendance/fingerprints/${staffId}`),
+
+  /* ------------------------------------------------------------- IPD */
+  wards: (all = false) => req<any[]>(`/ipd/wards${all ? '?all=1' : ''}`),
+  saveWard: (b: any) => req<any>('/ipd/wards', { method: 'POST', body: JSON.stringify(b) }),
+  deleteWard: (id: number) => req<any>(`/ipd/wards/${id}`, { method: 'DELETE' }),
+  bedBoard: () => req<any[]>('/ipd/beds'),
+  saveBed: (b: any) => req<any>('/ipd/beds', { method: 'POST', body: JSON.stringify(b) }),
+  deleteBed: (id: number) => req<any>(`/ipd/beds/${id}`, { method: 'DELETE' }),
+  setBedStatus: (id: number, status: string, note: string | null = null) =>
+    req<any>(`/ipd/beds/${id}/status`, {
+      method: 'POST', body: JSON.stringify({ status, note })
+    }),
+  admissions: (status = 'open', q = '') =>
+    req<any[]>(`/ipd/admissions?status=${status}&q=${encodeURIComponent(q)}`),
+  admission: (id: number) => req<any>(`/ipd/admissions/${id}`),
+  admit: (b: any) => req<any>('/ipd/admissions', { method: 'POST', body: JSON.stringify(b) }),
+  transferBed: (id: number, bedId: number, reason: string | null = null) =>
+    req<any>(`/ipd/admissions/${id}/transfer`, {
+      method: 'POST', body: JSON.stringify({ bedId, reason })
+    }),
+  addAdmissionCharge: (id: number, b: any) =>
+    req<any>(`/ipd/admissions/${id}/charges`, { method: 'POST', body: JSON.stringify(b) }),
+  addAdmissionPayment: (id: number, b: any) =>
+    req<any>(`/ipd/admissions/${id}/payments`, { method: 'POST', body: JSON.stringify(b) }),
+  dischargeAdmission: (id: number, b: any) =>
+    req<any>(`/ipd/admissions/${id}/discharge`, { method: 'POST', body: JSON.stringify(b) }),
+
+  deleteService: (id: number) => req<any>(`/services/${id}`, { method: 'DELETE' }),
   interpretations: (id: number) => req<any[]>(`/services/${id}/interpretations`),
   saveInterpretations: (id: number, rows: any[]) =>
     req<any[]>(`/services/${id}/interpretations`, {
       method: 'PUT', body: JSON.stringify({ rows })
     }),
+  /* Four columns or three, per test. */
+  reportLayout: (id: number) => req<any>(`/services/${id}/report-layout`),
+  saveReportLayout: (id: number, layout: string) =>
+    req<any>(`/services/${id}/report-layout`, {
+      method: 'PUT', body: JSON.stringify({ layout })
+    }),
+
   reportNote: (id: number) => req<any>(`/services/${id}/report-note`),
   saveReportNote: (id: number, b: any) =>
     req<any>(`/services/${id}/report-note`, { method: 'PUT', body: JSON.stringify(b) }),
   /* Cross match: checking a bag of blood against the patient it is for. */
-  crossMatches: (q = '') =>
-    req<any[]>(`/lab/cross-matches${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  crossMatches: (q = '', status = 'all') =>
+    req<any[]>(`/lab/cross-matches?q=${encodeURIComponent(q)}&status=${status}`),
   crossMatch: (id: number) => req<any>(`/lab/cross-matches/${id}`),
+  /* Records that the blood has reached the laboratory. */
+  startCrossMatch: (serviceOrderId: number) =>
+    req<any>('/lab/collect', {
+      method: 'POST', body: JSON.stringify({ serviceOrderId })
+    }),
   createCrossMatch: (b: any) =>
     req<any>('/lab/cross-matches', { method: 'POST', body: JSON.stringify(b) }),
 
@@ -425,6 +539,24 @@ export const api = {
 
   pharmacyQueue: (q?: string) =>
     req<any[]>(`/pharmacy/prescriptions${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  /* ------------------------------------------------- stock audits */
+  previewAuditScope: (b: any) =>
+    req<any[]>('/pharma/audits/preview', { method: 'POST', body: JSON.stringify(b) }),
+  createAudit: (b: any) =>
+    req<any>('/pharma/audits', { method: 'POST', body: JSON.stringify(b) }),
+  audits: (q = '') => req<any[]>(`/pharma/audits?q=${encodeURIComponent(q)}`),
+  audit: (id: number) => req<any>(`/pharma/audits/${id}`),
+  closeAudit: (id: number) =>
+    req<any>(`/pharma/audits/${id}/close`, { method: 'POST' }),
+  createAdjustment: (b: any) =>
+    req<any>('/pharma/adjustments', { method: 'POST', body: JSON.stringify(b) }),
+  adjustments: (from: string, to: string) =>
+    req<any[]>(`/pharma/adjustments?from=${from}&to=${to}`),
+  adjustmentHistory: (from: string, to: string) =>
+    req<any[]>(`/pharma/adjustments/history?from=${from}&to=${to}`),
+  adjustmentsByCompany: (from: string, to: string) =>
+    req<any[]>(`/pharma/adjustments/by-company?from=${from}&to=${to}`),
+
   productSearch: (q: string) => req<SearchHit[]>(`/products/search?q=${encodeURIComponent(q)}`),
 
   myEarnings: (from: string, to: string, doctorId?: number) =>
@@ -434,6 +566,27 @@ export const api = {
   demoStatus: () => req<{ hasData: boolean }>('/admin/demo-status'),
   loadDemoData: (reset: boolean, days = 45) =>
     req<any>('/admin/demo-data', { method: 'POST', body: JSON.stringify({ reset, days }) })
+}
+
+/**
+ * A stock figure, as "1X10, 250".
+ *
+ * The pack on the left and the total units on the right, because neither
+ * answers the question on its own. "250" does not say whether that is
+ * twenty-five strips or two and a half boxes, and "25 packs" does not say
+ * what is left to sell. Both together is how the pharmacy reads a shelf.
+ *
+ * The pack label is whatever the medicine carries — 1X10, 3X10, 100ml — and
+ * falls back to the pack size when none is set.
+ */
+export function stockLabel(
+  units: number | string | null | undefined,
+  packLabel?: string | null,
+  packSize?: number | null
+): string {
+  const n = Number(units ?? 0)
+  const pack = (packLabel ?? '').trim() || `1X${Math.max(1, Number(packSize ?? 1))}`
+  return `${pack}, ${n.toLocaleString('en-PK')}`
 }
 
 /** Paisa to a grouped rupee string. Never do arithmetic on the display value. */

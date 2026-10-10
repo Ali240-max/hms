@@ -92,5 +92,44 @@ for (const [path, body] of [
   ok(`it cannot post to ${path}`, r.status===403, `got ${r.status}`)
 }
 
+console.log('\n— a report for today includes today —')
+{
+  /*
+   * The whole class of bug this catches, which bit twice in one file.
+   *
+   * A window of today..today written as `created_at >= from AND created_at <
+   * to` excludes the entire final day: a bill made at one o'clock is not
+   * earlier than midnight this morning. The report comes back empty and
+   * looks like a feature that does not work — which is exactly how the
+   * patients-by-department report was reported, and the department summary
+   * had it too.
+   *
+   * The shared `between()` helper in hospital-reports.ts gets this right by
+   * adding a day to the end. Nineteen queries used it and four did not.
+   *
+   * Checked by taking a department report over today only. The demo data
+   * books visits on every day including today, so rows are expected; an
+   * empty answer here means the end of the window has been dropped again.
+   */
+  const T = `from=${today}&to=${today}`
+  for (const id of ['dept-patients', 'dept-summary']) {
+    const res = await q(`/reports/run/${id}?${T}`, 'admin')
+    ok(`${id} runs for a single day`, res.status === 200, `got ${res.status}`)
+    ok(`${id} does not drop the day it was asked for`,
+      Array.isArray(res.body?.rows) && res.body.rows.length > 0,
+      `${res.body?.rows?.length ?? 'no'} rows for ${today}`)
+  }
+
+  /*
+   * And the grouping the report exists for: a consultation billed against a
+   * doctor has to appear under that doctor's department, with the department
+   * named rather than left as "Unassigned".
+   */
+  const dp = await q(`/reports/run/dept-patients?${T}`, 'admin')
+  const depts = [...new Set((dp.body?.rows ?? []).map((x) => x.department))]
+  ok('its rows carry a real department name',
+    depts.length > 0 && !depts.every((d) => d === 'Unassigned'), depts.join(', '))
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail?1:0)

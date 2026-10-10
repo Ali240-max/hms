@@ -417,6 +417,8 @@ export async function upsertService(input: {
   pricePaisa: number; defaultShareBp: number; isActive?: boolean
   /** Which department owns it. Optional; reports fall back to the category. */
   departmentId?: number | null
+  /** Cannot be billed without naming a doctor. Mostly for procedures. */
+  requiresDoctor?: boolean
 }) {
   /*
    * Written with raw SQL for the department, because the Drizzle schema in
@@ -428,7 +430,9 @@ export async function upsertService(input: {
     const [row] = await db.update(s.services).set({
       code: input.code ?? null, name: input.name.trim(), category: input.category,
       pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp,
-      ...(input.isActive !== undefined ? { isActive: input.isActive } : {})
+      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+      ...(input.requiresDoctor !== undefined
+        ? { requiresDoctor: input.requiresDoctor } : {})
     }).where(eq(s.services.id, input.id)).returning()
     if (input.departmentId !== undefined) {
       await db.execute(sql`
@@ -438,7 +442,13 @@ export async function upsertService(input: {
   }
   const [row] = await db.insert(s.services).values({
     code: input.code ?? null, name: input.name.trim(), category: input.category,
-    pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp
+    pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp,
+    /*
+     * A procedure needs a doctor unless somebody says otherwise. That is the
+     * common case by a wide margin, and the alternative — a procedure billed
+     * with nobody named and the share lost — is the thing being fixed.
+     */
+    requiresDoctor: input.requiresDoctor ?? input.category === 'procedure'
   }).returning()
   if (input.departmentId != null) {
     await db.execute(sql`

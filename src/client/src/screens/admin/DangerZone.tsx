@@ -204,7 +204,16 @@ function WipeDialog({ me, onClose }: { me: SessionUser; onClose: () => void }) {
             <p className="label text-bad">
               {tr('Will be deleted')} — {preview.totalRows.toLocaleString()} {tr('rows')}
             </p>
-            <div className="max-h-48 overflow-auto rounded-xl border-2 border-bad/30">
+            {/*
+              No scrollbar of its own.
+
+              The dialog body already scrolls, and a panel that scrolls inside
+              a panel that scrolls gives three scrollbars on one screen and a
+              list squeezed into forty pixels. The lists are short enough to
+              read in full; this is the one screen where somebody should see
+              everything before they press the button.
+            */}
+            <div className="rounded-xl border-2 border-bad/30">
               <table className="w-full">
                 <tbody className="divide-y divide-divide">
                   {preview.willDelete.length === 0 && (
@@ -214,7 +223,17 @@ function WipeDialog({ me, onClose }: { me: SessionUser; onClose: () => void }) {
                   )}
                   {preview.willDelete.map((r: any) => (
                     <tr key={r.table}>
-                      <td className="px-3 py-1 text-2xs text-body">{r.table}</td>
+                      {/*
+                        The plain-English name, with the table underneath.
+                        "lab_values" reads to a laboratory like the reference
+                        ranges they spent a week typing in, rather than the
+                        results, and that is not a guess anybody should have
+                        to make on this screen.
+                      */}
+                      <td className="px-3 py-1 text-2xs text-body">
+                        {tr(r.label ?? r.table)}
+                        <span className="block num text-[0.65rem] text-muted">{r.table}</span>
+                      </td>
                       <td className="px-3 py-1 text-right num text-2xs text-bad">
                         {r.rows.toLocaleString()}
                       </td>
@@ -227,12 +246,22 @@ function WipeDialog({ me, onClose }: { me: SessionUser; onClose: () => void }) {
 
           <div>
             <p className="label text-ok">{tr('Will be kept')}</p>
-            <div className="max-h-48 overflow-auto rounded-xl border-2 border-ok/30">
+            <div className="rounded-xl border-2 border-ok/30">
               <table className="w-full">
                 <tbody className="divide-y divide-divide">
                   {preview.willKeep.map((r: any) => (
                     <tr key={r.table}>
-                      <td className="px-3 py-1 text-2xs text-body">{r.table}</td>
+                      {/*
+                        The plain-English name, with the table underneath.
+                        "lab_values" reads to a laboratory like the reference
+                        ranges they spent a week typing in, rather than the
+                        results, and that is not a guess anybody should have
+                        to make on this screen.
+                      */}
+                      <td className="px-3 py-1 text-2xs text-body">
+                        {tr(r.label ?? r.table)}
+                        <span className="block num text-[0.65rem] text-muted">{r.table}</span>
+                      </td>
                       <td className="px-3 py-1 text-right num text-2xs text-ok">
                         {r.rows.toLocaleString()}
                       </td>

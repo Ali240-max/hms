@@ -12,7 +12,7 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { execSync } from 'node:child_process'
 
 const OUT = '.bundle'
@@ -183,15 +183,66 @@ await writeFile(join(OUT, 'README.txt'),
 console.log('  zipping…')
 await rm(ZIP, { force: true })
 
-/* Windows has no `zip`, and Linux has no PowerShell. Try each. */
-try {
-  execSync(`cd ${OUT} && zip -qr ../${ZIP} .`, { stdio: 'pipe' })
-} catch {
-  execSync(
-    'powershell -NoProfile -Command ' +
-    `"Compress-Archive -Path '${OUT}\\*' -DestinationPath '${ZIP}' -Force"`,
-    { stdio: 'inherit' })
+/*
+ * Four ways to make a zip, in order of how long they take.
+ *
+ * `Compress-Archive` is last for a reason: it is quadratic in the number of
+ * entries, and this bundle is nearly five thousand small files. It took over
+ * twenty minutes on a real machine and looked hung for most of them, which is
+ * worse than failing — somebody waiting on a zip before leaving for a
+ * hospital cannot tell a slow one from a broken one.
+ *
+ * .NET's ZipFile does the same job in a few seconds, and ships with every
+ * Windows that has PowerShell. bsdtar has been in Windows since 2018 and is
+ * faster still.
+ */
+function makeZip() {
+  /*
+   * Absolute paths for the PowerShell routes.
+   *
+   * PowerShell resolves a relative path against its own working directory,
+   * not against npm's, and the two are not always the same. The Unix tools
+   * are given a directory to work in instead.
+   */
+  const outAbs = resolve(OUT)
+  const zipAbs = resolve(ZIP)
+
+  const attempts = [
+    // Linux and macOS.
+    { what: 'zip', run: () => execSync(`cd ${OUT} && zip -qr ../${ZIP} .`, { stdio: 'pipe' }) },
+    // Windows 10 1803 and later ship bsdtar as tar.exe; -a picks the format
+    // from the extension.
+    { what: 'tar', run: () => execSync(`tar -a -c -f "${ZIP}" -C "${OUT}" .`, { stdio: 'pipe' }) },
+    {
+      what: '.NET ZipFile',
+      run: () => execSync(
+        'powershell -NoProfile -Command "' +
+        "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+        `[System.IO.Compression.ZipFile]::CreateFromDirectory('${outAbs}','${zipAbs}')\"`,
+        { stdio: 'pipe' })
+    },
+    {
+      what: 'Compress-Archive (slow)',
+      run: () => execSync(
+        'powershell -NoProfile -Command ' +
+        `"Compress-Archive -Path '${outAbs}\\*' -DestinationPath '${zipAbs}' -Force"`,
+        { stdio: 'inherit' })
+    }
+  ]
+
+  for (const attempt of attempts) {
+    try {
+      attempt.run()
+      return attempt.what
+    } catch {
+      // The next one along. Only the last failing is worth reporting.
+    }
+  }
+  throw new Error('No way to make a zip on this machine')
 }
 
+const zippedWith = makeZip()
+
 await rm(OUT, { recursive: true, force: true })
-console.log(`\n  ${ZIP} is ready — built ${stamp}. Copy it to the hospital machine.\n`)
+console.log(`\n  ${ZIP} is ready — built ${stamp}, zipped with ${zippedWith}.` +
+  '\n  Copy it to the hospital machine.\n')

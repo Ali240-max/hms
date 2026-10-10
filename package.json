@@ -12,6 +12,8 @@
     "start": "node dist/server/index.js",
     "db:generate": "drizzle-kit generate",
     "seed": "tsx scripts/seed.ts",
+    "seed:reset": "tsx scripts/seed.ts --reset",
+    "seed:more": "tsx scripts/seed.ts --add",
     "typecheck": "tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.client.json",
     "verify:pharmacy": "node verify-pharmacy.mjs",
     "verify:chits": "node verify-chits.mjs",
@@ -37,9 +39,15 @@
     "bundle": "node scripts/bundle.mjs",
     "verify:admin": "node verify-admin-access.mjs",
     "verify:print": "tsx verify-print.mjs",
-    "verify:escpos": "node verify-escpos.mjs",
+    "verify:escpos": "tsx verify-escpos.mjs",
     "verify": "node scripts/verify-all.mjs",
-    "verify:crossmatch": "tsx verify-crossmatch.ts"
+    "verify:crossmatch": "tsx verify-crossmatch.ts",
+    "verify:layouts": "tsx verify-layouts.ts",
+    "verify:ipd": "tsx verify-ipd.ts",
+    "verify:attendance": "tsx verify-attendance.ts",
+    "verify:agent": "node verify-agent.mjs",
+    "verify:audit": "tsx verify-audit.ts",
+    "verify:ordering": "tsx verify-ordering.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

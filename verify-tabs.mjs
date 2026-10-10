@@ -85,5 +85,39 @@ console.log('\n— settings screens actually contain their fields —')
   ok('and the server reads them back', /user/.test(printing) && /pass/.test(printing))
 }
 
+console.log('\n— a tab that can be switched off is wired at both ends —')
+{
+  /*
+   * The prescriptions tab is switched off for a pharmacy running on its own:
+   * a standalone chemist has no doctors sending prescriptions through, so the
+   * tab is an empty screen somebody clicks once and never again.
+   *
+   * Three things have to agree for that to work, and two of them fail
+   * silently. A permission the access screen does not offer can never be
+   * unticked; a tab the shell does not guard stays visible however it is set;
+   * and a permission missing from the pharmacist's defaults would take the
+   * tab away from every hospital already running this, which is the one
+   * outcome that must not happen on an upgrade.
+   */
+  const shell = strip(readFileSync(join(ROOT, 'screens/Pharmacy.tsx'), 'utf8'))
+  ok('the pharmacy shell guards the prescriptions tab',
+    /prescriptions:\s*'prescriptions\.see'/.test(shell))
+
+  const pharma = strip(readFileSync(join('src/server/services', 'pharma.ts'), 'utf8'))
+  ok('the access screen offers it as a checkbox',
+    /key:\s*'prescriptions\.see'/.test(pharma))
+
+  /*
+   * On by default for a pharmacist, so an existing hospital sees no change.
+   * Read from the role defaults block rather than the whole file, since the
+   * permission's own definition also mentions the key.
+   */
+  const defaults = pharma.slice(pharma.indexOf('ROLE_DEFAULTS'))
+  const pharmacist = defaults.slice(defaults.indexOf('pharmacist:'),
+    defaults.indexOf('pharmacy_admin:'))
+  ok('and a pharmacist has it on by default',
+    pharmacist.includes("'prescriptions.see'"), pharmacist.slice(0, 120))
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

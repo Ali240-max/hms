@@ -4,6 +4,8 @@ import { SignIn } from './screens/SignIn'
 import { MainCounter } from './screens/MainCounter'
 import { OpdCounter } from './screens/OpdCounter'
 import { IpdCounter } from './screens/IpdCounter'
+import { Ipd } from './screens/Ipd'
+import { Kiosk } from './screens/Kiosk'
 import { Stores } from './screens/Stores'
 import { Lab } from './screens/Lab'
 import { Doctor } from './screens/Doctor'
@@ -16,7 +18,7 @@ import { t as tr } from './lib/prefs'
 
 const HOME: Record<string, string> = {
   admin: 'Administration', main_counter: 'Main counter', receptionist: 'OPD counter',
-  ipd_counter: 'Emergency', store_keeper: 'Stores', lab_tech: 'Laboratory',
+  ipd_counter: 'Emergency', ward: 'Ward', kiosk: 'Attendance board', store_keeper: 'Stores', lab_tech: 'Laboratory',
   radiology: 'Radiology',
   doctor: 'Consultation', pharmacist: 'Pharmacy', reports: 'Reports'
 }
@@ -78,6 +80,10 @@ export default function App() {
         {me.role === 'main_counter' && <MainCounter me={me} />}
         {me.role === 'receptionist' && <OpdCounter me={me} />}
         {me.role === 'ipd_counter' && <IpdCounter me={me} />}
+        {/* The ward: its own login, its own screen, like the laboratory. */}
+        {me.role === 'ward' && <Ipd me={me} />}
+        {/* The door terminal: the scan board and nothing else. */}
+        {me.role === 'kiosk' && <Kiosk me={me} />}
         {me.role === 'store_keeper' && <Stores me={me} />}
         {me.role === 'lab_tech' && <Lab me={me} />}
         {me.role === 'radiology' && <Lab me={me} />}
@@ -103,6 +109,7 @@ export default function App() {
 const ROLE_MODULE: Record<string, string> = {
   receptionist: 'opdCounter',
   ipd_counter: 'emergency',
+  ward: 'ipd',
   doctor: 'doctor',
   pharmacist: 'pharmacy',
   pharmacy_admin: 'pharmacy',

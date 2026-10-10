@@ -2,6 +2,7 @@ import { sql, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { db } from '../db/client'
 import { dateSegment } from './numbering'
+import { getSetting } from './settings'
 import * as s from '../db/schema'
 
 export type CartLine = {
@@ -53,7 +54,8 @@ export class StockError extends Error {
 export class ComplianceError extends Error {
   constructor(
     message: string,
-    public readonly code: 'PRESCRIBER_REQUIRED' | 'LOOSE_NOT_ALLOWED',
+    public readonly code: 'PRESCRIBER_REQUIRED' | 'LOOSE_NOT_ALLOWED'
+      | 'DISCOUNT_OFF' | 'DISCOUNT_TOO_BIG',
     public readonly products: string[]
   ) {
     super(message)
@@ -323,6 +325,39 @@ export async function createSale(db: NodePgDatabase<typeof s>, input: NewSaleInp
           lineTotalPaisa: p.lineTotal
         })
       })
+    }
+
+    /*
+     * The discount rules, checked after the lines are priced.
+     *
+     * Here rather than on each line because a ceiling is a percentage of the
+     * BILL: three lines at five per cent each is five per cent of the bill,
+     * and the same three with one at thirty is not. Checking per line would
+     * let a cashier split a big discount across lines and pass every one.
+     *
+     * Read at sale time rather than cached, so turning discounts off takes
+     * effect on the next sale instead of the next sign-in.
+     */
+    if (discountTotal > 0) {
+      const enabled = ((await getSetting('pharmacy.discountEnabled')) ?? 'true') !== 'false'
+      if (!enabled) {
+        throw new ComplianceError(
+          'Discounts are switched off for the pharmacy. ' +
+          'An administrator can turn them back on under Settings.',
+          'DISCOUNT_OFF', [])
+      }
+      const maxPct = Number((await getSetting('pharmacy.discountMaxPct')) ?? '0')
+      /* Zero means no ceiling, which is how the till behaved before this. */
+      if (maxPct > 0) {
+        const ceiling = Math.floor((subtotal * maxPct) / 100)
+        if (discountTotal > ceiling) {
+          throw new ComplianceError(
+            `That discount is ${(discountTotal * 100 / Math.max(1, subtotal)).toFixed(1)}% ` +
+            `of the bill. The most allowed is ${maxPct}%, which on this bill is ` +
+            `Rs ${(ceiling / 100).toFixed(2)}.`,
+            'DISCOUNT_TOO_BIG', [])
+        }
+      }
     }
 
     const total = subtotal - discountTotal + taxTotal

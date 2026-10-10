@@ -30,8 +30,23 @@ const ROLE_MODULES: Record<string, string[]> = {
   lab_tech: ['laboratory'],
   radiology: ['radiology'],
   main_counter: ['counter'],
-  receptionist: ['counter'],
+  ward: ['counter'],
   ipd_counter: ['counter'],
+  /*
+   * The OPD desk and doctors start with nothing.
+   *
+   * Counter reports are money: daily collection, collection by cashier, by
+   * payment method, unpaid chits, and what each doctor earned. The OPD desk
+   * runs the queue and takes vitals — it handles no cash at all — so there is
+   * no reading of its job that needs the day's takings, let alone another
+   * doctor's share.
+   *
+   * It was given the whole counter set by default, which meant a receptionist
+   * could read doctor earnings on their first sign-in without anybody
+   * deciding that. An administrator can still tick any report on for a
+   * particular person; what changed is that somebody has to decide it.
+   */
+  receptionist: [],
   doctor: []
 }
 

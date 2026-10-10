@@ -32,7 +32,24 @@ import { createTicket, checkTicket } from '../services/tickets'
 import { wipePreview, wipeTradingData, WipeError } from '../services/wipe'
 import { patientStickers, wardLabels } from '../services/labels-pdf'
 import { createCrossMatch, crossMatch, crossMatches } from '../services/cross-match'
+import {
+  day as attendanceDay, onSite, monthFor, staffForAttendance, recordPunch,
+  recentPunches,
+  deletePunch, devices, saveDevice, deviceByKey, fingerprintsFor,
+  saveFingerprint,
+  deleteFingerprint, templatesForAgent
+} from '../services/attendance'
+import {
+  wards, saveWard, deleteWard, bedBoard, saveBed, deleteBed, setBedStatus,
+  admit, transfer, account, addCharge, takePayment, discharge, admissions
+} from '../services/ipd'
 import { crossMatchPdf } from '../services/cross-match-pdf'
+import {
+  previewScope, createAudit, audits, audit as auditOne, closeAudit,
+  createAdjustment, adjustments, adjustment as adjustmentOne,
+  adjustmentHistory, adjustmentsByCompany
+} from '../services/stock-audit'
+import { auditSheetPdf, adjustmentPdf } from '../services/audit-pdf'
 import {
   printerConfig, savePrinterConfig, allPrinterConfigs, sendToPrinter,
   windowsPrinters, PrintError
@@ -48,6 +65,7 @@ import {
   labQueue, parametersFor, saveParameters, consumablesFor, saveConsumables,
   collectSample, startTest, saveResults, verifyResult, reportFor, labStats,
   interpretationsFor, saveInterpretations, signatories, saveSignatories,
+  reportLayoutFor, saveReportLayout,
   reportNoteFor, saveReportNote,
   collectVisit, visitWork, LabError, LAB_STATUS
 } from '../services/lab'
@@ -169,6 +187,24 @@ api.use('*', async (c, next) => {
    */
   const PUBLIC = ['/health', '/auth/status', '/auth/login', '/auth/setup']
 
+  /*
+   * The attendance agent carries a reader key, not a session.
+   *
+   * It runs unattended on a PC by a door, through the night, with nobody
+   * signed in anywhere — so it cannot hold a staff session, and these two
+   * routes check `x-device-key` themselves instead. Without this they were
+   * answered 401 whatever key was sent, which would have made the agent
+   * useless in a way that looks exactly like a wrong key.
+   *
+   * Listed by exact path and nothing wider. `/attendance/*` would have
+   * exposed the day sheet and the corrections route to anybody on the LAN.
+   */
+  const DEVICE_KEY_ROUTES = [
+    '/attendance/agent/templates',
+    '/attendance/agent/punch'
+  ]
+  if (DEVICE_KEY_ROUTES.includes(path)) return next()
+
   /**
    * Readable signed out, writable only by an admin.
    *
@@ -201,6 +237,34 @@ api.use('*', async (c, next) => {
   }
 
   if (!user) return c.json({ error: 'Sign in to continue', code: 'NO_SESSION' }, 401)
+
+  /*
+   * The door terminal is allowed exactly four paths and refused everything
+   * else.
+   *
+   * Every other role is allowed by default and refused where a route says so,
+   * which is right for a person at a keyboard: a missed `allow` on a new
+   * route costs them a screen they should not have had, and somebody notices.
+   *
+   * This one is different. It is a browser left signed in forever on a
+   * machine in a corridor, so a route added next month with no `allow` on it
+   * would quietly become readable by anyone who walks past. Listing what it
+   * MAY reach means a new route is invisible to it until somebody decides
+   * otherwise.
+   *
+   * This was found by probing the live server rather than by reading the
+   * code: patient search answered a kiosk token with 200.
+   */
+  if ((user as any).role === 'kiosk') {
+    const ALLOWED = ['/attendance/recent', '/auth/me', '/auth/logout', '/modules']
+    if (!ALLOWED.includes(path)) {
+      return c.json({
+        error: 'The attendance board can only show scans.',
+        code: 'NOT_ALLOWED'
+      }, 403)
+    }
+  }
+
   c.set('user' as never, user as never)
   return next()
 })
@@ -214,7 +278,22 @@ api.use('*', async (c, next) => {
  */
 api.post('/tickets', async (c) => {
   const b = z.object({ path: z.string().min(1) }).parse(await c.req.json())
-  if (!/^\/(lab|pharma|reports|patients|visits)\/[\w/-]+\/pdf$/.test(b.path)) {
+  /*
+   * Anchored on /pdf, with an optional filename after it.
+   *
+   * The trailing segment is there so a download manager gets the right name:
+   * IDM and its kind ignore content-disposition and take the last segment of
+   * the URL, so a URL ending in /pdf saves a file called "pdf". The route
+   * handlers ignore the segment entirely — it names the file and reaches
+   * nothing — and the ticket is still bound to the whole path, so a ticket
+   * for one report cannot be pointed at another by editing it.
+   *
+   * The charset is narrow on purpose: letters, digits, spaces, dots, hyphens,
+   * underscores, brackets, and percent for an encoded space. No slashes, so
+   * it cannot climb into another path segment.
+   */
+  if (!/^\/(lab|pharma|reports|patients|visits)\/[\w/-]+\/pdf(\/[\w %.()'-]+\.pdf)?$/
+    .test(b.path)) {
     return c.json({ error: 'That is not a downloadable document', code: 'NOT_A_FILE' }, 400)
   }
   return c.json({ ticket: createTicket(b.path, me(c).id), path: b.path })
@@ -308,8 +387,12 @@ api.post('/staff', adminCan('admin.staff.edit'), async (c) => {
   const b = z.object({
     username: z.string().min(1), displayName: z.string().default(''), password: z.string(),
     role: z.enum(['admin', 'main_counter', 'receptionist', 'ipd_counter',
-                  'store_keeper', 'lab_tech', 'radiology', 'doctor',
+                  'store_keeper', 'lab_tech', 'radiology', 'doctor', 'ward', 'kiosk',
                   'pharmacist', 'pharmacy_admin', 'reports']),
+    // When they are expected, and whether they are expected at all.
+    shiftStart: z.string().nullable().optional(),
+    shiftEnd: z.string().nullable().optional(),
+    attendanceRequired: z.boolean().optional(),
     departmentId: z.number().int().nullable().optional(),
     phone: z.string().nullable().optional(),
     doctor: z.object({
@@ -343,7 +426,7 @@ api.patch('/staff/:id', adminCan('admin.staff.edit'), async (c) => {
   const b = z.object({
     displayName: z.string().min(1).optional(),
     role: z.enum(['admin', 'main_counter', 'receptionist', 'ipd_counter',
-      'store_keeper', 'lab_tech', 'radiology', 'doctor',
+      'store_keeper', 'lab_tech', 'radiology', 'doctor', 'ward', 'kiosk',
       'pharmacist', 'pharmacy_admin', 'reports']).optional(),
     departmentId: z.number().int().nullable().optional(),
     phone: z.string().nullable().optional()
@@ -403,6 +486,36 @@ api.get('/doctors', async (c) =>
 
 api.get('/services', async (c) => c.json(await listServices(c.req.query('all') === '1')))
 
+/**
+ * Delete a service outright.
+ *
+ * Refused once it has been ordered, because every bill, chit and lab report
+ * naming it would be left pointing at nothing. Switching it off is the answer
+ * there: it disappears from the counter's list and the history stays whole,
+ * which is what the error says.
+ */
+api.delete('/services/:id', adminCan('admin.services.edit'), async (c) => {
+  const id = Number(c.req.param('id'))
+  const used = ((await db.execute<any>(sql`
+    SELECT COUNT(*)::int AS n FROM service_orders WHERE service_id = ${id}`)).rows as any[])[0]
+
+  if (Number(used.n) > 0) {
+    return c.json({
+      error: `This has been ordered ${used.n} time(s), so the bills and reports naming it ` +
+        'would be left pointing at nothing. Switch it off instead — it disappears from the ' +
+        'counter and the history stays whole.',
+      code: 'IN_USE'
+    }, 409)
+  }
+
+  await db.execute(sql`DELETE FROM service_parameters WHERE service_id = ${id}`)
+  await db.execute(sql`DELETE FROM service_interpretations WHERE service_id = ${id}`)
+  await db.execute(sql`DELETE FROM service_consumables WHERE service_id = ${id}`)
+  await db.execute(sql`DELETE FROM doctor_service_shares WHERE service_id = ${id}`)
+  await db.execute(sql`DELETE FROM services WHERE id = ${id}`)
+  return c.json({ deleted: true })
+})
+
 api.post('/services', adminOnly, async (c) => {
   const b = z.object({
     id: z.number().int().optional(),
@@ -414,6 +527,8 @@ api.post('/services', adminOnly, async (c) => {
     // Which department owns it, so reports can split an ECG from an X-ray
     // rather than lumping both under "radiology".
     departmentId: z.number().int().nullable().optional(),
+    /* Billing it without naming a doctor is refused. Mostly for procedures. */
+    requiresDoctor: z.boolean().optional(),
     isActive: z.boolean().optional()
   }).parse(await c.req.json())
   return c.json(await upsertService(b), b.id ? 200 : 201)
@@ -700,7 +815,45 @@ api.post('/lab/orders/:id/verify', labOnly, async (c) =>
 api.get('/lab/orders/:id', async (c) => c.json(await reportFor(Number(c.req.param('id')))))
 
 /** The report itself. Streamed as a real PDF: this one leaves the building. */
-api.get('/lab/orders/:id/pdf', async (c) => {
+/**
+ * "Amna Javed AJ35-09102026-571.pdf".
+ *
+ * A folder of MRN-000597-lab-report.pdf is unsearchable by the one thing
+ * anybody remembers. Punctuation Windows refuses in a filename is stripped
+ * rather than escaped, because a report saved with a slash in its name simply
+ * fails to save.
+ */
+export function labFileName(row: any) {
+  const clean = (s: any) => String(s ?? '')
+    .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim()
+  /*
+   * Name then MRN, not the report number.
+   *
+   * A folder sorted by name puts every report for one patient together, and
+   * the MRN is the thing staff read back over the phone. A report number is
+   * meaningless outside the system.
+   */
+  const name = clean(row?.patient_name) || 'Lab report'
+  const mrn = clean(row?.mrn)
+  return `${name}${mrn ? ' ' + mrn : ''}.pdf`
+}
+
+/*
+ * One report, reachable two ways, and until now named two ways.
+ *
+ * This route named the file after the report number — "LAB-261009-L00003-Amna-
+ * Javed.pdf" — while the per-visit route below named it after the patient. The
+ * lab reported saving reports called "lab 001"; that was this route, and the
+ * two routes disagreeing was the whole of it. Both now use labFileName.
+ *
+ * The optional trailing segment is the filename, and the handler ignores it
+ * completely. It exists because a download manager does not read
+ * content-disposition: IDM and friends take the last segment of the URL, so a
+ * URL ending in /pdf produces a file called "pdf" or whatever the tool
+ * invents. Putting the real name in the path makes every downloader agree
+ * with the header, without the handler trusting a single character of it.
+ */
+const labOrderPdf = async (c: any) => {
   const id = Number(c.req.param('id'))
   const pdf = await labReportPdf({ labOrderId: id })
   const { report } = await reportFor(id)
@@ -708,29 +861,17 @@ api.get('/lab/orders/:id/pdf', async (c) => {
     headers: {
       'content-type': 'application/pdf',
       'content-disposition':
-        `inline; filename="${report.report_no}-${String(report.patient_name).replace(/[^\w]+/g, '-')}.pdf"`
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="${labFileName(report)}"`
     }
   })
-})
+}
+api.get('/lab/orders/:id/pdf', labOrderPdf)
+api.get('/lab/orders/:id/pdf/:filename', labOrderPdf)
 
 /** Every finished report on one visit, each on its own page. */
-/**
- * "Sami Ullah LAB-000351.pdf".
- *
- * A folder of MRN-000597-lab-report.pdf is unsearchable by the one thing
- * anybody remembers. Punctuation Windows refuses in a filename is stripped
- * rather than escaped, because a report saved with a slash in its name simply
- * fails to save.
- */
-function labFileName(row: any) {
-  const clean = (s: any) => String(s ?? '')
-    .replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim()
-  const name = clean(row?.patient_name) || 'Lab report'
-  const no = clean(row?.report_no)
-  return `${name}${no ? ' ' + no : ''}.pdf`
-}
 
-api.get('/lab/visits/:id/pdf', async (c) => {
+const labVisitPdf = async (c: any) => {
   const visitId = Number(c.req.param('id'))
 
   /*
@@ -750,6 +891,24 @@ api.get('/lab/visits/:id/pdf', async (c) => {
     }, 409)
   }
 
+  /*
+   * The patient, read from the visit rather than taken off the work row.
+   *
+   * This route named every file "Lab report.pdf" and nobody could see why:
+   * labFileName falls back to that string when it gets no name, and
+   * visitWork() returns the work on a visit — the tests, their statuses, the
+   * order ids — with no patient on it at all. The fallback was doing all the
+   * work, silently, on the one route the Download button actually calls.
+   *
+   * Fixed last round on the per-order route, which did carry the patient, and
+   * tested there. Testing the route I had changed instead of the route the
+   * button calls is how it shipped still broken.
+   */
+  const who = ((await db.execute<any>(sql`
+    SELECT p.name AS patient_name, p.mrn
+    FROM visits v JOIN patients p ON p.id = v.patient_id
+    WHERE v.id = ${visitId}`)).rows as any[])[0]
+
   const pdf = await labReportPdf({ visitId })
   return new Response(pdf, {
     headers: {
@@ -763,12 +922,15 @@ api.get('/lab/visits/:id/pdf', async (c) => {
        */
       'content-disposition':
         `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
-        // Named for the patient and report number, same as the client asks
-        // for, so a file saved from either route lands with the same name.
-        `filename="${labFileName(ready[0])}"`
+        // Named for the patient and their MRN, same as the client asks for,
+        // so a file saved from either route lands with the same name.
+        `filename="${labFileName(who)}"`
     }
   })
-})
+}
+api.get('/lab/visits/:id/pdf', labVisitPdf)
+/* The trailing filename is cosmetic and ignored; see labOrderPdf above. */
+api.get('/lab/visits/:id/pdf/:filename', labVisitPdf)
 
 /* ------------------------------------------------------------- labels */
 
@@ -877,14 +1039,26 @@ api.put('/lab/signatories', allow('admin', 'lab_tech', 'radiology'), async (c) =
 api.get('/lab/report-settings', async (c) => c.json({
   noteHeading: (await getSetting('lab.noteHeading')) || 'Note',
   noteDefault: (await getSetting('lab.noteDefault')) || '',
-  logoPosition: (await getSetting('lab.logoPosition')) || 'right'
+  logoPosition: (await getSetting('lab.logoPosition')) || 'right',
+  /*
+   * How big the logo prints, as a percentage of the default box.
+   *
+   * A logo is whatever file the hospital happens to have, and fitting every
+   * one of them into one fixed box makes a tall narrow emblem print tiny.
+   * Rather than guess, the laboratory sizes it by eye against a printed
+   * sheet, which is the only way to tell.
+   */
+  logoScale: Number((await getSetting('lab.logoScale')) || '100')
 }))
 
 api.put('/lab/report-settings', allow('admin', 'lab_tech', 'radiology'), async (c) => {
   const b = z.object({
     noteHeading: z.string().optional(),
     noteDefault: z.string().optional(),
-    logoPosition: z.enum(['left', 'right', 'none']).optional()
+    logoPosition: z.enum(['left', 'right', 'none']).optional(),
+    /* Clamped: below 40 it is unreadable, above 400 it pushes the patient
+     * block off the page. */
+    logoScale: z.number().int().min(40).max(400).optional()
   }).parse(await c.req.json())
   for (const [k, v] of Object.entries(b)) {
     if (v !== undefined) await setSetting(`lab.${k}`, String(v))
@@ -892,7 +1066,8 @@ api.put('/lab/report-settings', allow('admin', 'lab_tech', 'radiology'), async (
   return c.json({
     noteHeading: (await getSetting('lab.noteHeading')) || 'Note',
     noteDefault: (await getSetting('lab.noteDefault')) || '',
-    logoPosition: (await getSetting('lab.logoPosition')) || 'right'
+    logoPosition: (await getSetting('lab.logoPosition')) || 'right',
+    logoScale: Number((await getSetting('lab.logoScale')) || '100')
   })
 })
 
@@ -1010,10 +1185,295 @@ api.post('/printing/sale/:id', async (c) => {
   } catch (e) { return printFailed(c, e) }
 })
 
+/* -------------------------------------------------------- attendance */
+
+const attendanceAdmin = adminCan('admin.staff.edit')
+
+api.get('/attendance/day', allow('admin', 'reports'), async (c) =>
+  c.json(await attendanceDay(c.req.query('date') ?? new Date().toISOString().slice(0, 10))))
+
+/*
+ * The screen by the door.
+ *
+ * A login rather than an open page: this is a list of who is in the building
+ * and when they arrived, which on a hospital LAN is staff movement. The kiosk
+ * role can reach this and nothing else.
+ */
+api.get('/attendance/recent', allow('admin', 'kiosk', 'ward', 'reports'), async (c) =>
+  c.json(await recentPunches({
+    since: c.req.query('since') ? Number(c.req.query('since')) : undefined
+  })))
+
+api.get('/attendance/on-site', allow('admin', 'reports'), async (c) =>
+  c.json(await onSite()))
+
+api.get('/attendance/month', allow('admin', 'reports'), async (c) =>
+  c.json(await monthFor(
+    Number(c.req.query('staffId')),
+    Number(c.req.query('year') ?? new Date().getFullYear()),
+    Number(c.req.query('month') ?? new Date().getMonth() + 1))))
+
+api.get('/attendance/staff', attendanceAdmin, async (c) =>
+  c.json(await staffForAttendance()))
+
+/* A punch added by hand, for the morning the reader will not read a thumb. */
+api.post('/attendance/punch', attendanceAdmin, async (c) => {
+  const b = z.object({
+    staffId: z.number().int(),
+    at: z.string(),
+    note: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  try {
+    return c.json(await recordPunch({
+      ...b, source: 'manual', by: me(c).displayName
+    }), 201)
+  } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409) }
+})
+
+api.delete('/attendance/punch/:id', attendanceAdmin, async (c) => {
+  try { return c.json(await deletePunch(Number(c.req.param('id')))) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 404) }
+})
+
+api.get('/attendance/devices', attendanceAdmin, async (c) => c.json(await devices()))
+
+api.post('/attendance/devices', attendanceAdmin, async (c) => {
+  const b = z.object({
+    id: z.number().int().optional(),
+    name: z.string().min(1),
+    location: z.string().nullable().optional(),
+    isActive: z.boolean().optional()
+  }).parse(await c.req.json())
+  return c.json(await saveDevice(b), b.id ? 200 : 201)
+})
+
+api.get('/attendance/fingerprints/:staffId', attendanceAdmin, async (c) =>
+  c.json(await fingerprintsFor(Number(c.req.param('staffId')))))
+
+/*
+ * The template the agent produced, on its way into HMS.
+ *
+ * The agent cannot post this itself: it has a reader key, which is deliberately
+ * only good for reading templates and writing punches. Enrolment is an
+ * administrator deciding whose finger this is, so it travels with that
+ * administrator's session instead.
+ */
+api.post('/attendance/fingerprints', attendanceAdmin, async (c) => {
+  const b = z.object({
+    staffId: z.number().int(),
+    fingerIndex: z.number().int().min(1).max(9),
+    template: z.string().min(16)
+  }).parse(await c.req.json())
+  return c.json(await saveFingerprint({ ...b, by: me(c).displayName }), 201)
+})
+
+api.delete('/attendance/fingerprints/:id', attendanceAdmin, async (c) =>
+  c.json(await deleteFingerprint(Number(c.req.param('id')))))
+
+/* ------------------------------------------------- what the agent calls */
+
+/*
+ * The agent authenticates with its reader's key, not with a staff login.
+ *
+ * It runs unattended on a PC by a door and has to keep working through a
+ * night shift with nobody signed in anywhere.
+ */
+async function agentDevice(c: any) {
+  const key = c.req.header('x-device-key') ?? ''
+  return deviceByKey(key)
+}
+
+api.get('/attendance/agent/templates', async (c) => {
+  try {
+    await agentDevice(c)
+    return c.json(await templatesForAgent())
+  } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 401) }
+})
+
+api.post('/attendance/agent/punch', async (c) => {
+  let device: any
+  try { device = await agentDevice(c) }
+  catch (e: any) { return c.json({ error: e.message, code: 'NO_DEVICE' }, 401) }
+
+  const b = z.object({
+    staffId: z.number().int(),
+    /* The agent's own clock, so a punch queued offline keeps its real time. */
+    at: z.string().optional(),
+    raw: z.string().nullable().optional()
+  }).parse(await c.req.json())
+
+  try {
+    return c.json(await recordPunch({
+      ...b, source: 'device', deviceId: device.id, by: device.name
+    }), 201)
+  } catch (e: any) {
+    /*
+     * A repeat is answered with 200, not an error.
+     *
+     * The agent retries anything it could not confirm, and treating a
+     * duplicate as a failure would make it retry forever.
+     */
+    if (e.code === 'TOO_SOON') return c.json({ ok: true, duplicate: true })
+    return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409)
+  }
+})
+
+/* --------------------------------------------------------------- IPD */
+
+/*
+ * The ward, and the counter that bills for it.
+ *
+ * `ward` is the nursing station: the board, the admission, the notes. The
+ * counter is included because the family settles the bill at the window, not
+ * at the bedside.
+ */
+const ipdStaff = allow('admin', 'ward', 'ipd_counter', 'main_counter', 'receptionist')
+
+api.get('/ipd/wards', ipdStaff, async (c) =>
+  c.json(await wards({ all: c.req.query('all') === '1' })))
+
+api.post('/ipd/wards', adminCan('admin.services.edit'), async (c) => {
+  const b = z.object({
+    id: z.number().int().optional(),
+    name: z.string().min(1),
+    kind: z.string().optional(),
+    floor: z.string().nullable().optional(),
+    chargePaisa: z.number().int().min(0),
+    /* Fills a new ward with numbered beds in one go. */
+    bedCount: z.number().int().min(0).max(500).optional(),
+    bedPrefix: z.string().nullable().optional(),
+    isActive: z.boolean().optional()
+  }).parse(await c.req.json())
+  return c.json(await saveWard(b), b.id ? 200 : 201)
+})
+
+api.delete('/ipd/wards/:id', adminCan('admin.services.edit'), async (c) => {
+  try { return c.json(await deleteWard(Number(c.req.param('id')))) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409) }
+})
+
+api.get('/ipd/beds', ipdStaff, async (c) => c.json(await bedBoard()))
+
+api.post('/ipd/beds', adminCan('admin.services.edit'), async (c) => {
+  const b = z.object({
+    id: z.number().int().optional(),
+    wardId: z.number().int(),
+    name: z.string().min(1),
+    /* Null means "whatever the ward charges". Set for private rooms. */
+    chargePaisa: z.number().int().min(0).nullable().optional(),
+    status: z.string().optional(),
+    note: z.string().nullable().optional(),
+    isActive: z.boolean().optional()
+  }).parse(await c.req.json())
+  return c.json(await saveBed(b), b.id ? 200 : 201)
+})
+
+api.delete('/ipd/beds/:id', adminCan('admin.services.edit'), async (c) => {
+  try { return c.json(await deleteBed(Number(c.req.param('id')))) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409) }
+})
+
+/* Cleaning to free, or taking a bed out of use. The ward does this, not an admin. */
+api.post('/ipd/beds/:id/status', ipdStaff, async (c) => {
+  const b = z.object({
+    status: z.enum(['free', 'cleaning', 'reserved', 'out_of_service']),
+    note: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  try { return c.json(await setBedStatus(Number(c.req.param('id')), b.status, b.note)) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409) }
+})
+
+api.get('/ipd/admissions', ipdStaff, async (c) =>
+  c.json(await admissions({
+    status: c.req.query('status') ?? 'open', q: c.req.query('q')
+  })))
+
+api.post('/ipd/admissions', ipdStaff, async (c) => {
+  const b = z.object({
+    patientId: z.number().int(),
+    bedId: z.number().int(),
+    visitId: z.number().int().nullable().optional(),
+    doctorId: z.number().int().nullable().optional(),
+    departmentId: z.number().int().nullable().optional(),
+    admissionType: z.enum(['planned', 'emergency', 'day_case', 'delivery']).optional(),
+    diagnosis: z.string().nullable().optional(),
+    attendantName: z.string().nullable().optional(),
+    attendantPhone: z.string().nullable().optional(),
+    attendantRelation: z.string().nullable().optional(),
+    advancePaisa: z.number().int().min(0).nullable().optional()
+  }).parse(await c.req.json())
+  try { return c.json(await admit({ ...b, by: me(c).displayName }), 201) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409) }
+})
+
+api.get('/ipd/admissions/:id', ipdStaff, async (c) => {
+  try { return c.json(await account(Number(c.req.param('id')))) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 404) }
+})
+
+api.post('/ipd/admissions/:id/transfer', ipdStaff, async (c) => {
+  const b = z.object({
+    bedId: z.number().int(), reason: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  try {
+    return c.json(await transfer({
+      admissionId: Number(c.req.param('id')), ...b, by: me(c).displayName
+    }))
+  } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409) }
+})
+
+api.post('/ipd/admissions/:id/charges', ipdStaff, async (c) => {
+  const b = z.object({
+    kind: z.enum(['bed', 'doctor', 'procedure', 'lab', 'radiology',
+      'pharmacy', 'supplies', 'other']),
+    description: z.string().min(1),
+    qty: z.number().optional(),
+    unitPaisa: z.number().int().min(0)
+  }).parse(await c.req.json())
+  return c.json(await addCharge({
+    admissionId: Number(c.req.param('id')), ...b, by: me(c).displayName
+  }), 201)
+})
+
+api.post('/ipd/admissions/:id/payments', ipdStaff, async (c) => {
+  const b = z.object({
+    kind: z.enum(['advance', 'payment', 'refund', 'discount', 'waived']).optional(),
+    amountPaisa: z.number().int().min(1),
+    method: z.string().nullable().optional(),
+    note: z.string().nullable().optional()
+  }).parse(await c.req.json())
+
+  /*
+   * A discount or a waiver carries the name of whoever allowed it. They are
+   * the two lines on an inpatient bill that cost the hospital money without
+   * anything arriving, so neither is anonymous.
+   */
+  const needsApproval = b.kind === 'discount' || b.kind === 'waived'
+  return c.json(await takePayment({
+    admissionId: Number(c.req.param('id')), ...b,
+    approvedBy: needsApproval ? me(c).displayName : null,
+    by: me(c).displayName
+  }), 201)
+})
+
+api.post('/ipd/admissions/:id/discharge', ipdStaff, async (c) => {
+  const b = z.object({
+    outcome: z.enum(['discharged', 'referred', 'lama', 'death']).optional(),
+    outcomeNote: z.string().nullable().optional(),
+    finalDiagnosis: z.string().nullable().optional(),
+    allowBalance: z.boolean().optional()
+  }).parse(await c.req.json())
+  try {
+    return c.json(await discharge({
+      admissionId: Number(c.req.param('id')), ...b, by: me(c).displayName
+    }))
+  } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409) }
+})
+
 /* -------------------------------------------------------- cross match */
 
 api.get('/lab/cross-matches', allow('admin', 'lab_tech', 'reports'), async (c) =>
-  c.json(await crossMatches({ q: c.req.query('q') })))
+  c.json(await crossMatches({ q: c.req.query('q'), status: c.req.query('status') })))
 
 api.get('/lab/cross-matches/:id', allow('admin', 'lab_tech', 'reports'), async (c) =>
   c.json(await crossMatch(Number(c.req.param('id')))))
@@ -1039,7 +1499,10 @@ api.post('/lab/cross-matches', allow('admin', 'lab_tech'), async (c) => {
     directPhase: z.string().nullable().optional(),
     albuminPhase: z.string().nullable().optional(),
     conclusion: z.string().nullable().optional(),
-    notes: z.string().nullable().optional()
+    notes: z.string().nullable().optional(),
+    // Marks the booked test reported in the same transaction.
+    labOrderId: z.number().int().nullable().optional(),
+    sampleTakenAt: z.string().nullable().optional()
   }).parse(await c.req.json())
   try {
     return c.json(await createCrossMatch(b, me(c).displayName), 201)
@@ -1089,6 +1552,17 @@ api.get('/services/:id/parameters', async (c) =>
  * routing every range change through an administrator means the ranges are
  * wrong until somebody gets round to it.
  */
+/** Four columns or three, per test. Set by the laboratory. */
+api.get('/services/:id/report-layout', async (c) =>
+  c.json({ layout: await reportLayoutFor(Number(c.req.param('id'))) }))
+
+api.put('/services/:id/report-layout',
+  allow('admin', 'lab_tech', 'radiology'), async (c) => {
+  const b = z.object({ layout: z.enum(['standard', 'qualitative', 'ranges']) })
+    .parse(await c.req.json())
+  return c.json(await saveReportLayout(Number(c.req.param('id')), b.layout))
+})
+
 api.put('/services/:id/parameters', allow('admin', 'lab_tech', 'radiology'), async (c) => {
   const b = z.object({
     parameters: z.array(z.object({
@@ -1096,7 +1570,18 @@ api.put('/services/:id/parameters', allow('admin', 'lab_tech', 'radiology'), asy
       unit: z.string().nullable().optional(),
       refLow: z.number().nullable().optional(),
       refHigh: z.number().nullable().optional(),
-      refText: z.string().nullable().optional()
+      refText: z.string().nullable().optional(),
+      // Normal values that differ by sex. Free text, like refText.
+      maleLow: z.number().nullable().optional(),
+      maleHigh: z.number().nullable().optional(),
+      femaleLow: z.number().nullable().optional(),
+      femaleHigh: z.number().nullable().optional(),
+      hasSexRanges: z.boolean().optional(),
+      // A written range: an operator and a number, so a result can be compared.
+      refOp: z.enum(['<', '<=', '>', '>=', '=']).nullable().optional(),
+      refValue: z.number().nullable().optional(),
+      // The heading this parameter starts, for tests reported in timed blocks.
+      section: z.string().nullable().optional()
     }))
   }).parse(await c.req.json())
   return c.json(await saveParameters(Number(c.req.param('id')), b.parameters))
@@ -1322,7 +1807,9 @@ api.post('/counter/bills', allow('admin', 'main_counter'), async (c) => {
 api.post('/counter/direct', allow('admin', 'main_counter'), async (c) => {
   const b = z.object({
     patientId: z.number().int(),
-    serviceIds: z.array(z.number().int()).min(1)
+    serviceIds: z.array(z.number().int()).min(1),
+    // Who prescribed them, where anybody did. Null is the normal case.
+    doctorId: z.number().int().nullable().optional()
   }).parse(await c.req.json())
   const u = me(c)
   return c.json(await directServiceVisit({
@@ -1675,6 +2162,111 @@ api.route('/pharma', pharma)
  * desk and administrators see all of them.
  */
 api.route('/reports', reports)
+
+/* ------------------------------------------------- stock audits */
+
+api.post('/pharma/audits/preview', async (c) => {
+  const b = z.object({
+    scope: z.enum(['product', 'manufacturer', 'rack']),
+    ref: z.string().nullable().optional(),
+    productIds: z.array(z.number().int()).optional()
+  }).parse(await c.req.json())
+  return c.json(await previewScope(b))
+})
+
+api.post('/pharma/audits', async (c) => {
+  const b = z.object({
+    scope: z.enum(['product', 'manufacturer', 'rack']),
+    ref: z.string().nullable().optional(),
+    productIds: z.array(z.number().int()).optional(),
+    title: z.string().nullable().optional(),
+    note: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  try { return c.json(await createAudit({ ...b, by: me(c).displayName }), 201) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 400) }
+})
+
+api.get('/pharma/audits', async (c) => c.json(await audits({
+  status: c.req.query('status'), q: c.req.query('q'),
+  from: c.req.query('from'), to: c.req.query('to')
+})))
+
+api.get('/pharma/audits/:id', async (c) => {
+  try { return c.json(await auditOne(Number(c.req.param('id')))) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 404) }
+})
+
+api.get('/pharma/audits/:id/pdf', async (c) => {
+  const id = Number(c.req.param('id'))
+  const { audit: a } = await auditOne(id)
+  const pdf = await auditSheetPdf(id)
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="Count sheet ${a.audit_no}.pdf"`
+    }
+  })
+})
+
+api.post('/pharma/audits/:id/close', async (c) =>
+  c.json(await closeAudit(Number(c.req.param('id')), me(c).displayName)))
+
+/* --------------------------------------------- stock adjustments */
+
+api.post('/pharma/adjustments', async (c) => {
+  const b = z.object({
+    auditId: z.number().int(),
+    counts: z.array(z.object({
+      productId: z.number().int(),
+      /*
+       * No upper bound here on purpose. A pharmacy that finds more than the
+       * system knew about has found something worth recording, and refusing
+       * the number would make somebody write a smaller one.
+       */
+      countedQty: z.number().int().min(0)
+    })).min(1),
+    note: z.string().nullable().optional()
+  }).parse(await c.req.json())
+  try {
+    return c.json(await createAdjustment({ ...b, by: me(c).displayName }), 201)
+  } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 400) }
+})
+
+api.get('/pharma/adjustments', async (c) => c.json(await adjustments({
+  from: c.req.query('from'), to: c.req.query('to'), q: c.req.query('q')
+})))
+
+api.get('/pharma/adjustments/history', async (c) => c.json(await adjustmentHistory({
+  from: c.req.query('from'), to: c.req.query('to'),
+  productId: c.req.query('productId') ? Number(c.req.query('productId')) : undefined,
+  manufacturer: c.req.query('manufacturer')
+})))
+
+api.get('/pharma/adjustments/by-company', async (c) =>
+  c.json(await adjustmentsByCompany({
+    from: c.req.query('from'), to: c.req.query('to')
+  })))
+
+api.get('/pharma/adjustments/:id', async (c) => {
+  try { return c.json(await adjustmentOne(Number(c.req.param('id')))) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 404) }
+})
+
+api.get('/pharma/adjustments/:id/pdf', async (c) => {
+  const id = Number(c.req.param('id'))
+  const { adjustment: a } = await adjustmentOne(id)
+  const pdf = await adjustmentPdf(id)
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="Adjustment ${a.adjustment_no}.pdf"`
+    }
+  })
+})
 
 api.get('/pharmacy/prescriptions', allow('admin', 'pharmacist', 'pharmacy_admin'), async (c) =>
   c.json(await pendingPrescriptions(c.req.query('q') ?? undefined)))

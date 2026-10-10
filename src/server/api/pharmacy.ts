@@ -329,8 +329,13 @@ pharmacy.post('/purchases', async (c) => {
        * for the rare case where a delivery carries a different printed price
        * from the current one.
        */
-      pricePaisa: z.number().int().min(0).optional()
-    })).min(1)
+      pricePaisa: z.number().int().min(0).optional(),
+      /* Sales tax on this line, in basis points. 1000 is ten per cent. */
+      taxRateBp: z.number().int().min(0).max(10000).optional()
+    })).min(1),
+    /* Whatever the distributor adds at the bottom, on the invoice total. */
+    extraTaxBp: z.number().int().min(0).max(10000).optional(),
+    purchaseOrderId: z.number().int().nullable().optional()
   }).parse(await c.req.json())
   return c.json(await receiveGoods(db, { ...b, receivedBy: me(c).displayName }), 201)
 })

@@ -50,17 +50,38 @@ export async function labQueue(opts: {
   const { status = 'active', q = '', category = 'all', excludeCategory } = opts
   const like = `%${q}%`
 
-  let having = sql`true`
+  /*
+   * Cross match never appears in the work list.
+   *
+   * It has no parameters, its own result screen and its own report, and when
+   * it did appear there the Report button next to it produced the ordinary
+   * lab report: the wrong format entirely. It lives in the Cross match tab,
+   * which is the only place that knows how to finish or print one.
+   */
+  /*
+   * Matched on the name as well as the code.
+   *
+   * The shipped service carries the code XMATCH, but a hospital that typed
+   * its own "Cross Match" in before the migration arrived has one without it,
+   * and those were still turning up in the work list with a Report button
+   * that printed the wrong format.
+   */
+  let having = sql`COALESCE(sv.code, '') <> 'XMATCH'
+                   AND sv.name !~* 'cross[[:space:]]*match'`
   if (status === 'active') {
     // Anything still needing the bench, half-filled reports included.
-    having = sql`COALESCE(lo.status, 'pending') <> 'resulted'`
+    having = sql`${having} AND COALESCE(lo.status, 'pending') <> 'resulted'`
   } else if (status !== 'all') {
-    having = sql`COALESCE(lo.status, 'pending') = ${status}`
+    having = sql`${having} AND COALESCE(lo.status, 'pending') = ${status}`
   }
 
   const r = await db.execute<any>(sql`
     SELECT so.id AS service_order_id, so.service_name, so.price_paisa, so.status AS pay_status,
            sv.category, sv.id AS service_id,
+           -- The laboratory screen recognises a cross match by its code, not
+           -- its name: a hospital will rename it and the screen has to keep
+           -- working afterwards.
+           sv.code AS service_code,
            lo.id AS lab_order_id, lo.report_no, lo.sample_type,
            lo.collected_at, lo.collected_by, lo.started_at, lo.resulted_at, lo.resulted_by,
            lo.verified_at, lo.verified_by, lo.notes,
@@ -95,24 +116,202 @@ export async function parametersFor(serviceId: number) {
   const r = await db.execute<any>(sql`
     SELECT * FROM service_parameters
     WHERE service_id = ${serviceId} AND is_active ORDER BY display_order, id`)
-  return r.rows
+
+  /*
+   * One normal value per row, worked out once and read everywhere.
+   *
+   * The results screen was building this itself from the low and high, so a
+   * test set up as a written range showed a leftover numeric range instead of
+   * "< 0.50" — the technologist typing the result was checking it against the
+   * wrong thing. Worked out here, every screen and the report agree.
+   */
+  return (r.rows as any[]).map((p) => ({ ...p, display_range: displayRange(p) }))
+}
+
+export function displayRange(p: any): string {
+  const n = (v: any) => {
+    const x = Number(v)
+    return Number.isFinite(x) ? String(x) : String(v ?? '')
+  }
+  if (p.ref_op && p.ref_value != null) return `${p.ref_op} ${n(p.ref_value)}`
+  if (p.has_sex_ranges) {
+    return [
+      p.male_low != null && p.male_high != null
+        ? `M: ${n(p.male_low)} - ${n(p.male_high)}` : null,
+      p.female_low != null && p.female_high != null
+        ? `F: ${n(p.female_low)} - ${n(p.female_high)}` : null
+    ].filter(Boolean).join('\n')
+  }
+  if (p.ref_low != null && p.ref_high != null) {
+    return `${n(p.ref_low)} - ${n(p.ref_high)}`
+  }
+  return p.ref_text ?? ''
+}
+
+/**
+ * High, low or normal, worked out from the test's setup as it stands now.
+ *
+ * Three ways a normal value can be written, and each is compared differently.
+ * Getting this wrong in either direction is worse than not flagging at all: a
+ * red arrow on a normal result sends a patient back to a doctor for nothing,
+ * and a missing one on an abnormal result reads as reassurance.
+ *
+ *   numbers            below the low is low, above the high is high
+ *   numbers with M/F   the same, against the patient's own sex
+ *   written range      "> 0.8" means anything ABOVE 0.8 is normal, so 0.9 is
+ *                      normal and 0.7 is LOW. The operator says which side is
+ *                      acceptable; there is no second bound to be high of.
+ *   positive/negative  never flagged. "Reactive" is not greater than anything.
+ *
+ * Computed when the report is drawn rather than stored when the result is
+ * typed, so correcting a range corrects every report that already exists.
+ */
+export function flagFor(value: any, p: {
+  ref_op?: string | null; ref_value?: any
+  ref_low?: any; ref_high?: any
+  has_sex_ranges?: boolean
+  male_low?: any; male_high?: any; female_low?: any; female_high?: any
+}, gender?: string | null): string | null {
+  const n = Number(value)
+  if (!Number.isFinite(n) || String(value ?? '').trim() === '') return null
+  if (!p) return null
+
+  /*
+   * A written range is one-sided, and that is the whole point of it.
+   *
+   * "> 0.8" was being treated as though it also had an upper bound, so 0.9
+   * came out high when it is exactly what the test wants to see.
+   */
+  if (p.ref_op && p.ref_value != null && p.ref_value !== '') {
+    const limit = Number(p.ref_value)
+    if (!Number.isFinite(limit)) return null
+    switch (p.ref_op) {
+      case '<':  return n < limit ? 'normal' : 'high'
+      case '<=': return n <= limit ? 'normal' : 'high'
+      case '>':  return n > limit ? 'normal' : 'low'
+      case '>=': return n >= limit ? 'normal' : 'low'
+      case '=':  return n === limit ? 'normal' : 'high'
+      default:   return null
+    }
+  }
+
+  let low = p.ref_low
+  let high = p.ref_high
+  if (p.has_sex_ranges) {
+    const female = String(gender ?? '').toLowerCase().startsWith('f')
+    low = female ? p.female_low : p.male_low
+    high = female ? p.female_high : p.male_high
+  }
+
+  if (low == null || high == null) return null
+  if (n < Number(low)) return 'low'
+  if (n > Number(high)) return 'high'
+  return 'normal'
 }
 
 export async function saveParameters(serviceId: number, rows: {
   name: string; unit?: string | null; refLow?: number | null
   refHigh?: number | null; refText?: string | null
+  /**
+   * Normal values that differ by sex.
+   *
+   * Haemoglobin is 13.0 to 17.5 for a man and 11.5 to 15.0 for a woman. One
+   * column could only hold one of them, so every CBC printed a range that was
+   * wrong for half the patients who read it.
+   *
+   * The switch is stored rather than worked out from the two fields being
+   * filled, so turning it off does not throw away what was typed.
+   */
+  /*
+   * A range per sex, as numbers.
+   *
+   * Text could not be compared without parsing English back into digits, and
+   * it competed with the low and high boxes on the same row for the right to
+   * say what normal meant.
+   */
+  maleLow?: number | null
+  maleHigh?: number | null
+  femaleLow?: number | null
+  femaleHigh?: number | null
+  hasSexRanges?: boolean
+  /**
+   * A normal value written as an operator and a number: "<" and 0.50.
+   *
+   * As free text nothing could compare a result against it, so those tests
+   * never flagged high or low. Split in two, the comparison is arithmetic
+   * again.
+   */
+  refOp?: string | null
+  refValue?: number | null
+  /**
+   * The heading this parameter starts, if any.
+   *
+   * A glucose tolerance test is three timed blocks in one table: the first
+   * parameter of each block carries the heading, the rest carry nothing. A
+   * test with no sections at all is the normal case and reads exactly as it
+   * always has.
+   */
+  section?: string | null
 }[]) {
   return db.transaction(async (tx) => {
+    /*
+     * Only the fields this test's layout uses are written.
+     *
+     * A row that kept a low and high from when it was a numbers test, plus an
+     * operator from when it became a written range, gave two answers to one
+     * question and different screens picked different ones. The layout
+     * decides, and everything it does not use is stored as null.
+     */
+    const layout = await reportLayoutFor(serviceId)
+
     await tx.execute(sql`DELETE FROM service_parameters WHERE service_id = ${serviceId}`)
     let order = 0
     for (const p of rows) {
       await tx.execute(sql`
-        INSERT INTO service_parameters (service_id, name, unit, ref_low, ref_high, ref_text, display_order)
+        INSERT INTO service_parameters
+          (service_id, name, unit, ref_low, ref_high, ref_text,
+           male_low, male_high, female_low, female_high,
+           has_sex_ranges, ref_op, ref_value, section, display_order)
         VALUES (${serviceId}, ${p.name.trim()}, ${p.unit?.trim() || null},
-                ${p.refLow ?? null}, ${p.refHigh ?? null}, ${p.refText?.trim() || null}, ${order++})`)
+                ${layout === 'standard' ? (p.refLow ?? null) : null},
+                ${layout === 'standard' ? (p.refHigh ?? null) : null},
+                ${layout === 'qualitative' ? (p.refText?.trim() || null) : null},
+                ${p.maleLow ?? null}, ${p.maleHigh ?? null},
+                ${p.femaleLow ?? null}, ${p.femaleHigh ?? null},
+                ${p.hasSexRanges ?? false},
+                ${layout === 'ranges' ? (p.refOp?.trim() || null) : null},
+                ${layout === 'ranges' ? (p.refValue ?? null) : null},
+                ${p.section?.trim() || null}, ${order++})`)
     }
     return parametersFor(serviceId)
   })
+}
+
+/**
+ * How a test's report is laid out.
+ *
+ * 'standard'    test / result / reference range / units — a chemistry panel
+ * 'qualitative' test / result / normal range — POSITIVE or NEGATIVE, where
+ *               units and a numeric range are two empty columns that read as
+ *               missing information rather than as not applicable
+ */
+export async function reportLayoutFor(serviceId: number): Promise<string> {
+  const row = ((await db.execute<any>(sql`
+    SELECT report_layout FROM services WHERE id = ${serviceId}`)).rows as any[])[0]
+  return row?.report_layout || 'standard'
+}
+
+export async function saveReportLayout(serviceId: number, layout: string) {
+  /*
+   * 'ranges' is for tests whose normal value is written rather than measured:
+   * "< 0.50", "Non reactive", "Upto 15 Years: < 345". Three columns, no units
+   * and no numeric low and high, because there is nothing numeric about it.
+   */
+  const clean = ['qualitative', 'ranges'].includes(layout)
+    ? layout : 'standard'
+  await db.execute(sql`
+    UPDATE services SET report_layout = ${clean} WHERE id = ${serviceId}`)
+  return { layout: clean }
 }
 
 /* ------------------------------------------------------------- the recipe */
@@ -315,8 +514,12 @@ export async function saveResults(input: {
 
   const outcome = await db.transaction(async (tx) => {
     const lo = (await tx.execute<any>(sql`
-      SELECT lo.*, so.service_id FROM lab_orders lo
+      -- The patient's sex comes with it, because a range that differs by sex
+      -- can only be compared against the right one.
+      SELECT lo.*, so.service_id, p.gender
+      FROM lab_orders lo
       JOIN service_orders so ON so.id = lo.service_order_id
+      JOIN patients p ON p.id = lo.patient_id
       WHERE lo.id = ${input.labOrderId}`)).rows[0]
     if (!lo) throw new LabError('Report not found', 'NOT_FOUND')
     if (lo.status === 'pending') throw new LabError('Take the sample first', 'WRONG_STATE')
@@ -343,14 +546,9 @@ export async function saveResults(input: {
         (p?.ref_low != null && p?.ref_high != null
           ? `${tidy(p.ref_low)} - ${tidy(p.ref_high)}` : null)
 
-      // Flagged only where there is a numeric range and a numeric value.
-      let flag: string | null = null
-      const n = Number(v.value)
-      if (!Number.isNaN(n) && v.value.trim() !== '' && p?.ref_low != null && p?.ref_high != null) {
-        if (n < Number(p.ref_low)) flag = 'low'
-        else if (n > Number(p.ref_high)) flag = 'high'
-        else flag = 'normal'
-      }
+      // The same rule the report uses, so a stored flag and a printed one
+      // can never disagree.
+      const flag = flagFor(v.value, p ?? {}, lo.gender)
 
       await tx.execute(sql`
         INSERT INTO lab_values (lab_order_id, name, value, unit, ref_text, flag, display_order)
@@ -458,7 +656,26 @@ export async function reportFor(labOrderId: number) {
   if (!head) throw new LabError('Report not found', 'NOT_FOUND')
 
   const values = (await db.execute<any>(sql`
-    SELECT * FROM lab_values WHERE lab_order_id = ${labOrderId} ORDER BY display_order, id`)).rows
+    /*
+     * The section heading comes from the test's setup, not from the saved
+     * value: a technologist types results, not headings, and a report printed
+     * after the sections were rearranged should follow the current layout.
+     */
+    SELECT lv.*, sp.section, sp.has_sex_ranges,
+           sp.male_low, sp.male_high, sp.female_low, sp.female_high,
+           sp.ref_op, sp.ref_value, sp.ref_low AS p_low, sp.ref_high AS p_high,
+           sp.ref_text AS p_text, pt.gender AS patient_gender
+    FROM lab_values lv
+    LEFT JOIN lab_orders lo    ON lo.id = lv.lab_order_id
+    -- A lab order points at the service through the order it was raised from;
+    -- there is no service_id on lab_orders itself.
+    LEFT JOIN service_orders so ON so.id = lo.service_order_id
+    LEFT JOIN service_parameters sp
+      ON sp.service_id = so.service_id
+     AND lower(sp.name) = lower(lv.name)
+    LEFT JOIN patients pt ON pt.id = lo.patient_id
+    WHERE lv.lab_order_id = ${labOrderId}
+    ORDER BY lv.display_order, lv.id`)).rows
   return { report: head, values }
 }
 

@@ -153,5 +153,160 @@ ok('opd counter blocked', r.status === 403, `got ${r.status}`)
 r = await q('/pharmacy/sales', { method: 'POST', body: JSON.stringify({ lines: [{ productId: newProduct, qty: 1 }] }) })
 ok('opd counter cannot sell', r.status === 403, `got ${r.status}`)
 
+console.log('\n— receiving against a purchase order, over HTTP —')
+{
+  /*
+   * THE WHOLE POINT OF THIS SECTION IS THAT IT GOES THROUGH THE ROUTE.
+   *
+   * Receiving against an order is supposed to link the delivery to it and
+   * close it, and the service-level suite proved that it does. The route did
+   * not: the zod schema on POST /pharmacy/purchases never declared
+   * purchaseOrderId, and zod strips what it does not declare, so the client
+   * sent it, the server dropped it, and every order stayed open forever
+   * while the stock went in. Tested at the service and shipped broken in the
+   * app, which is the gap this closes.
+   *
+   * The tax figures go the same way and for the same reason.
+   */
+  const auth = await q('/auth/login', { method: 'POST',
+    body: JSON.stringify({ username: 'admin', password: 'admin-demo-1' }) })
+  token = auth.body.token
+  ok('an administrator signs in for this section', !!token)
+
+  const sup = (await q('/pharmacy/suppliers')).body?.[0]
+  /* The inventory list, which this suite has already proven works. */
+  const prods = (await q('/pharmacy/inventory')).body ?? []
+  const prod = Array.isArray(prods) ? prods.find((x) => x.id) : null
+  ok('there is a supplier and a medicine to work with', !!sup && !!prod)
+
+  if (sup && prod) {
+    const packSize = Math.max(1, Number(prod.pack_size ?? 1))
+    const po = await q('/pharma/orders', { method: 'POST', body: JSON.stringify({
+      supplierId: sup.id, windowDays: 7,
+      lines: [{ productId: prod.id, orderPacks: 7 }] }) })
+    ok('an order is raised over HTTP', po.status === 201, `got ${po.status}`)
+    ok('and it is stored in packs', Number(po.body?.items?.[0]?.order_packs) === 7,
+      JSON.stringify(po.body?.items?.[0]?.order_packs))
+    ok('with the unit equivalent beside it',
+      Number(po.body?.items?.[0]?.order_units) === 7 * packSize,
+      `${po.body?.items?.[0]?.order_units} vs ${7 * packSize}`)
+
+    const stamp = Date.now().toString().slice(-7)
+    const got = await q('/pharmacy/purchases', { method: 'POST', body: JSON.stringify({
+      supplierId: sup.id,
+      supplierInvoiceNo: 'TAX-' + stamp,
+      invoiceDate: new Date().toISOString().slice(0, 10),
+      purchaseOrderId: po.body.id,
+      /* 10 packs at Rs 100 with 10% tax, then 5% on the invoice. */
+      extraTaxBp: 500,
+      lines: [{ productId: prod.id, batchNo: 'TX' + stamp,
+        expiryDate: '2027-12-31', qty: 10, costPaisa: 10000, taxRateBp: 1000 }]
+    }) })
+    ok('the delivery is booked', got.status === 201, `got ${got.status}`)
+
+    /* 10 x 100 = 1000 goods, +10% = 100 tax, +5% of 1100 = 55. */
+    ok('the line tax is on the line value',
+      Number(got.body?.purchase?.taxPaisa) === 10000,
+      `${got.body?.purchase?.taxPaisa} paisa`)
+    ok('the invoice tax is on goods plus line tax',
+      Number(got.body?.purchase?.extraTaxPaisa) === 5500,
+      `${got.body?.purchase?.extraTaxPaisa} paisa`)
+    ok('and the total is all three added up',
+      Number(got.body?.purchase?.totalPaisa) === 100000 + 10000 + 5500,
+      `${got.body?.purchase?.totalPaisa} paisa`)
+
+    /*
+     * The assertion that was missing. One receive closes the order — that
+     * was the decision — and over HTTP it never did.
+     */
+    const after = await q(`/pharma/orders/${po.body.id}`)
+    ok('the order is closed by the delivery', after.body?.status === 'received',
+      `status ${after.body?.status}`)
+    ok('and the delivery points back at it',
+      (await q('/pharma/orders')).body
+        ?.find((o) => o.id === po.body.id)?.grn_no?.startsWith('GRN-'),
+      'no GRN linked to the order')
+  }
+}
+
+console.log('\n— discounts at the counter —')
+{
+  /*
+   * Two settings, and the difference between them matters.
+   *
+   * The switch decides whether a bill can be reduced at all. The ceiling
+   * decides how far, as a percentage of the WHOLE BILL — measured there
+   * rather than per line, because three lines discounted ten per cent each
+   * is ten per cent of the bill while one line at thirty is not, and a
+   * per-line check would let a big discount be split across lines to get
+   * past it.
+   *
+   * Zero means no ceiling, not "no discount". That is what the switch is
+   * for, and conflating the two would make zero per cent mean two opposite
+   * things.
+   *
+   * Enforced on the server, which is the only place it counts: the till is a
+   * screen and the rule is a rule.
+   */
+  const auth = await q('/auth/login', { method: 'POST',
+    body: JSON.stringify({ username: 'admin', password: 'admin-demo-1' }) })
+  const adminTok = auth.body.token
+  const asAdmin = (path, opts = {}) => q(path, {
+    ...opts, headers: { authorization: 'Bearer ' + adminTok } })
+
+  const phAuth = await q('/auth/login', { method: 'POST',
+    body: JSON.stringify({ username: 'pharmacy', password: '1234' }) })
+  token = phAuth.body.token
+
+  const inv = (await q('/pharmacy/inventory')).body ?? []
+  const p = inv.find((x) => x.in_stock > 20 && x.retail_paisa > 0)
+  ok('there is something in stock to discount', !!p)
+
+  if (p) {
+    const gross = Number(p.retail_paisa) * 2
+    const sell = (discountPaisa) => q('/pharmacy/sales', { method: 'POST',
+      body: JSON.stringify({
+        lines: [{ productId: p.id, qty: 2, soldAs: 'pack', discountPaisa }],
+        payMethod: 'cash', paidPaisa: 0 }) })
+    const set = (b) => asAdmin('/pharma/settings', {
+      method: 'PUT', body: JSON.stringify(b) })
+
+    await set({ discountEnabled: true, discountMaxPct: 0 })
+    let r = await sell(Math.round(gross * 0.5))
+    ok('with no ceiling a large discount goes through', r.status === 201,
+      `${r.status} ${r.body?.code ?? ''}`)
+
+    await set({ discountEnabled: true, discountMaxPct: 10 })
+    r = await sell(Math.round(gross * 0.05))
+    ok('under the ceiling is allowed', r.status === 201,
+      `${r.status} ${r.body?.code ?? ''}`)
+    r = await sell(Math.round(gross * 0.25))
+    ok('over the ceiling is refused', r.body?.code === 'DISCOUNT_TOO_BIG',
+      `${r.status} ${r.body?.code ?? ''}`)
+    ok('and the refusal says the figure, the limit and the rupees',
+      /25\.0%/.test(r.body?.error ?? '') && /10%/.test(r.body?.error ?? '')
+      && /Rs/.test(r.body?.error ?? ''), String(r.body?.error ?? '').slice(0, 110))
+
+    await set({ discountEnabled: false })
+    r = await sell(Math.round(gross * 0.02))
+    ok('switched off, even a small discount is refused',
+      r.body?.code === 'DISCOUNT_OFF', `${r.status} ${r.body?.code ?? ''}`)
+    r = await sell(0)
+    ok('but a bill with no discount still sells', r.status === 201,
+      `${r.status} ${r.body?.code ?? ''}`)
+
+    /* A cashier who can raise their own ceiling has no ceiling. */
+    r = await q('/pharma/settings', { method: 'PUT',
+      body: JSON.stringify({ discountMaxPct: 100 }) })
+    ok('a pharmacist cannot change the rules', r.status === 403, `got ${r.status}`)
+
+    await set({ discountEnabled: true, discountMaxPct: 0 })
+    const back = (await q('/pharma/settings')).body
+    ok('the settings are left as they were found',
+      back.discountEnabled === true && Number(back.discountMaxPct) === 0,
+      JSON.stringify(back))
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

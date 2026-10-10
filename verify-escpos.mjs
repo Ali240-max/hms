@@ -247,6 +247,67 @@ await q('/printing/config/counter', 'mc', {
 r = await q('/printing/test/counter', 'mc', { method: 'POST' })
 ok('and so is a counter with no printer set', r.status === 409 && r.body.code === 'NO_PRINTER')
 
+console.log('\n— what is actually on the slip —')
+{
+  /*
+   * Two complaints from the counter, both about the same slip.
+   *
+   * The cashier was named at the top as "Cashier" and again at the bottom as
+   * "Received by" — the same person, eight lines apart, under two different
+   * words, which reads as two people and had staff asking which one took the
+   * money. And the patient's name, the one thing a department matches
+   * against the person in front of them, was the same weight as the payment
+   * method.
+   *
+   * Checked on the real bytes rather than the React slip, because the
+   * thermal receipt is what the counter actually hands over.
+   */
+  const { chitReceipt, billReceipt } = await import('./src/server/services/escpos.ts')
+  const hospital = { name: 'Test Hospital' }
+
+  const chit = {
+    chit_no: 'CHIT-261009-D00001', token_no: 7, status: 'paid',
+    patient_name: 'Amna Javed', mrn: 'AJ35-09102026-571',
+    age_years: 35, gender: 'female', doctor_name: 'Dr Kamran Ali',
+    created_by: 'Sana Tariq', paid_by: 'Sana Tariq', paid_at: new Date().toISOString(),
+    created_at: new Date().toISOString(), pay_method: 'cash', total_paisa: 110000
+  }
+  const bill = {
+    bill_no: 'INV-261009-C00001', token_no: 3, kind: 'consultation',
+    patient_name: 'Amna Javed', mrn: 'AJ35-09102026-571',
+    doctor_name: 'Dr Kamran Ali', cashier_name: 'Sana Tariq',
+    created_at: new Date().toISOString(), pay_method: 'cash',
+    subtotal_paisa: 110000, discount_paisa: 0, total_paisa: 110000,
+    tendered_paisa: 110000, change_paisa: 0
+  }
+
+  /* ESC E 1 turns bold on, ESC E 0 turns it off. */
+  const BOLD_ON = '\x1bE\x01'
+  const BOLD_OFF = '\x1bE\x00'
+
+  for (const [what, buf] of [
+    ['the chit', chitReceipt({ chit, lines: [{ service_name: 'CBC', price_paisa: 110000 }],
+      hospital, categoryLabel: 'the laboratory' })],
+    ['the consultation bill', billReceipt({ bill,
+      items: [{ description: 'Consultation', amount_paisa: 110000 }], hospital })]
+  ]) {
+    const text = buf.toString('latin1')
+    ok(`${what} names the cashier once`,
+      (text.match(/Cashier/g) ?? []).length === 1,
+      `${(text.match(/Cashier/g) ?? []).length} times`)
+    ok(`${what} has no second "Received by" row`, !text.includes('Received by'))
+    ok(`${what} prints the patient in bold`,
+      text.includes(`${BOLD_ON}Patient`) ||
+      new RegExp(`${BOLD_ON.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}[^\\x1b]*Amna Javed`)
+        .test(text),
+      'patient row is not wrapped in bold')
+    ok(`${what} turns bold back off afterwards`, text.includes(BOLD_OFF))
+    /* The name itself still has to be on the slip, bold or not. */
+    ok(`${what} still carries the patient name and MRN`,
+      text.includes('Amna Javed') && text.includes('AJ35-09102026-571'))
+  }
+}
+
 printer.close()
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

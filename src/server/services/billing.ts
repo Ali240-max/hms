@@ -19,7 +19,8 @@ import { documentNo } from './numbering'
 
 export class BillError extends Error {
   constructor(msg: string, public code:
-    'NOT_FOUND' | 'ALREADY_BILLED' | 'SHORT_PAYMENT' | 'NOTHING_TO_BILL' | 'NO_PRICE') {
+    'NOT_FOUND' | 'ALREADY_BILLED' | 'SHORT_PAYMENT' | 'NOTHING_TO_BILL' | 'NO_PRICE'
+    | 'DOCTOR_REQUIRED') {
     super(msg)
   }
 }
@@ -198,6 +199,16 @@ export async function completeBill(input: {
 export async function directServiceVisit(input: {
   patientId: number
   serviceIds: number[]
+  /**
+   * The doctor who asked for the tests, if there is one.
+   *
+   * These are tests billed without a consultation, so there is often nobody —
+   * a patient walks in with a slip from elsewhere, or asks for a test
+   * directly. But where a hospital doctor did prescribe them, their share has
+   * to reach them, and before this there was no way to say so: every direct
+   * test was booked against nobody and the share was lost.
+   */
+  doctorId?: number | null
   by: string
   byId: number
 }) {
@@ -224,6 +235,40 @@ export async function directServiceVisit(input: {
         `No price set for ${unpriced.map((sv) => sv.name).join(', ')}. ` +
         'An administrator sets it under Administration, Services.', 'NO_PRICE')
     }
+
+    /*
+     * A service marked as needing a doctor is refused without one.
+     *
+     * Procedures are why. Somebody performs a dressing or an ECG and has a
+     * share in it; billed with nobody named, that share has nowhere to go and
+     * disappears without trace. A month later the doctor asks why their
+     * earnings are short and there is nothing on the record to answer with.
+     *
+     * Checked on the server as well as hidden in the screen, because the
+     * screen is a convenience and this is the rule.
+     */
+    if (!input.doctorId) {
+      const needDoctor = services.filter((sv) => sv.requires_doctor)
+      if (needDoctor.length) {
+        throw new BillError(
+          `${needDoctor.map((sv) => sv.name).join(', ')} ` +
+          `${needDoctor.length === 1 ? 'needs' : 'need'} a doctor named. ` +
+          'Choose who is performing it, or untick "a doctor must be named" ' +
+          'for it under Administration, Services.',
+          'DOCTOR_REQUIRED')
+      }
+    }
+
+    /*
+     * The doctor's share only applies when a doctor is named.
+     *
+     * A test nobody prescribed earns nobody a share, so the rate is zero
+     * rather than the service's default — otherwise a walk-in CBC would quietly
+     * accrue a share against no doctor and the earnings report would not add
+     * up against what was paid out.
+     */
+    const shareBp = (sv: any) =>
+      input.doctorId ? Number(sv.default_share_bp ?? 0) : 0
 
     const today = new Date().toISOString().slice(0, 10)
     const tokenNo = await nextCounter(tx, `token:direct:${today}`)
@@ -253,8 +298,11 @@ export async function directServiceVisit(input: {
     for (const sv of services) {
       await tx.execute(sql`
         INSERT INTO service_orders
-          (visit_id, service_id, service_name, price_paisa, share_bp, status)
-        VALUES (${visit.id}, ${sv.id}, ${sv.name}, ${sv.price_paisa}, 0, 'ordered')`)
+          (visit_id, doctor_id, service_id, service_name, price_paisa,
+           share_bp, share_paisa, status)
+        VALUES (${visit.id}, ${input.doctorId ?? null}, ${sv.id}, ${sv.name},
+                ${sv.price_paisa}, ${shareBp(sv)},
+                ${Math.round(Number(sv.price_paisa) * shareBp(sv) / 10000)}, 'ordered')`)
     }
 
     // Grouped by department, the same as any other chit.

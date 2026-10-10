@@ -120,7 +120,15 @@ export function ChitSlip({ chit, lines, hospital, categoryLabel }: {
       <Rule />
 
       <div>
-        <SlipRow k={tr('Patient')} v={chit.patient_name} />
+        {/*
+          The patient in bold, and they are the only bold row in this block.
+
+          Everything here is the same weight, so the one name the department
+          actually has to match against the person in front of them reads no
+          louder than the payment method. Bold costs nothing on a thermal
+          printer and it is the first thing anyone looks for.
+        */}
+        <SlipRow bold k={tr('Patient')} v={chit.patient_name} />
         <SlipRow k={tr('MRN')} v={chit.mrn} />
         {(chit.age_years != null || chit.gender) && (
           <SlipRow k={tr('Age/Sex')} v={[chit.age_years && `${chit.age_years}y`, chit.gender]
@@ -147,7 +155,15 @@ export function ChitSlip({ chit, lines, hospital, categoryLabel }: {
               v={new Date(chit.paid_at).toLocaleString('en-GB',
                 { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} />
             {chit.pay_method && <SlipRow k={tr('Paid by')} v={tr(chit.pay_method)} />}
-            {chit.paid_by && <SlipRow k={tr('Received by')} v={chit.paid_by} />}
+            {/*
+              No "Received by" row.
+
+              It carried the same person as the Cashier row at the top of the
+              slip, so the receipt named them twice, eight lines apart, under
+              two different words — which reads as two different people and
+              had staff asking which one took the money. One name, at the top,
+              where it is on every other slip in the system.
+            */}
           </div>
 
           {s.showFooter && (

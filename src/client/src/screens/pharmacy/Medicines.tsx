@@ -327,6 +327,29 @@ function MedicineForm({ initial, onClose, onDone }: {
             placeholder="0.00" className="field num text-right" />
         </Field>
 
+        {/*
+          Sales tax, back where it was.
+
+          It was dropped from this form at some point while the pricing block
+          was reworked, but it never left the medicine itself — the column and
+          the whole tax calculation on every sale stayed, quietly applying
+          whatever rate was last saved with no way to see or change it. A rate
+          you cannot read is worse than no rate at all.
+
+          Entered as a percentage because that is what a sales tax notice is
+          written in; stored in basis points, so 17% is 1700 and a rate like
+          2.5% survives the round trip.
+        */}
+        <Field label={tr('Sales tax')}
+          hint={tr('Percentage added at the till. Leave at 0 if the medicine is exempt.')}>
+          <div className="relative">
+            <input value={f.taxRate} onChange={(e) => setF({ ...f, taxRate: e.target.value })}
+              placeholder="0" className="field num pr-7 text-right" />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2
+                             text-2xs text-muted">%</span>
+          </div>
+        </Field>
+
         <div className="sm:col-span-2">
           <PriceSummary f={f} packSize={packSize} priceBy={priceBy} />
         </div>

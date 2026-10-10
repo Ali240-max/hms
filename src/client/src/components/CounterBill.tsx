@@ -90,7 +90,10 @@ export function CounterBillSlip({ bill, items, hospital }: {
       <Rule />
 
       <div>
-        <SlipRow k={tr('Patient')} v={bill.patient_name ?? '—'} />
+        {/* Bold, and the only bold row here: it is the name anyone reading
+            this slip is matching against the person in front of them. Same
+            on the chit, so the two slips read the same way. */}
+        <SlipRow bold k={tr('Patient')} v={bill.patient_name ?? '—'} />
         <SlipRow k={tr('MRN')} v={bill.mrn ?? '—'} />
         {bill.doctor_name && <SlipRow k={tr('Doctor')} v={bill.doctor_name} />}
       </div>

@@ -128,6 +128,15 @@ reports.get('/print/:id/pdf', async (c) => {
     if (s?.margin_pct != null) notes.push(`Margin ${Number(s.margin_pct).toFixed(1)}% of revenue`)
     if (s?.pending) notes.push(`${s.pending} still to be reported`)
     if (s?.unpaid_chits) notes.push(`${s.unpaid_chits} chits still unpaid in this period`)
+    /*
+     * A report may simply hand back lines to print under the grand total.
+     *
+     * Every other key here is a named special case, which meant a new report
+     * wanting a closing line had to come and edit this function. The net
+     * change on the stock adjustment report is exactly that, and spelling it
+     * as yet another key would have been the fourth.
+     */
+    if (Array.isArray(s?.notes)) notes.push(...s.notes.filter(Boolean).map(String))
   }
 
   const pdf = await reportPdf({

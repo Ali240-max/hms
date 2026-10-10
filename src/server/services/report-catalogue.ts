@@ -3,7 +3,13 @@ import {
   stockStatement, zeroSaleStock, profitByManufacturer, discountMonitor, type Window
 } from './pharma-reports'
 import { priceHistory, outstanding } from './pharma'
+import {
+  adjustments as rawAdjustments, adjustmentHistory as rawAdjustmentDetail,
+  adjustmentsByCompany as rawAdjustmentsByCompany
+} from './stock-audit'
 import { purchaseDetail, purchaseRegister } from './pharma-reports'
+import { reportReturns as rawReturns } from './returns'
+import { listOrders as rawOrders } from './ordering'
 import {
   labRegister, labBy, labSummary, labOutstanding, labTurnaround, labAbnormal,
   counterSummary, counterBy, counterRegister, patientRegister, unpaidChits,
@@ -73,6 +79,77 @@ const text = (key: string, label: string, width = 28): Column =>
 
 export const REPORTS: ReportDef[] = [
   /* ------------------------------------------------------------ sales */
+  /* ------------------------------------------- audits and adjustments */
+
+  /*
+   * Printed the same way as every other report, through the same catalogue.
+   *
+   * These could have been bespoke pages with their own print buttons, and
+   * then they would have their own date pickers, their own PDF layout and
+   * their own idea of what a total is. Going through the catalogue means
+   * they look like the rest of the system and are covered by the per-login
+   * report access that already exists.
+   */
+  {
+    id: 'adjustments-list', group: 'Stock', module: 'pharmacy',
+    title: 'Stock Adjustments',
+    blurb: 'Every adjustment in the period, with who made it and against which count sheet.',
+    permission: 'report.stock', dated: true,
+    columns: [text('adjustment_no', 'Adjustment', 17), text('audit_no', 'Count sheet', 17),
+      text('when', 'When', 17), text('created_by', 'By', 16),
+      num('lines', 'Lines', 7), num('added', 'Added', 7), num('removed', 'Removed', 9)],
+    totalKeys: ['lines', 'added', 'removed'],
+    run: (w) => adjustmentsReport(w)
+  },
+  {
+    id: 'adjustments-detail', group: 'Stock', module: 'pharmacy',
+    title: 'Stock Adjustment Detail',
+    /*
+     * One row per instance, never a net figure. Panadol adjusted five times
+     * is five rows: a single "net -12" hides the pattern that makes somebody
+     * look twice, which is the only reason this report exists.
+     */
+    blurb: 'One row for every medicine every time it was adjusted, with the quantities before and after.',
+    /*
+     * Landscape because eight columns carrying two names, a clock and four
+     * quantities come to 115 character cells, and portrait holds 105. The
+     * overflow falls off the right-hand edge, which took the name of the
+     * person who made the adjustment with it — the one column on this report
+     * that nobody can do without.
+     */
+    permission: 'report.stock', dated: true, landscape: true,
+    columns: [text('product_name', 'Medicine', 22), text('manufacturer', 'Company', 14),
+      text('when', 'When', 17), text('adjustment_no', 'Adjustment', 17),
+      num('expected_qty', 'On sheet', 9),
+      num('before_qty', 'Before', 8), num('counted_qty', 'Counted', 8),
+      num('delta_qty', 'Change', 7),
+      /*
+       * What the correction was worth, split into two columns.
+       *
+       * "Panadol plus 105" is a quantity; the question that always follows is
+       * how much money that is. Each row fills exactly one of these — a row
+       * never both gains and loses — and the other prints blank rather than
+       * 0.00, because a column of zeroes reads as real figures and hides the
+       * one that matters.
+       */
+      money('added_paisa', 'Added', 12), money('removed_paisa', 'Removed', 12),
+      text('created_by', 'By', 14)],
+    totalKeys: ['delta_qty', 'added_paisa', 'removed_paisa'],
+    run: (w) => adjustmentDetailReport(w),
+    stats: (w) => adjustmentValueSummary(w)
+  },
+  {
+    id: 'adjustments-company', group: 'Stock', module: 'pharmacy',
+    title: 'Stock Adjustments by Company',
+    blurb: 'Which companies\u2019 stock keeps coming up short.',
+    permission: 'report.stock', dated: true,
+    columns: [text('manufacturer', 'Company', 28), num('products', 'Medicines', 10),
+      num('lines', 'Times', 8), num('added', 'Added', 8),
+      num('removed', 'Removed', 9), num('net', 'Net', 8)],
+    chart: { label: 'manufacturer', value: 'removed', kind: 'bar' },
+    totalKeys: ['products', 'lines', 'added', 'removed', 'net'],
+    run: (w) => adjustmentsByCompany(w)
+  },
   {
     id: 'sales-daily', group: 'Sales', module: 'pharmacy', title: 'Daily Sales Summary',
     blurb: 'One line per trading day: what was invoiced, what it cost, what was left.',
@@ -171,7 +248,7 @@ export const REPORTS: ReportDef[] = [
     id: 'sales-register', group: 'Sales', module: 'pharmacy', title: 'Sales Invoice Register',
     blurb: 'Invoice by invoice, the day book. Cancelled bills are listed too.',
     permission: 'report.sales', dated: true, landscape: true,
-    columns: [text('invoice_no', 'Invoice', 12), text('sold_at', 'Date', 18),
+    columns: [text('invoice_no', 'Invoice', 17), text('sold_at', 'Date', 18),
       text('party_name', 'Customer', 26), text('sale_kind', 'Type', 9),
       num('lines', 'Lines', 6), money('discount_paisa', 'Discount'),
       money('total_paisa', 'Total Value'), money('margin_paisa', 'Margin')],
@@ -228,6 +305,67 @@ export const REPORTS: ReportDef[] = [
     chart: { label: 'label', value: 'total_paisa', kind: 'bar' },
     totalKeys: ['packs', 'bonus_packs', 'total_paisa'],
     run: (w) => purchaseBy(w, 'manufacturer')
+  },
+  {
+    id: 'orders-list', group: 'Purchase', module: 'pharmacy',
+    title: 'Purchase Orders',
+    /*
+     * Whether anything actually turned up is the point of this report.
+     *
+     * An order with no GRN against it is either still with the supplier or
+     * was quietly forgotten, and those look identical until somebody checks.
+     * The window the quantities were suggested from is on the row too: three
+     * hundred units is a sensible fortnight and an alarming afternoon.
+     */
+    blurb: 'Every order raised, who raised it, and whether a delivery ever came against it.',
+    permission: 'report.purchase', dated: true, landscape: true,
+    columns: [text('order_no', 'Order', 17), text('when', 'Raised', 16),
+      text('supplier_name', 'Supplier', 24), text('status', 'Status', 10),
+      text('window_label', 'From', 6), num('lines', 'Lines', 6),
+      num('units', 'Units', 8), text('grn_no', 'Delivery', 17),
+      text('created_by', 'By', 14)],
+    totalKeys: ['lines', 'units'],
+    run: (w) => ordersReport(w)
+  },
+
+  /* ---------------------------------------------------------- returns */
+  {
+    id: 'returns-register', group: 'Sales', module: 'pharmacy',
+    title: 'Sales Returns Register',
+    /*
+     * The Returns tab is open to everyone at the counter, because a customer
+     * holding a strip they want to bring back is the most ordinary thing that
+     * happens at a till. This report is what makes that safe: a refund is the
+     * one action at the counter that takes money out of the drawer with
+     * nothing coming in, so every one of them is named and timed here.
+     */
+    blurb: 'Every refund given — the bill it came off, who took it back, when, and how much went out.',
+    permission: 'report.sales', dated: true, landscape: true,
+    columns: [text('return_no', 'Return', 17), text('when', 'When', 16),
+      text('invoice_no', 'Against Bill', 17), text('customer', 'Customer', 22),
+      num('lines', 'Lines', 6), num('units', 'Units', 7),
+      num('written_off', 'Binned', 7),
+      money('total_paisa', 'Refunded'), text('returned_by', 'By', 14)],
+    totalKeys: ['lines', 'units', 'written_off', 'total_paisa'],
+    run: (w) => returnsRegisterReport(w)
+  },
+  {
+    id: 'returns-detail', group: 'Sales', module: 'pharmacy',
+    title: 'Sales Returns by Medicine',
+    /*
+     * One row per medicine per return, never netted. "Which medicines keep
+     * coming back" and "who keeps taking them back" are the two questions
+     * asked of this data, and a single net figure answers neither.
+     */
+    blurb: 'One row for every medicine every time it came back, with whether it went on the shelf again.',
+    permission: 'report.sales', dated: true, landscape: true,
+    columns: [text('product_name', 'Medicine', 26), text('manufacturer', 'Company', 18),
+      text('when', 'When', 16), text('return_no', 'Return', 17),
+      text('invoice_no', 'Bill', 17), num('qty', 'Units', 7),
+      text('restocked', 'Reshelved', 10), money('line_total_paisa', 'Refunded'),
+      text('returned_by', 'By', 14)],
+    totalKeys: ['qty', 'line_total_paisa'],
+    run: (w) => returnsDetailReport(w)
   },
 
   /* ------------------------------------------------------------ stock */
@@ -307,14 +445,23 @@ export const REPORTS: ReportDef[] = [
     run: (w) => discountMonitor(w)
   },
   {
-    id: 'rate-change', group: 'Profit', module: 'pharmacy', title: 'Rate Change List',
-    blurb: 'Every price change, old against new, with who changed it.',
+    id: 'rate-change', group: 'Profit', module: 'pharmacy', title: 'Rate Change Log',
+    /*
+     * The selling rate is the one number in the pharmacy that can be moved
+     * without anything arriving or leaving, so it is the one that most needs
+     * a name and a clock against it. The name was always here; the time was
+     * not, which made "who put the rate up on Tuesday" unanswerable from the
+     * report even though the row was sitting in the table.
+     */
+    blurb: 'Every rate change, old against new, with who changed it and when.',
     permission: 'report.profit', dated: true, landscape: true,
-    columns: [text('product_name', 'Name of Product', 30), text('pack_label', 'Packing', 9),
-      money('old_purchase_paisa', 'Old Pur.', 11), money('new_purchase_paisa', 'New Pur.', 11),
-      money('old_retail_paisa', 'Old Retail', 11), money('new_retail_paisa', 'New Retail', 11),
-      text('changed_by', 'User', 12)],
-    run: (w) => priceHistory({ from: w.from, to: w.to })
+    columns: [text('product_name', 'Name of Product', 26), text('pack_label', 'Packing', 8),
+      text('when', 'Changed', 16),
+      money('old_purchase_paisa', 'Old Pur.', 10), money('new_purchase_paisa', 'New Pur.', 10),
+      money('old_trade_paisa', 'Old Trade', 10), money('new_trade_paisa', 'New Trade', 10),
+      money('old_retail_paisa', 'Old Retail', 10), money('new_retail_paisa', 'New Retail', 10),
+      text('changed_by', 'User', 16), text('reason', 'Why', 16)],
+    run: (w) => priceChangeReport(w)
   },
 
   /* ------------------------------------------------------------ money */
@@ -358,8 +505,8 @@ function departmentReports(
       title: `${group} Register`,
       blurb: `Every ${noun} in the period — patient, price, who took the sample and who reported it.`,
       permission, dated: true, landscape: true,
-      columns: [text('report_no', 'Report No', 12), text('patient_name', 'Patient', 22),
-        text('mrn', 'MRN', 11), text('service_name', 'Test', 22),
+      columns: [text('report_no', 'Report No', 17), text('patient_name', 'Patient', 22),
+        text('mrn', 'MRN', 17), text('service_name', 'Test', 22),
         text('collected_at', 'Collected', 15), text('resulted_at', 'Reported', 15),
         text('resulted_by', 'By', 14), money('price_paisa', 'Price', 11)],
       totalKeys: ['price_paisa'],
@@ -418,7 +565,7 @@ function departmentReports(
       title: `${group} — Paid but Not Done`,
       blurb: 'Money taken for work the hospital still owes. Read this one every morning.',
       permission, dated: true, landscape: true,
-      columns: [text('patient_name', 'Patient', 24), text('mrn', 'MRN', 11),
+      columns: [text('patient_name', 'Patient', 24), text('mrn', 'MRN', 17),
         text('phone', 'Phone', 14), text('service_name', 'Test', 24),
         text('ordered_at', 'Ordered', 11), num('days_waiting', 'Days', 6),
         text('stage', 'Stage', 12), money('price_paisa', 'Paid', 11)],
@@ -527,7 +674,7 @@ const COUNTER: ReportDef[] = [
     groupBy: 'department', groupLabel: 'Department',
     columns: [num('no', 'No', 5), text('doctor_name', 'Doctor', 22),
       text('patient_name', 'Patient', 22), text('procedure_name', 'Procedure', 26),
-      text('mrn', 'MRN', 16), money('received_paisa', 'Received'),
+      text('mrn', 'MRN', 17), money('received_paisa', 'Received'),
       money('discount_paisa', 'Discount')],
     totalKeys: ['received_paisa', 'discount_paisa'],
     run: (w) => patientsByDepartment(w)
@@ -548,8 +695,8 @@ const COUNTER: ReportDef[] = [
     title: 'Counter Bill Register',
     blurb: 'Bill by bill, the counter day book.',
     permission: 'report.counter', dated: true, landscape: true,
-    columns: [text('bill_no', 'Bill No', 12), text('created_at', 'When', 15),
-      text('patient_name', 'Patient', 22), text('mrn', 'MRN', 11),
+    columns: [text('bill_no', 'Bill No', 17), text('created_at', 'When', 15),
+      text('patient_name', 'Patient', 22), text('mrn', 'MRN', 17),
       text('kind', 'For', 12), text('pay_method', 'Method', 10),
       text('cashier_name', 'Cashier', 14), money('total_paisa', 'Amount')],
     totalKeys: ['total_paisa'],
@@ -560,8 +707,8 @@ const COUNTER: ReportDef[] = [
     title: 'Patient Registration Register',
     blurb: 'Everyone registered in the period and what happened to them.',
     permission: 'report.counter', dated: true, landscape: true,
-    columns: [text('visit_no', 'Visit', 16), text('created_at', 'When', 15),
-      text('patient_name', 'Patient', 22), text('mrn', 'MRN', 11),
+    columns: [text('visit_no', 'Visit', 17), text('created_at', 'When', 15),
+      text('patient_name', 'Patient', 22), text('mrn', 'MRN', 17),
       num('age_years', 'Age', 5), text('gender', 'Sex', 7),
       text('doctor_name', 'Doctor', 18), text('status', 'Status', 12),
       money('consultation_fee_paisa', 'Fee', 10)],
@@ -573,7 +720,7 @@ const COUNTER: ReportDef[] = [
     title: 'Unpaid Chits',
     blurb: 'Work ordered that nobody paid for. Every line is either money owed or a chit raised by mistake.',
     permission: 'report.counter', dated: true, landscape: true,
-    columns: [text('chit_no', 'Chit No', 13), text('created_at', 'Raised', 11),
+    columns: [text('chit_no', 'Chit No', 17), text('created_at', 'Raised', 11),
       num('days_old', 'Days', 6), text('patient_name', 'Patient', 24),
       text('phone', 'Phone', 14), text('department', 'Department', 14),
       money('total_paisa', 'Amount')],
@@ -647,13 +794,15 @@ const GOODS_RECEIVED: ReportDef[] = [
   {
     id: 'purchase-grn-register', group: 'Purchase', module: 'pharmacy',
     title: 'Goods Received Register',
-    blurb: 'One line per delivery — GRN number, supplier, their invoice number and the total. Narrow it to a range of GRNs when reconciling a batch of them.',
+    blurb: 'One line per delivery — GRN number, supplier, their invoice number, the order it answers, who booked it in and when.',
     permission: 'report.purchase', dated: true, landscape: true,
-    columns: [text('grn_no', 'GRN No', 18), text('received_on', 'Received', 11),
-      text('supplier_name', 'Supplier', 26), text('supplier_invoice_no', 'Their Invoice', 14),
-      num('lines', 'Lines', 6), num('packs', 'Packs', 7), num('bonus', 'Bonus', 7),
-      money('discount_paisa', 'Discount', 11), money('total_paisa', 'Total Value')],
-    totalKeys: ['lines', 'packs', 'bonus', 'discount_paisa', 'total_paisa'],
+    columns: [text('grn_no', 'GRN No', 17), text('received_on', 'Invoiced', 10),
+      text('booked_at', 'Booked In', 15), text('supplier_name', 'Supplier', 22),
+      text('supplier_invoice_no', 'Their Invoice', 13),
+      text('order_no', 'Order', 17), text('received_by', 'By', 14),
+      num('lines', 'Lines', 6), num('packs', 'Packs', 7), num('bonus', 'Bonus', 6),
+      money('total_paisa', 'Total Value')],
+    totalKeys: ['lines', 'packs', 'bonus', 'total_paisa'],
     run: (w, q) => goodsReceivedSummary(w, q),
     stats: (w) => purchaseSummary(w)
   }
@@ -713,3 +862,140 @@ REPORTS.push(
 )
 
 export const reportById = (id: string) => REPORTS.find((r) => r.id === id)
+
+
+/* ----------------------------------------- audits, shaped for a report */
+
+/**
+ * A timestamp a printed report can show.
+ *
+ * The catalogue prints strings, and every one of these reports exists so a
+ * figure can be traced back to a moment and a person. Formatted here rather
+ * than in the PDF so the screen and the paper read identically.
+ */
+function stamp(v: any) {
+  return v ? new Date(v).toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', year: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  }) : ''
+}
+
+async function adjustmentsReport(w: { from?: string; to?: string }) {
+  const rows = await rawAdjustments({ from: w.from, to: w.to, limit: 2000 })
+  return (rows as any[]).map((r) => ({ ...r, when: stamp(r.created_at) }))
+}
+
+async function adjustmentDetailReport(w: { from?: string; to?: string }) {
+  const rows = await rawAdjustmentDetail({ from: w.from, to: w.to })
+  return (rows as any[]).map((r) => {
+    const delta = Number(r.delta_qty)
+    const value = Number(r.value_paisa ?? 0)
+    return {
+      ...r,
+      manufacturer: r.manufacturer ?? '',
+      when: stamp(r.created_at),
+      /*
+       * One side or the other, never both, and null for the side that does
+       * not apply so it prints blank instead of 0.00.
+       */
+      added_paisa: delta > 0 ? value : null,
+      removed_paisa: delta < 0 ? Math.abs(value) : null
+    }
+  })
+}
+
+async function adjustmentsByCompany(w: { from?: string; to?: string }) {
+  return rawAdjustmentsByCompany({ from: w.from, to: w.to })
+}
+
+async function priceChangeReport(w: { from?: string; to?: string }) {
+  const rows = await priceHistory({ from: w.from, to: w.to })
+  return (rows as any[]).map((r) => ({
+    ...r,
+    when: stamp(r.changed_at),
+    changed_by: r.changed_by ?? '',
+    reason: r.reason ?? ''
+  }))
+}
+
+/* ------------------------------------------- returns and orders, for the record */
+
+/**
+ * Every refund given, one row per medicine per return.
+ *
+ * The counter now shows the Returns tab to everybody, which is right — a
+ * customer with a strip to bring back is the most ordinary thing that happens
+ * at a till. What makes that safe is this report: refunding is the one action
+ * at the counter that takes money out of the drawer with nothing coming in,
+ * so every line of it carries who did it and when.
+ *
+ * One row per medicine rather than per return, because "which medicines keep
+ * coming back" and "who keeps taking them back" are the two questions asked,
+ * and a netted figure answers neither.
+ */
+async function returnsDetailReport(w: { from?: string; to?: string }) {
+  const rows = await rawReturns({ from: w.from, to: w.to, detail: true })
+  return (rows as any[]).map((r) => ({
+    ...r,
+    when: stamp(r.returned_at),
+    returned_by: r.returned_by ?? '',
+    /* A half-used bottle comes back for a refund but never goes back on the
+     * shelf. The difference is the whole reason the restock flag exists. */
+    restocked: r.restock ? 'Yes' : 'No',
+    reason: r.reason ?? ''
+  }))
+}
+
+async function returnsRegisterReport(w: { from?: string; to?: string }) {
+  const rows = await rawReturns({ from: w.from, to: w.to, detail: false })
+  return (rows as any[]).map((r) => ({
+    ...r,
+    when: stamp(r.returned_at),
+    returned_by: r.returned_by ?? '',
+    customer: r.party_name ?? r.customer_name ?? 'Walk-in',
+    reason: r.reason ?? ''
+  }))
+}
+
+/** Orders raised, and whether anything ever turned up against them. */
+async function ordersReport(w: { from?: string; to?: string }) {
+  const rows = await rawOrders({ from: w.from, to: w.to })
+  return (rows as any[]).map((r) => ({
+    ...r,
+    when: stamp(r.created_at),
+    grn_no: r.grn_no ?? '-',
+    status: String(r.status ?? '').toUpperCase(),
+    window_label: `${r.window_days}d`
+  }))
+}
+
+/**
+ * The value of what moved, for the line under the grand total.
+ *
+ * The two totals are already on the grand total row; what is missing from
+ * there is the one figure somebody actually wants — whether the shop is up or
+ * down overall. Stated in words rather than left as a signed number, because
+ * "-4,210.00" in a Net column is read as a loss by some people and as a
+ * correction by others.
+ */
+async function adjustmentValueSummary(w: { from?: string; to?: string }) {
+  const rows = await rawAdjustmentDetail({ from: w.from, to: w.to }) as any[]
+  const added = rows.filter((r) => Number(r.delta_qty) > 0)
+    .reduce((n, r) => n + Number(r.value_paisa ?? 0), 0)
+  const removed = rows.filter((r) => Number(r.delta_qty) < 0)
+    .reduce((n, r) => n + Math.abs(Number(r.value_paisa ?? 0)), 0)
+  const net = added - removed
+  const money = (p: number) =>
+    (p / 100).toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  return {
+    notes: [
+      `Stock value added     Rs ${money(added)}`,
+      `Stock value removed   Rs ${money(removed)}`,
+      net === 0
+        ? 'Net change            nothing, the two sides cancel out'
+        : `Net change            Rs ${money(Math.abs(net))} ` +
+          `${net > 0 ? 'MORE stock than the system held' : 'LESS stock than the system held'}`
+    ]
+  }
+}

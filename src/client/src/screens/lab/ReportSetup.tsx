@@ -69,6 +69,37 @@ export function LabReportSetup({ me }: { me: SessionUser }) {
                 <option value="none">{tr('Do not print it')}</option>
               </select>
             </Field>
+
+            {/*
+              How big the logo prints.
+
+              A logo is whatever file the hospital happens to have, and one
+              fixed box cannot suit all of them: a wide banner fills it, a
+              tall round emblem fits by its height and comes out a third of
+              the size. Nothing about the file says what size it should be, so
+              this is set by eye against a printed sheet — print one, adjust,
+              print again.
+            */}
+            {settings.logoPosition !== 'none' && (
+              <Field label={tr('Logo size')}
+                hint={tr('Print a report, see how it looks, adjust. 100 is the default.')}>
+                <div className="mt-1 flex items-center gap-2">
+                  <input type="range" min={40} max={400} step={10}
+                    value={settings.logoScale ?? 100}
+                    onChange={(e) => setSettings({
+                      ...settings, logoScale: Number(e.target.value) })}
+                    className="flex-1" />
+                  <input inputMode="numeric" value={settings.logoScale ?? 100}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      logoScale: Math.max(40, Math.min(400,
+                        Number(e.target.value.replace(/[^\d]/g, '')) || 100))
+                    })}
+                    className="field num w-16 py-1 text-right" />
+                  <span className="text-2xs text-muted">%</span>
+                </div>
+              </Field>
+            )}
             <Field label={tr('Fallback note heading')} span
               hint={tr('Used only for a test that has no heading of its own')}>
               <input value={settings.noteHeading}

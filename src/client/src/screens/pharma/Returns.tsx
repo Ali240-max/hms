@@ -32,6 +32,28 @@ export function Returns({ me }: { me: SessionUser }) {
   }, [])
   useEffect(loadRecent, [loadRecent])
 
+  /*
+   * Whether this person may actually refund, asked up front.
+   *
+   * The tab is open to everyone at the counter, because a customer holding a
+   * strip they want to bring back is the most ordinary thing that happens at
+   * a till and the person serving them needs to be able to look the bill up.
+   * Refunding is the part that needs permission.
+   *
+   * Asked now rather than discovered on save: filling in six lines and a
+   * reason before being told no is the kind of thing that gets a system
+   * described as broken.
+   */
+  const [mayRefund, setMayRefund] = useState(true)
+  useEffect(() => {
+    if (me.role === 'admin') { setMayRefund(true); return }
+    api.permissionsFor(me.id)
+      .then((d: any) => setMayRefund(new Set<string>(d.allowed).has('sale.return')))
+      // If permissions cannot be read, let the server be the judge rather
+      // than locking someone out of a refund the customer is owed.
+      .catch(() => setMayRefund(true))
+  }, [me.id, me.role])
+
   async function lookup() {
     if (!invoiceNo.trim()) return
     setErr(null); setFound(null); setDone(null); setLines({})
@@ -126,6 +148,12 @@ export function Returns({ me }: { me: SessionUser }) {
             </button>
           </div>
           <ErrorNote>{err}</ErrorNote>
+          {!mayRefund && (
+            <p className="mt-2 rounded-lg border-2 border-line bg-amber-500/10 px-3 py-2
+                          text-2xs text-body">
+              {tr('You can look up a bill here, but your account cannot take goods back. Ask whoever manages access to tick "Take goods back".')}
+            </p>
+          )}
         </Card>
 
         {found && (
@@ -272,9 +300,11 @@ export function Returns({ me }: { me: SessionUser }) {
                 className="field mt-2" />
             </Field>
 
-            <button onClick={save} disabled={busy || refund <= 0}
+            <button onClick={save} disabled={busy || refund <= 0 || !mayRefund}
               className="btn-primary mt-4 w-full py-3">
-              {busy ? tr('Saving…') : `${tr('Accept the return')} — Rs ${rs(refund)}`}
+              {busy ? tr('Saving…')
+                : !mayRefund ? tr('Not allowed on your account')
+                : `${tr('Accept the return')} — Rs ${rs(refund)}`}
             </button>
             <p className="mt-2 text-center text-2xs text-muted">{me.displayName}</p>
           </Card>

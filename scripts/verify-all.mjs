@@ -15,13 +15,20 @@ const OFFLINE = [
   ['tabs', 'npm run verify:tabs'],
   ['print', 'npm run verify:print'],
   ['crossmatch', 'npm run verify:crossmatch'],
+  ['layouts', 'npm run verify:layouts'],
+  ['ipd', 'npm run verify:ipd'],
+  ['attendance', 'npm run verify:attendance'],
+  ['audit', 'npm run verify:audit'],
+  ['ordering', 'npm run verify:ordering'],
   ['roles', 'npm run verify:roles'],
   ['lan', 'npm run verify:lan']
 ]
 
 const ONLINE = [
   'billing', 'chits', 'screens', 'pharmacy', 'supplies', 'emergency',
-  'lab', 'returns', 'modules', 'reports', 'numbering', 'admin', 'escpos'
+  'lab', 'returns', 'modules', 'reports', 'numbering', 'admin', 'escpos',
+  /* The attendance agent's whole HTTP protocol, minus the SDK calls. */
+  'agent'
 ]
 
 const base = process.env.API_BASE ?? 'http://127.0.0.1:4000/api'

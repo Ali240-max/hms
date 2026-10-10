@@ -83,6 +83,16 @@ export function TestSetupTab({ me }: { me: SessionUser }) {
                       : <Badge tone="warn">{tr('none')}</Badge>}
                   </td>
                   <td className="px-3 py-2 text-right">
+                    {/*
+                      Cross match has no setup to do.
+                      Its report is fixed: a donor, five screening tests and
+                      two phases, in that order, every time. There are no
+                      parameters to add and no ranges to set, so the buttons
+                      that would open an empty form are not offered.
+                    */}
+                    {s.code === 'XMATCH' ? (
+                      <span className="text-2xs text-muted">{tr('Fixed format')}</span>
+                    ) : <>
                     <button onClick={() => setEditing(s)}
                       className="btn-ghost inline-flex items-center gap-1.5 px-2 py-1 text-2xs">
                       <Sliders size={13} /> {tr('Ranges')}
@@ -98,6 +108,7 @@ export function TestSetupTab({ me }: { me: SessionUser }) {
                       className="ml-1 btn-ghost inline-flex items-center gap-1.5 px-2 py-1 text-2xs">
                       <ListOrdered size={13} /> {tr('Interpretation')}
                     </button>
+                    </>}
                   </td>
                 </tr>
               ))}

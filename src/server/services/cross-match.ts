@@ -41,6 +41,17 @@ export type CrossMatchInput = {
   albuminPhase?: string | null
   conclusion?: string | null
   notes?: string | null
+  /** When the blood was drawn. Defaults to now if the laboratory does not say. */
+  sampleTakenAt?: string | null
+  /**
+   * The lab order this answers, where it was booked as a test.
+   *
+   * Marked reported by the same call that writes the report. Two steps — the
+   * report, then the test — is two chances to do one and not the other, and a
+   * cross match left on the bench with its report already printed is the
+   * worse half of that.
+   */
+  labOrderId?: number | null
 }
 
 export class CrossMatchError extends Error {
@@ -83,7 +94,7 @@ export async function createCrossMatch(input: CrossMatchInput, by?: string) {
         report_no, patient_id, visit_id, patient_group, patient_rh,
         donor_name, donor_age, donor_sex, donor_group, donor_rh, donor_hb,
         blood_bag_no, hbsag, anti_hcv, hiv, vdrl, mp,
-        direct_phase, albumin_phase, conclusion, notes, created_by)
+        direct_phase, albumin_phase, conclusion, notes, sample_taken_at, created_by)
       VALUES (
         ${reportNo}, ${input.patientId}, ${input.visitId ?? null},
         ${input.patientGroup ?? null}, ${input.patientRh ?? null},
@@ -93,8 +104,17 @@ export async function createCrossMatch(input: CrossMatchInput, by?: string) {
         ${input.hbsag ?? 'NEGATIVE'}, ${input.antiHcv ?? 'NEGATIVE'},
         ${input.hiv ?? 'NEGATIVE'}, ${input.vdrl ?? 'NEGATIVE'}, ${input.mp ?? 'NEGATIVE'},
         ${input.directPhase ?? 'COMPATIBLE'}, ${input.albuminPhase ?? 'COMPATIBLE'},
-        ${conclusion}, ${input.notes ?? null}, ${by ?? null})
+        ${conclusion}, ${input.notes ?? null},
+        ${input.sampleTakenAt ?? null}, ${by ?? null})
       RETURNING *`)
+
+    if (input.labOrderId) {
+      await tx.execute(sql`
+        UPDATE lab_orders
+        SET status = 'resulted', resulted_at = now(), resulted_by = ${by ?? null}
+        WHERE id = ${input.labOrderId}`)
+    }
+
     return (r.rows as any[])[0]
   })
 }
@@ -114,18 +134,58 @@ export async function crossMatch(id: number) {
   return row
 }
 
-export async function crossMatches(opts: { q?: string; limit?: number } = {}) {
+/**
+ * Cross matches, written and still to be written.
+ *
+ * This tab is the only place they appear now, so it has to show the ones
+ * still on the bench as well as the ones finished. A booked cross match with
+ * no report yet is a lab order with no row here, so the two are brought
+ * together: the report where there is one, the booking where there is not.
+ */
+export async function crossMatches(opts: {
+  q?: string; status?: string; limit?: number
+} = {}) {
   const like = `%${opts.q ?? ''}%`
+  const status = opts.status ?? 'all'
+
   const r = await db.execute<any>(sql`
     SELECT cm.id, cm.report_no, cm.donor_name, cm.blood_bag_no, cm.conclusion,
-           cm.created_at, cm.created_by,
-           p.name AS patient_name, p.mrn
+           cm.created_at, cm.created_by, 'reported' AS stage,
+           NULL::int AS lab_order_id, NULL::int AS visit_id,
+           NULL::int AS service_order_id,
+           p.name AS patient_name, p.mrn, p.id AS patient_id
     FROM cross_matches cm
     JOIN patients p ON p.id = cm.patient_id
-    WHERE ${opts.q ? sql`(p.name ILIKE ${like} OR p.mrn ILIKE ${like}
+    WHERE ${status === 'pending' ? sql`false` : sql`true`}
+      AND ${opts.q ? sql`(p.name ILIKE ${like} OR p.mrn ILIKE ${like}
               OR cm.report_no ILIKE ${like} OR cm.donor_name ILIKE ${like}
               OR cm.blood_bag_no ILIKE ${like})` : sql`true`}
-    ORDER BY cm.created_at DESC
+
+    UNION ALL
+
+    /*
+     * Booked but not yet written. The sample may not even have been taken,
+     * which is exactly what the ward is ringing to ask about.
+     */
+    SELECT NULL::int AS id, lo.report_no, NULL AS donor_name, NULL AS blood_bag_no,
+           NULL AS conclusion, lo.created_at, NULL AS created_by,
+           CASE WHEN lo.collected_at IS NULL THEN 'awaiting_sample' ELSE 'on_the_bench' END
+             AS stage,
+           lo.id AS lab_order_id, lo.visit_id, so.id AS service_order_id,
+           p.name AS patient_name, p.mrn, p.id AS patient_id
+    FROM lab_orders lo
+    JOIN service_orders so ON so.id = lo.service_order_id
+    JOIN services sv ON sv.id = so.service_id
+    JOIN patients p ON p.id = lo.patient_id
+    -- By code or by name, so a hand-made "Cross Match" service is picked up
+    -- here rather than being stranded with no screen that can finish it.
+    WHERE (sv.code = 'XMATCH' OR sv.name ~* 'cross[[:space:]]*match')
+      AND lo.status <> 'resulted'
+      AND ${status === 'reported' ? sql`false` : sql`true`}
+      AND ${opts.q ? sql`(p.name ILIKE ${like} OR p.mrn ILIKE ${like}
+              OR lo.report_no ILIKE ${like})` : sql`true`}
+
+    ORDER BY created_at DESC
     LIMIT ${opts.limit ?? 100}`)
   return r.rows
 }

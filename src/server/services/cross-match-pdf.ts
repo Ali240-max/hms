@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit'
 import { getHospitalInfo, getSetting } from './settings'
 import { crossMatch } from './cross-match'
 import { signatories } from './lab'
+import { drawLetterhead, drawSignatureRow, MARGIN } from './lab-pdf'
 
 /**
  * A cross match report.
@@ -16,7 +17,14 @@ import { signatories } from './lab'
  * whole point of the report is that they can.
  */
 
-const MARGIN = 48
+/*
+ * The page margin comes from the lab report rather than being set again here.
+ *
+ * It was 48 in this file and 40 there, so the shared letterhead drew at one
+ * inset and everything below it at another — a few millimetres out, which is
+ * exactly the kind of thing nobody spots on screen and everybody spots on
+ * paper held next to another report.
+ */
 const INK = '#000000'
 const GREY = '#555555'
 
@@ -32,6 +40,10 @@ export async function crossMatchPdf(id: number): Promise<Buffer> {
   const hospital = await getHospitalInfo()
   const signers = await signatories()
   const logoPosition = (await getSetting('lab.logoPosition')) || 'right'
+  /* Same letterhead, same logo size. Read here too so the two reports from
+   * one laboratory cannot print the mark at different sizes. */
+  const logoScale = Math.max(40, Math.min(400,
+    Number((await getSetting('lab.logoScale')) || '100'))) / 100
 
   const doc = new PDFDocument({ size: 'A4', margin: MARGIN })
   const chunks: Buffer[] = []
@@ -41,45 +53,52 @@ export async function crossMatchPdf(id: number): Promise<Buffer> {
   const width = doc.page.width - MARGIN * 2
   const top = MARGIN
 
-  /* ---------------------------------------------------------- letterhead */
+  /*
+   * The same letterhead and identity block as every other laboratory report.
+   *
+   * This file used to draw its own, which looked close enough and was not: a
+   * different font size on the hospital name, the address centred rather than
+   * left, no MRN in the corner. A patient handed two reports from the same
+   * laboratory on the same day should not be able to tell they came from
+   * different code.
+   */
+  drawLetterhead(doc, width, hospital, {
+    logoPosition,
+    logoScale,
+    lines: [
+      ['MRN', r.mrn, true],
+      ['Name', r.patient_name, true],
+      ['Age / Gender',
+        [r.age_years != null ? `${r.age_years} yr(s)` : null,
+         r.gender ? String(r.gender)[0].toUpperCase() : null]
+          .filter(Boolean).join(' / ')],
+      ['Ref. By', r.doctor_name ?? 'Self'],
+      ['Report No', r.report_no]
+    ]
+  })
 
-  const showLogo = hospital.logoDataUri && logoPosition !== 'none'
-  const logoLeft = logoPosition === 'left'
-  if (showLogo) {
-    try {
-      const b64 = String(hospital.logoDataUri).split(',').pop() ?? ''
-      doc.image(Buffer.from(b64, 'base64'),
-        logoLeft ? MARGIN : MARGIN + width - 86, top, { fit: [82, 40] })
-    } catch { /* a bad logo must never stop a report printing */ }
-  }
+  doc.font('Helvetica-Bold').fontSize(13).fillColor(INK)
+     .text('CROSS MATCH REPORT', MARGIN, doc.y + 10, { width, align: 'center' })
 
-  doc.font('Helvetica-Bold').fontSize(17).fillColor(INK)
-     .text(String(hospital.name ?? 'Hospital').toUpperCase(), MARGIN, top + 2,
-       { width, align: 'center' })
-  doc.font('Helvetica').fontSize(9).fillColor(GREY)
-  for (const line of [hospital.address, hospital.phone].filter(Boolean)) {
-    doc.text(String(line), MARGIN, doc.y, { width, align: 'center' })
-  }
+  /*
+   * Sample taken on the left, reported on the right, as on every other
+   * report from this laboratory.
+   *
+   * A doctor reading a cross match wants to know how old the sample is, same
+   * as for anything else. Printing only the reported time left that
+   * unanswerable, and a report that answers a different set of questions from
+   * the one beside it is a report somebody has to learn separately.
+   */
+  const bandY = doc.y + 6
+  doc.font('Helvetica').fontSize(8.5).fillColor(INK)
+     .text(`Sample Taken: ${when(r.sample_taken_at ?? r.created_at)}`, MARGIN, bandY,
+       { width: width * 0.4, lineBreak: false })
+  doc.font('Helvetica')
+     .text(`Reported: ${when(r.created_at)}`, MARGIN + width * 0.6, bandY,
+       { width: width * 0.4, align: 'right', lineBreak: false })
+  doc.y = bandY + 14
 
-  doc.moveTo(MARGIN, doc.y + 8).lineTo(MARGIN + width, doc.y + 8)
-     .lineWidth(1.2).strokeColor(INK).stroke()
-
-  doc.font('Helvetica-Bold').fontSize(15).fillColor(INK)
-     .text('CROSS MATCH REPORT', MARGIN, doc.y + 16, { width, align: 'center' })
-
-  /* ------------------------------------------------------ report header */
-
-  let y = doc.y + 14
-  doc.font('Helvetica').fontSize(9).fillColor(GREY)
-  doc.text(`Report No: ${r.report_no}`, MARGIN, y, { width: width / 2, lineBreak: false })
-  doc.text(`Date: ${when(r.created_at)}`, MARGIN + width / 2, y,
-    { width: width / 2, align: 'right', lineBreak: false })
-  if (r.doctor_name) {
-    y += 13
-    doc.text(`Ref. By Dr: ${r.doctor_name}`, MARGIN, y, { width, lineBreak: false })
-  }
-
-  doc.y = y + 20
+  doc.y += 18
 
   /*
    * A row is a shaded label and a centred value.
@@ -111,9 +130,18 @@ export async function crossMatchPdf(id: number): Promise<Buffer> {
 
   /* ------------------------------------------------------------ patient */
 
-  row('Patient Name  :', r.patient_name, { shade: true, big: true })
-  row('MRN  :', r.mrn)
-  row('Blood Group  :', r.patient_group ? `"${r.patient_group}"` : '—')
+  /*
+   * The patient's name and MRN are not repeated here.
+   *
+   * They are in the letterhead, two inches above, where they are on every
+   * other report from this laboratory. Printing them twice on one page makes
+   * a reader check whether the two agree, which is work for nothing.
+   *
+   * What does belong here is the blood group, because the whole report is a
+   * comparison between this and the donor's.
+   */
+  row('Patient Blood Group  :', r.patient_group ? `"${r.patient_group}"` : '—',
+    { shade: true, big: true })
   row('RH Factor  :', r.patient_rh)
 
   doc.y += 8
@@ -175,9 +203,17 @@ export async function crossMatchPdf(id: number): Promise<Buffer> {
   if (r.conclusion) {
     doc.y += 18
     const incompatible = /NOT COMPATIBLE|INCOMPATIBLE/i.test(r.conclusion)
+    /*
+     * Centred across the page.
+     *
+     * It was left aligned, which on a page whose every other line starts at
+     * the margin made the one sentence that matters look like another label.
+     * It is the line a ward sister reads and nothing else, so it sits in the
+     * middle where nothing else does.
+     */
     doc.font('Helvetica-Bold').fontSize(12.5).fillColor(INK)
        .text(String(r.conclusion).toUpperCase(), MARGIN, doc.y,
-         { width, underline: true })
+         { width, align: 'center', underline: true })
 
     /*
      * An incompatible result gets a box round it.
@@ -201,35 +237,24 @@ export async function crossMatchPdf(id: number): Promise<Buffer> {
 
   /* --------------------------------------------------------- signatures */
 
-  const sigY = doc.page.height - MARGIN - 86
-  doc.font('Helvetica-Bold').fontSize(8).fillColor(INK)
-     .text('ELECTRONICALLY VERIFIED REPORT — NO SIGNATURE REQUIRED',
-       MARGIN, sigY - 14, { width, align: 'center', lineBreak: false })
-
-  const shown = (signers ?? []).slice(0, 3)
-  if (shown.length > 0) {
-    const colW = width / shown.length
-    shown.forEach((s: any, i: number) => {
-      const x = MARGIN + i * colW
-      let cy = sigY
-      if (s.signature) {
-        try {
-          const b64 = String(s.signature).split(',').pop() ?? ''
-          doc.image(Buffer.from(b64, 'base64'), x, cy, { fit: [colW - 12, 24] })
-        } catch { /* a bad image must not stop the report */ }
-      }
-      cy += 28
-      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(INK)
-         .text(String(s.name ?? '').toUpperCase(), x, cy, { width: colW - 10 })
-      cy = doc.y
-      for (const line of [s.qualification, s.designation, s.registration]) {
-        if (!line) continue
-        doc.font('Helvetica').fontSize(6.5).fillColor(GREY)
-           .text(String(line), x, cy, { width: colW - 10 })
-        cy = doc.y
-      }
-    })
+  /* The shared row: the people who sign this are the people who sign everything. */
+  /*
+   * The signature row sits at the foot of the page, unless the content has
+   * already reached it.
+   *
+   * It was drawn at a fixed height from the bottom with no check, so a report
+   * carrying four screening lines, a long note and a boxed conclusion ran
+   * into it — pdfkit then started a new page mid-draw and the signatures came
+   * out somewhere nobody expected, or on top of the conclusion.
+   *
+   * Asking for the page first when there is not room leaves them where they
+   * belong on a page of their own, which is what every other report does.
+   */
+  const SIG_SPACE = 96
+  if (doc.y > doc.page.height - MARGIN - SIG_SPACE) {
+    doc.addPage()
   }
+  drawSignatureRow(doc, width, signers, doc.page.height - MARGIN - 72)
 
   doc.end()
   return done

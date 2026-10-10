@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
-  Search, Plus, Download, MessageCircle, Droplet, AlertTriangle, CheckCircle2
+  Search, Download, Droplet, AlertTriangle, CheckCircle2
 } from 'lucide-react'
 import { api, type SessionUser } from '../../lib/api'
 import {
@@ -38,13 +38,24 @@ function conclusionFor(direct: string, albumin: string) {
 export function CrossMatch({ me }: { me: SessionUser }) {
   const [rows, setRows] = useState<any[] | null>(null)
   const [q, setQ] = useState('')
-  const [adding, setAdding] = useState(false)
+  const [status, setStatus] = useState('all')
+  const [resulting, setResulting] = useState<any | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const load = useCallback(() => {
-    api.crossMatches(q).then(setRows).catch((e: any) => setErr(e.message))
-  }, [q])
+    api.crossMatches(q, status).then(setRows).catch((e: any) => setErr(e.message))
+  }, [q, status])
   useEffect(() => { const t = setTimeout(load, q ? 250 : 0); return () => clearTimeout(t) }, [load, q])
+
+  /*
+   * Taking the sample is the same call the work list makes. The lab order
+   * already exists, raised when the counter billed it, so this only records
+   * that the blood is now in the laboratory.
+   */
+  async function collect(r: any) {
+    try { await api.startCrossMatch(r.service_order_id); load() }
+    catch (e: any) { setErr(e.message) }
+  }
 
   function download(r: any) {
     const path = `/lab/cross-matches/${r.id}/pdf`
@@ -59,20 +70,30 @@ export function CrossMatch({ me }: { me: SessionUser }) {
   return (
     <div className="space-y-4 p-4">
       <Card title={tr('Cross match')}
-        hint={tr('Checking a bag of blood against the patient it is meant for.')}
-        action={
-          <button onClick={() => setAdding(true)}
-            className="btn-primary inline-flex items-center gap-1.5">
-            <Plus size={14} /> {tr('New cross match')}
-          </button>
-        }>
+        hint={tr('Checking a bag of blood against the patient it is meant for. Started from the work list, like any other test.')}
+>
         <ErrorNote>{err}</ErrorNote>
 
-        <div className="relative mb-3">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder={tr('Patient, MRN, donor or blood bag number')}
-            className="field pl-9" />
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="relative min-w-56 flex-1">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input value={q} onChange={(e) => setQ(e.target.value)}
+              placeholder={tr('Patient, MRN, donor or blood bag number')}
+              className="field pl-9" />
+          </div>
+          {/*
+            This tab is the only place a cross match appears now, so it has to
+            show the ones still on the bench as well as the ones written.
+          */}
+          {[['all', tr('All')], ['pending', tr('On the bench')],
+            ['reported', tr('Reported')]].map(([id, label]) => (
+            <button key={id} onClick={() => setStatus(id)}
+              className={`rounded-xl px-3 py-1.5 text-2xs transition-colors ${
+                status === id ? 'bg-brand text-white'
+                  : 'border-2 border-line bg-card text-body hover:bg-raised'}`}>
+              {label}
+            </button>
+          ))}
         </div>
 
         {!rows ? <SkeletonRows rows={5} cols={4} />
@@ -93,7 +114,7 @@ export function CrossMatch({ me }: { me: SessionUser }) {
                 {rows.map((r) => {
                   const bad = /NOT COMPATIBLE|INCOMPATIBLE/i.test(r.conclusion ?? '')
                   return (
-                    <tr key={r.id}>
+                    <tr key={r.id ?? `o${r.lab_order_id}`}>
                       <td className="px-3 py-2">
                         <span className="num text-2xs text-primary">{r.report_no}</span>
                         <span className="block num text-2xs text-muted">
@@ -105,7 +126,7 @@ export function CrossMatch({ me }: { me: SessionUser }) {
                         <span className="text-sm text-heading">{r.patient_name}</span>
                         <span className="block num text-2xs text-muted">{r.mrn}</span>
                       </td>
-                      <td className="px-3 py-2 text-sm text-body">{r.donor_name}</td>
+                      <td className="px-3 py-2 text-sm text-body">{r.donor_name ?? '—'}</td>
                       <td className="px-3 py-2 num text-2xs text-body">{r.blood_bag_no ?? '—'}</td>
                       <td className="px-3 py-2">
                         {/*
@@ -114,7 +135,16 @@ export function CrossMatch({ me }: { me: SessionUser }) {
                           warning mark, because it is the row that has to stop
                           somebody.
                         */}
-                        {!r.conclusion ? <Badge tone="warn">{tr('not concluded')}</Badge>
+                        {/*
+                          A booking with no report yet is the row the ward
+                          rings about, so it says which of the two it is
+                          waiting on rather than only that it is unfinished.
+                        */}
+                        {r.stage === 'awaiting_sample'
+                          ? <Badge tone="warn">{tr('Awaiting sample')}</Badge>
+                          : r.stage === 'on_the_bench'
+                          ? <Badge tone="warn">{tr('On the bench')}</Badge>
+                          : !r.conclusion ? <Badge tone="warn">{tr('not concluded')}</Badge>
                           : bad ? (
                             <Badge tone="bad">
                               <AlertTriangle size={10} className="mr-0.5 inline" />
@@ -128,10 +158,30 @@ export function CrossMatch({ me }: { me: SessionUser }) {
                           )}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <button onClick={() => download(r)}
-                          className="btn-ghost px-2 py-1 text-2xs">
-                          <Download size={13} />
-                        </button>
+                        {/*
+                          A cross match is finished from here now, because
+                          this is the only tab it appears in. Take the sample,
+                          then write the result; the same two steps the work
+                          list offers for every other test.
+                        */}
+                        {r.stage === 'awaiting_sample' && (
+                          <button onClick={() => collect(r)}
+                            className="btn-ghost px-2 py-1 text-2xs">
+                            {tr('Take sample')}
+                          </button>
+                        )}
+                        {r.stage === 'on_the_bench' && (
+                          <button onClick={() => setResulting(r)}
+                            className="btn-primary px-2 py-1 text-2xs">
+                            {tr('Enter result')}
+                          </button>
+                        )}
+                        {r.id && (
+                          <button onClick={() => download(r)}
+                            className="btn-ghost px-2 py-1 text-2xs">
+                            <Download size={13} />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   )
@@ -142,9 +192,15 @@ export function CrossMatch({ me }: { me: SessionUser }) {
         )}
       </Card>
 
-      {adding && (
-        <NewCrossMatch me={me} onClose={() => setAdding(false)}
-          onDone={(made: any) => { setAdding(false); load(); download(made) }} />
+      {resulting && (
+        <CrossMatchResult
+          group={{
+            patient_id: resulting.patient_id, patient_name: resulting.patient_name,
+            mrn: resulting.mrn, visit_id: resulting.visit_id
+          }}
+          test={{ lab_order_id: resulting.lab_order_id, report_no: resulting.report_no }}
+          onClose={() => setResulting(null)}
+          onDone={() => { setResulting(null); load() }} />
       )}
     </div>
   )
@@ -155,13 +211,24 @@ const clean = (s: any) => String(s ?? '')
 
 /* ------------------------------------------------------- writing one */
 
-function NewCrossMatch({ me, onClose, onDone }: {
-  me: SessionUser; onClose: () => void; onDone: (made: any) => void
+/**
+ * Entering the result of a cross match that was booked at the counter.
+ *
+ * The patient is not searched for here: they were chosen when the test was
+ * billed, and letting the laboratory pick a different one would let a report
+ * be written against somebody who never had the test. Their details are shown
+ * and cannot be edited.
+ */
+export function CrossMatchResult({ group, test, onClose, onDone }: {
+  group: any
+  test: any
+  onClose: () => void
+  onDone: (made: any) => void
 }) {
-  const [patient, setPatient] = useState<any | null>(null)
-  const [q, setQ] = useState('')
-  const [hits, setHits] = useState<any[]>([])
-  const first = useRef<HTMLInputElement>(null)
+  const patient = {
+    id: group.patient_id, name: group.patient_name, mrn: group.mrn,
+    age_years: group.age_years, gender: group.gender
+  }
 
   const [f, setF] = useState({
     patientGroup: 'O', patientRh: 'POSITIVE',
@@ -174,15 +241,6 @@ function NewCrossMatch({ me, onClose, onDone }: {
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => { first.current?.focus() }, [])
-  useEffect(() => {
-    if (q.trim().length < 2) { setHits([]); return }
-    const t = setTimeout(() => {
-      api.searchPatients(q.trim()).then(setHits).catch(() => {})
-    }, 250)
-    return () => clearTimeout(t)
-  }, [q])
 
   const set = (k: string, v: string) => setF((s) => ({ ...s, [k]: v }))
   const conclusion = conclusionFor(f.directPhase, f.albuminPhase)
@@ -200,11 +258,19 @@ function NewCrossMatch({ me, onClose, onDone }: {
   const rhMismatch = patient && f.donorRh !== f.patientRh
 
   async function save() {
-    if (!patient) { setErr(tr('Choose the patient first')); return }
     setBusy(true); setErr(null)
     try {
       const made = await api.createCrossMatch({
         patientId: patient.id,
+        visitId: group.visit_id ?? null,
+        /*
+         * The lab order is marked reported by the same call.
+         *
+         * Two steps — write the report, then mark the test done — is two
+         * chances to do one and not the other, and a cross match sitting on
+         * the bench with its report already printed is the worse half.
+         */
+        labOrderId: test.lab_order_id ?? null,
         patientGroup: f.patientGroup, patientRh: f.patientRh,
         donorName: f.donorName.trim(),
         donorAge: f.donorAge ? Number(f.donorAge) : null,
@@ -227,11 +293,11 @@ function NewCrossMatch({ me, onClose, onDone }: {
   )
 
   return (
-    <Modal title={tr('New cross match')} wide onClose={onClose}
+    <Modal title={tr('Cross match result')} wide onClose={onClose}
       hint={tr('The report prints as soon as it is saved')}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
-        <button onClick={save} disabled={busy || !patient || !f.donorName.trim()}
+        <button onClick={save} disabled={busy || !f.donorName.trim()}
           className="btn-primary">
           {busy ? tr('Saving…') : tr('Save and print')}
         </button>
@@ -239,41 +305,21 @@ function NewCrossMatch({ me, onClose, onDone }: {
       <ErrorNote>{err}</ErrorNote>
 
       {/* ------------------------------------------------------- patient */}
+      {/*
+        Shown, not chosen. The patient was decided when the test was billed,
+        and letting the laboratory pick a different one here would let a
+        report be written against somebody who never had the test.
+      */}
       <p className="label">{tr('Patient')}</p>
-      {patient ? (
-        <div className="mt-1 flex items-center justify-between rounded-xl border-2 border-line p-3">
-          <span>
-            <span className="text-sm font-medium text-heading">{patient.name}</span>
-            <span className="block num text-2xs text-muted">
-              {patient.mrn}
-              {patient.age_years != null && ` · ${patient.age_years}y`}
-              {patient.gender && ` · ${tr(patient.gender)}`}
-            </span>
-          </span>
-          <button onClick={() => { setPatient(null); setQ('') }}
-            className="btn-ghost px-2 py-1 text-2xs">{tr('Change')}</button>
-        </div>
-      ) : (
-        <div className="relative mt-1">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input ref={first} value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder={tr('Search by name, MRN or phone')} className="field pl-9" />
-          {hits.length > 0 && (
-            <ul className="mt-1 max-h-48 overflow-auto rounded-xl border-2 border-line">
-              {hits.slice(0, 8).map((p) => (
-                <li key={p.id}>
-                  <button onClick={() => { setPatient(p); setHits([]) }}
-                    className="flex w-full items-center justify-between px-3 py-2 text-left
-                               text-sm hover:bg-raised">
-                    <span>{p.name}</span>
-                    <span className="num text-2xs text-muted">{p.mrn}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+      <div className="mt-1 rounded-xl border-2 border-line bg-raised p-3">
+        <span className="text-sm font-medium text-heading">{patient.name}</span>
+        <span className="block num text-2xs text-muted">
+          {patient.mrn}
+          {patient.age_years != null && ` · ${patient.age_years}y`}
+          {patient.gender && ` · ${tr(patient.gender)}`}
+          {test?.report_no && ` · ${test.report_no}`}
+        </span>
+      </div>
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <Pick label={tr('Patient blood group')} value={f.patientGroup} options={GROUPS}

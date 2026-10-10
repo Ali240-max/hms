@@ -136,15 +136,105 @@ const buf = Buffer.from(await pdfRes.arrayBuffer())
 ok('it is a real PDF file', buf.slice(0,5).toString()==='%PDF-', buf.slice(0,8).toString())
 writeFileSync('/tmp/lab-report.pdf', buf)
 ok('it has some substance to it', buf.length > 1500, `${buf.length} bytes`)
-ok('the filename carries the report number',
-  (pdfRes.headers.get('content-disposition')||'').includes(lo.report_no),
-  pdfRes.headers.get('content-disposition'))
+/*
+ * The filename is the patient and their MRN, not the report number.
+ *
+ * It used to be the report number on this route and the patient's name on the
+ * per-visit route, so the same report saved from two places landed under two
+ * names — the lab reported files called "lab 001", and that was this route.
+ * A folder of LAB-261009-L00003.pdf is unsearchable by the only thing anybody
+ * remembers, which is the name.
+ */
+{
+  const disp = pdfRes.headers.get('content-disposition') || ''
+  const pat = await q(`/lab/orders/${lo.id}`, 'lab')
+  const who = pat.body?.report?.patient_name
+  const mrn = pat.body?.report?.mrn
+  ok('the filename names the patient', !!who && disp.includes(who), disp)
+  ok('and carries their MRN', !!mrn && disp.includes(mrn), disp)
+  ok('and not the report number', !disp.includes(lo.report_no), disp)
+
+  /*
+   * The same name reachable from the URL itself, for the download managers
+   * that ignore content-disposition and take the last path segment. IDM on
+   * the lab PC was saving files called "pdf" for exactly that reason.
+   */
+  const file = `${who} ${mrn}.pdf`
+  const named = `/lab/orders/${lo.id}/pdf/${encodeURIComponent(file)}`
+  const tk = await q('/tickets', 'lab', { method: 'POST', body: JSON.stringify({ path: named }) })
+  ok('a ticket is issued for the named path', tk.status === 200 && !!tk.body.ticket,
+    JSON.stringify(tk.body).slice(0, 90))
+  if (tk.body?.ticket) {
+    const res = await fetch(B + named + '?ticket=' + encodeURIComponent(tk.body.ticket))
+    ok('the named URL serves the same report', res.status === 200 &&
+      (res.headers.get('content-type') || '').includes('application/pdf'), `${res.status}`)
+    ok('and still names the file in the header',
+      (res.headers.get('content-disposition') || '').includes(String(who)),
+      res.headers.get('content-disposition'))
+
+    /* The segment names the file and reaches nothing. */
+    const other = await fetch(
+      `${B}/lab/orders/${lo.id === 1 ? 2 : 1}/pdf/${encodeURIComponent(file)}` +
+      '?ticket=' + encodeURIComponent(tk.body.ticket))
+    ok('a ticket cannot be pointed at another report by keeping the filename',
+      other.status === 401, `got ${other.status}`)
+  }
+  const climb = await q('/tickets', 'lab', { method: 'POST',
+    body: JSON.stringify({ path: `/lab/orders/${lo.id}/pdf/../../../staff.pdf` }) })
+  ok('a filename that tries to climb out of the path is refused',
+    climb.status === 400, `got ${climb.status}`)
+
+  /*
+   * THE ROUTE THE DOWNLOAD BUTTON ACTUALLY CALLS.
+   *
+   * This is the per-visit route, and it is the one that was still naming
+   * every file "Lab report.pdf" after the per-order route above was fixed.
+   * labFileName falls back to that string when it is handed no name, and
+   * this route took its name from visitWork(), which returns the tests on a
+   * visit and no patient at all — so the fallback was doing all the work,
+   * silently, and looking plausible while it did.
+   *
+   * It shipped broken because the last round tested the route it had
+   * changed rather than the route the button calls. Both are checked now,
+   * and the generic fallback is asserted against by name: a real report must
+   * never produce it.
+   */
+  const vr = await q(`/lab/orders/${lo.id}`, 'lab')
+  const visitId = vr.body?.report?.visit_id
+  if (!visitId) {
+    ok('the report knows which visit it belongs to', false, 'no visit_id on the report')
+  } else {
+    const vpath = `/lab/visits/${visitId}/pdf`
+    const vtk = await q('/tickets', 'lab', { method: 'POST',
+      body: JSON.stringify({ path: vpath }) })
+    const res = await fetch(`${B}${vpath}?download=1&ticket=` +
+      encodeURIComponent(vtk.body.ticket))
+    const d = res.headers.get('content-disposition') || ''
+    ok('the per-visit route serves the report', res.status === 200, `got ${res.status}`)
+    ok('it names the patient too', !!who && d.includes(who), d)
+    ok('and their MRN', !!mrn && d.includes(mrn), d)
+    ok('and never the generic fallback name', !/filename="Lab report\.pdf"/.test(d), d)
+  }
+}
 
 console.log('\n— the customisable footer —')
-r = await q('/lab/footer','admin',{method:'PUT',body:JSON.stringify({
-  labName:'Al-Shifa Clinical Laboratory', inCharge:'Dr Imran Shah',
-  inChargeTitle:'Consultant Pathologist', registrationNo:'PMC-11223',
-  contact:'Lab: 053-3512399', note:'Open 8am to 8pm' })})
+/*
+ * Named, because the assertions further down read it back.
+ *
+ * It was written inline here and referred to as FOOTER sixty lines later,
+ * which threw a ReferenceError and took the whole lab suite with it — but
+ * only on a database with no signatories configured, since the branch that
+ * uses it is the fallback. That is why it looked intermittent.
+ */
+const FOOTER = {
+  labName: 'Al-Shifa Clinical Laboratory',
+  inCharge: 'Dr Imran Shah',
+  inChargeTitle: 'Consultant Pathologist',
+  registrationNo: 'PMC-11223',
+  contact: 'Lab: 053-3512399',
+  note: 'Open 8am to 8pm'
+}
+r = await q('/lab/footer','admin',{method:'PUT',body:JSON.stringify(FOOTER)})
 ok('admin can set the footer', r.status===200 && r.body.labName==='Al-Shifa Clinical Laboratory')
 r = await q('/lab/footer','lab')
 ok('the lab reads it back', r.body.inCharge==='Dr Imran Shah')

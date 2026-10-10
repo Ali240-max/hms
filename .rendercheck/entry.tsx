@@ -29,6 +29,13 @@ import { CounterBillSlip } from '../src/client/src/components/CounterBill'
 import { ChitSlip, ReceiptSlip } from '../src/client/src/components/Chit'
 import { CrossMatch } from '../src/client/src/screens/lab/CrossMatch'
 import { ReportAccess } from '../src/client/src/screens/admin/ReportAccess'
+import { Ipd } from '../src/client/src/screens/Ipd'
+import { WardSetup } from '../src/client/src/screens/admin/WardSetup'
+import { Attendance } from '../src/client/src/screens/admin/Attendance'
+import { Kiosk } from '../src/client/src/screens/Kiosk'
+import { Audits } from '../src/client/src/screens/pharmacy/Audits'
+import { Ordering } from '../src/client/src/screens/pharmacy/Ordering'
+import { Opening } from '../src/client/src/screens/pharmacy/Opening'
 
 /**
  * Every screen and every sub-view, rendered once.
@@ -57,6 +64,13 @@ const chitDone = { ...chitPaid, status: 'completed', completed_by: 'Radiographer
 const cases: [string, () => any][] = [
   ['SignIn', () => <SignIn onSignedIn={noop} />],
   ['CrossMatch', () => <CrossMatch me={user('lab_tech')} />],
+  ['Ipd (board)', () => <Ipd me={user('ward' as any)} />],
+  ['WardSetup', () => <WardSetup />],
+  ['Attendance', () => <Attendance me={user('admin')} />],
+  ['Pharmacy audits', () => <Audits me={user('pharmacist')} />],
+  ['Pharmacy ordering', () => <Ordering me={user('pharmacist')} />],
+  ['Pharmacy opening stock', () => <Opening me={user('pharmacist')} />],
+  ['Kiosk', () => <Kiosk me={user('kiosk' as any)} />],
   ['ReportAccess', () => <ReportAccess me={user('admin')} />],
   ['Doctor (queue)', () => <Doctor me={user('doctor')} />],
   ['Doctor (earnings)', () => <Earnings me={user('doctor')} />],

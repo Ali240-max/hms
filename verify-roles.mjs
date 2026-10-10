@@ -32,6 +32,22 @@ const adminOpts = [...read('src/client/src/screens/Admin.tsx')
 const appRoutes = read('src/client/src/App.tsx')
 const routed = serverEnum.filter((r) => appRoutes.includes(`me.role === '${r}'`))
 
+/*
+ * The role lists the API will actually accept.
+ *
+ * This was the one place not checked, and it is the place that breaks: the
+ * dropdown offered 'kiosk', the database knew 'kiosk', and the staff route
+ * rejected it with a wall of zod enum text. Every list agreed except the one
+ * standing between the form and the table.
+ *
+ * There are two of these, one for creating staff and one for editing, and
+ * they are checked separately because adding a role to one and not the other
+ * is the same bug a turn later.
+ */
+const apiSrc = read('src/server/api/index.ts')
+const apiEnums = [...apiSrc.matchAll(/role:\s*z\.enum\(\[([\s\S]*?)\]\)/g)]
+  .map((m) => [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]))
+
 let fail = 0
 const check = (name, missing) => {
   if (missing.length === 0) { console.log('  ok   ' + name) }
@@ -71,6 +87,36 @@ check('the client type lists every role',
  * check with them. What still matters is below: every role must land on a
  * screen once it signs in.
  */
+check('the API has a role list to check at all', apiEnums.length >= 2 ? [] : ['none found'])
+apiEnums.forEach((list, i) => {
+  check(`the API accepts every role (list ${i + 1} of ${apiEnums.length})`,
+    serverEnum.filter((r) => !list.includes(r)))
+})
+
+/*
+ * The door terminal is denied by default.
+ *
+ * Every other role is allowed unless a route refuses it, which suits a person
+ * at a keyboard. The kiosk is a browser left signed in forever in a corridor,
+ * so it is the other way round: a short list of what it MAY reach, and a
+ * route added next month is invisible to it until somebody decides otherwise.
+ *
+ * Checked here because the first version got this wrong — patient search
+ * answered a kiosk token with 200 — and the next route to be added would do
+ * the same thing.
+ */
+const kioskGuard = /role === 'kiosk'[\s\S]{0,400}?ALLOWED\s*=\s*\[([^\]]*)\]/.exec(apiSrc)
+check('the attendance board is denied by default', kioskGuard ? [] : ['no guard found'])
+if (kioskGuard) {
+  const allowed = [...kioskGuard[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+  /* It needs the board. Anything beyond the four below is worth questioning. */
+  check('and may still read the board',
+    allowed.includes('/attendance/recent') ? [] : ['/attendance/recent'])
+  check('and reaches nothing beyond what it needs',
+    allowed.filter((a) => ![
+      '/attendance/recent', '/auth/me', '/auth/logout', '/modules'].includes(a)))
+}
+
 check('every role can be created in Admin',
   serverEnum.filter((r) => !adminOpts.includes(r) && !RETIRED.includes(r)))
 // admin is the bootstrap account and has its own setup path, so it needs no

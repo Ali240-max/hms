@@ -10,15 +10,17 @@ import { useModules } from '../lib/modules'
 import { BackupLocationCard, DangerZoneCard } from './admin/DangerZone'
 import { AdminAccess } from './admin/AdminAccess'
 import { ReportAccess } from './admin/ReportAccess'
+import { WardSetup } from './admin/WardSetup'
+import { Attendance } from './admin/Attendance'
 import {
   LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
   Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle,
-  ShieldCheck, Upload
-} from 'lucide-react'
+  ShieldCheck, Upload, BedDouble, Clock } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
 const TABS = ['Overview', 'Staff', 'Services', 'Doctor shares', 'Departments',
-  'Reports', 'Access', 'Report access', 'Demo data', 'Settings'] as const
+  'Wards and beds', 'Attendance', 'Reports', 'Access', 'Report access',
+  'Demo data', 'Settings'] as const
 type Tab = typeof TABS[number]
 
 const NAV: (NavItem & { id: Tab })[] = [
@@ -28,6 +30,8 @@ const NAV: (NavItem & { id: Tab })[] = [
   { id: 'Doctor shares', label: 'Doctor shares', glyph: 'D', icon: Percent },
   { id: 'Services', label: 'Services', glyph: 'Sv', icon: ClipboardList, section: 'Setup' },
   { id: 'Departments', label: 'Departments', glyph: 'Dp', icon: Building2 },
+  { id: 'Wards and beds', label: 'Wards and beds', glyph: 'Wb', icon: BedDouble },
+  { id: 'Attendance', label: 'Attendance', glyph: 'At', icon: Clock },
   { id: 'Access', label: 'Access', glyph: 'Ac', icon: ShieldCheck },
   { id: 'Report access', label: 'Report access', glyph: 'Ra', icon: BarChart3 },
   { id: 'Settings', label: 'Settings', glyph: 'St', icon: Settings },
@@ -97,6 +101,8 @@ export function Admin({ me }: { me: SessionUser }) {
       {tab === 'Settings' && <BackupLocationCard />}
       {tab === 'Settings' && <DangerZoneCard me={me} />}
       {tab === 'Reports' && <Reports me={me} />}
+      {tab === 'Wards and beds' && <WardSetup />}
+      {tab === 'Attendance' && <Attendance me={me} />}
       {tab === 'Access' && <AdminAccess me={me} />}
       {tab === 'Report access' && <ReportAccess me={me} />}
       </motion.div>
@@ -305,7 +311,8 @@ function AddStaff({ onClose, onDone }: { onClose: () => void; onDone: () => void
   const [f, setF] = useState({
     username: '', displayName: '', password: '', role: 'main_counter',
     departmentId: '', phone: '', specialisation: '', qualification: '', room: '',
-    fee: '', consultShare: '100', serviceShare: '0', pharmacyAdmin: false
+    fee: '', consultShare: '100', serviceShare: '0', pharmacyAdmin: false,
+    shiftStart: '', shiftEnd: '', attendanceRequired: true
   })
   const [depts, setDepts] = useState<any[]>([])
   const [busy, setBusy] = useState(false)
@@ -322,6 +329,9 @@ function AddStaff({ onClose, onDone }: { onClose: () => void; onDone: () => void
         password: f.password, role: f.role,
         departmentId: f.departmentId ? Number(f.departmentId) : null,
         phone: f.phone.trim() || null,
+        shiftStart: f.shiftStart || null,
+        shiftEnd: f.shiftEnd || null,
+        attendanceRequired: f.attendanceRequired,
         ...(isDoctor ? {
           doctor: {
             specialisation: f.specialisation.trim() || null,
@@ -373,6 +383,15 @@ function AddStaff({ onClose, onDone }: { onClose: () => void; onDone: () => void
             <option value="receptionist">{tr('OPD counter — queue and vitals')}</option>
             <option value="ipd_counter">{tr('Emergency — admissions and bedside medicines')}</option>
             <option value="store_keeper">{tr('Stores — hospital consumables')}</option>
+            <option value="ward">{tr('Ward — beds, admissions and discharges')}</option>
+            {/*
+              The terminal by the door. It can read the scan board and nothing
+              else, so it is safe to leave signed in on a machine anybody can
+              reach.
+            */}
+            <option value="kiosk">
+              {tr('Attendance board — the screen by the door, nothing else')}
+            </option>
             <option value="lab_tech">{tr('Laboratory — samples and results')}</option>
             <option value="reports">{tr('Reports — every report, read only')}</option>
             <option value="radiology">{tr('Radiology — x-ray and imaging')}</option>
@@ -388,6 +407,46 @@ function AddStaff({ onClose, onDone }: { onClose: () => void; onDone: () => void
             {depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </Field>
+
+      {/*
+        The shift, and whether this person is expected at all.
+
+        A consultant who comes when there are patients should not appear on an
+        absentee list every morning; a list full of people nobody expected is
+        a list nobody reads. The shift is what lateness is measured against,
+        so somebody with none set is present or absent and never late.
+      */}
+      <p className="label mt-4">{tr('Attendance')}</p>
+      <label className="mt-1 flex cursor-pointer items-start gap-2">
+        <input type="checkbox" checked={!f.attendanceRequired}
+          onChange={(e) => setF({ ...f, attendanceRequired: !e.target.checked })}
+          className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>
+          <span className="block text-sm text-heading">
+            {tr('This person does not need to mark attendance')}
+          </span>
+          <span className="block text-2xs text-muted">
+            {tr('They will never show as absent or late, and their finger will not be sent to the readers.')}
+          </span>
+        </span>
+      </label>
+
+      {f.attendanceRequired && (
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Field label={tr('Shift starts')}
+            hint={tr('Lateness is measured from here. Leave blank if there is no set time.')}>
+            <input type="time" value={f.shiftStart}
+              onChange={(e) => setF({ ...f, shiftStart: e.target.value })}
+              className="field num mt-1" />
+          </Field>
+          <Field label={tr('Shift ends')}
+            hint={tr('Earlier than the start means a night shift that crosses midnight.')}>
+            <input type="time" value={f.shiftEnd}
+              onChange={(e) => setF({ ...f, shiftEnd: e.target.value })}
+              className="field num mt-1" />
+          </Field>
+        </div>
+      )}
         <Field label={tr('Password')} hint={f.role === 'admin' ? 'at least 8 characters' : 'at least 4'}>
           <input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })}
             className="field" />
@@ -517,6 +576,8 @@ const TAB_PERMISSION: Record<string, string> = {
   'Departments': 'admin.departments',
   'Access': 'admin.access',
   'Report access': 'admin.access',
+  'Wards and beds': 'admin.services.edit',
+  'Attendance': 'admin.staff.view',
   'Demo data': 'admin.demo',
   'Settings': 'admin.settings'
 }
@@ -526,6 +587,7 @@ function ServicesTab() {
   const [group, setGroup] = useState('lab')
   const [editing, setEditing] = useState<any | 'new' | null>(null)
   const [setup, setSetup] = useState<any | null>(null)
+  const [err, setErr] = useState<string | null>(null)
   const load = useCallback(() => { api.services(true).then(setRows).catch(() => {}) }, [])
   useEffect(() => { load() }, [load])
 
@@ -545,6 +607,8 @@ function ServicesTab() {
         className="btn-primary inline-flex items-center gap-1.5">
         <Plus size={14} /> {tr('Add service')}
       </button>}>
+
+      <ErrorNote>{err}</ErrorNote>
 
       <Tabs id="service-groups" value={group} onChange={setGroup} className="mb-4 w-fit"
         tabs={SERVICE_GROUPS.map((g) => ({
@@ -610,8 +674,26 @@ function ServicesTab() {
                       its own button because most services never need it and
                       the ones that do need a lot of rows.
                     */}
-                    <button onClick={() => setSetup(s)} className="ml-1 btn-ghost px-2 py-1 text-2xs">
-                      {tr('Test setup')}
+                    {/* Cross match has a fixed report and nothing to set up. */}
+                    {s.code !== 'XMATCH' && (
+                      <button onClick={() => setSetup(s)}
+                        className="ml-1 btn-ghost px-2 py-1 text-2xs">
+                        {tr('Test setup')}
+                      </button>
+                    )}
+                    {/*
+                      Deleting is refused by the server once the service has
+                      been ordered, because every bill and report naming it
+                      would point at nothing. The message says to switch it
+                      off instead, which is almost always what is wanted.
+                    */}
+                    <button
+                      onClick={() => {
+                        setErr(null)
+                        api.deleteService(s.id).then(load).catch((e: any) => setErr(e.message))
+                      }}
+                      className="ml-1 btn-ghost px-2 py-1 text-2xs text-bad">
+                      {tr('Delete')}
                     </button>
                   </td>
                 </tr>
@@ -639,6 +721,13 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
     price: initial ? rs(initial.price_paisa) : '',
     share: initial ? bpToPct(initial.default_share_bp) : '0',
     departmentId: initial?.department_id ? String(initial.department_id) : '',
+    /*
+     * A new procedure starts needing a doctor, which is the common case. An
+     * existing service keeps whatever it was saved with.
+     */
+    requiresDoctor: initial
+      ? !!initial.requires_doctor
+      : (defaultCategory ?? 'lab') === 'procedure',
     isActive: initial ? initial.is_active : true
   })
   const [depts, setDepts] = useState<any[]>([])
@@ -661,7 +750,8 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
                   name: f.name.trim(), code: f.code.trim() || null,
                   category: f.category, pricePaisa: toPaisa(f.price),
                   defaultShareBp: pctToBp(f.share), isActive: f.isActive,
-                  departmentId: f.departmentId ? Number(f.departmentId) : null
+                  departmentId: f.departmentId ? Number(f.departmentId) : null,
+                  requiresDoctor: f.requiresDoctor
                 })
                 onDone()
               } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
@@ -707,6 +797,34 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
             <input value={f.share} onChange={(e) => setF({ ...f, share: e.target.value })} className="field num" />
           </Field>
         </div>
+
+        {/*
+          Who performed it, where that matters.
+
+          A dressing, a nebulisation, an ECG: somebody does these, and that
+          person has a share in them. Billed with nobody named, the share has
+          nowhere to go and vanishes without trace — a month later the doctor
+          asks why their earnings are short and there is nothing to answer
+          with.
+
+          A flag per service rather than a rule about the procedure category,
+          because the two do not line up: some procedures are nurse-led and
+          need no doctor, and in a small hospital some tests genuinely are
+          performed by a named consultant. Whoever sets the service up knows;
+          the category does not.
+        */}
+        <label className="flex items-start gap-2 rounded-lg border-2 border-line p-3">
+          <input type="checkbox" checked={f.requiresDoctor} className="mt-0.5"
+            onChange={(e) => setF({ ...f, requiresDoctor: e.target.checked })} />
+          <span>
+            <span className="block text-sm text-heading">
+              {tr('A doctor must be named to bill this')}
+            </span>
+            <span className="block text-2xs text-muted">
+              {tr('The counter will not take payment without choosing who is performing it, so the share reaches them. Usual for procedures.')}
+            </span>
+          </span>
+        </label>
 
         {toPaisa(f.price) > 0 && (
           <div className="rounded-lg border border-line bg-tint p-3 text-2xs">
@@ -1285,6 +1403,8 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
    * exist for them, so it is noise on the screen and a save that does nothing.
    */
   const modules = useModules()
+  const [layout, setLayout] =
+    useState<'standard' | 'qualitative' | 'ranges'>('standard')
   const [params, setParams] = useState<any[]>([])
   const [recipe, setRecipe] = useState<any[]>([])
   const [items, setItems] = useState<any[]>([])
@@ -1294,10 +1414,34 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
 
   useEffect(() => {
     api.serviceParameters(service.id)
-      .then((p) => setParams(p.map((x: any) => ({
-        key: newId(), name: x.name, unit: x.unit ?? '',
-        refLow: x.ref_low ?? '', refHigh: x.ref_high ?? '', refText: x.ref_text ?? ''
-      })))).catch(() => {})
+      .then((p) => {
+        /*
+         * A section becomes a row of its own.
+         *
+         * It is stored against the first parameter of its block, which is
+         * the right shape for the database and the wrong one for a person: a
+         * Section box beside every single line, almost always empty, is a
+         * column of noise. On screen a heading is a row, where it reads the
+         * way it prints.
+         */
+        const rows: any[] = []
+        for (const x of p as any[]) {
+          if (x.section) rows.push({ key: newId(), kind: 'section', heading: x.section })
+          rows.push({
+            key: newId(), kind: 'param', name: x.name, unit: x.unit ?? '',
+            refLow: x.ref_low ?? '', refHigh: x.ref_high ?? '', refText: x.ref_text ?? '',
+            maleLow: x.male_low ?? '', maleHigh: x.male_high ?? '',
+            femaleLow: x.female_low ?? '', femaleHigh: x.female_high ?? '',
+            hasSexRanges: !!x.has_sex_ranges,
+            refOp: x.ref_op ?? '<', refValue: x.ref_value ?? ''
+          })
+        }
+        setParams(rows)
+      }).catch(() => {})
+    api.reportLayout(service.id)
+      .then((r: any) => setLayout(
+        ['qualitative', 'ranges'].includes(r.layout) ? r.layout : 'standard'))
+      .catch(() => {})
     api.serviceConsumables(service.id)
       .then((c) => setRecipe(c.map((x: any) => ({
         key: newId(), itemId: x.item_id, name: x.item_name, unitLabel: x.unit_label,
@@ -1309,14 +1453,54 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
   async function save() {
     setBusy(true); setErr(null); setSaved(false)
     try {
-      await api.saveServiceParameters(service.id, params
-        .filter((p) => p.name.trim())
-        .map((p) => ({
-          name: p.name.trim(), unit: p.unit.trim() || null,
-          refLow: p.refLow === '' ? null : Number(p.refLow),
-          refHigh: p.refHigh === '' ? null : Number(p.refHigh),
-          refText: p.refText.trim() || null
-        })))
+      /*
+       * Each heading is carried by the parameter that follows it.
+       *
+       * A heading with no lines under it is dropped rather than saved: it
+       * would print as a heading for nothing, and the row exists on screen
+       * only as somewhere to type.
+       */
+      let pending: string | null = null
+      const flat: any[] = []
+      for (const row of params) {
+        if (row.kind === 'section') {
+          if (row.heading.trim()) pending = row.heading.trim()
+          continue
+        }
+        if (!row.name.trim()) continue
+        flat.push({
+          name: row.name.trim(), unit: row.unit.trim() || null,
+          refLow: row.refLow === '' ? null : Number(row.refLow),
+          refHigh: row.refHigh === '' ? null : Number(row.refHigh),
+          /*
+           * One normal value per row, never three.
+           *
+           * A row used to offer a low and high, a free-text box AND two sex
+           * boxes, with nothing saying which won. The layout now decides: a
+           * numbers row says low and high (or a pair for each sex), a written
+           * range says an operator and a number, and only the yes-or-no
+           * layout keeps free text.
+           */
+          refText: layout === 'qualitative' ? (row.refText?.trim() || null) : null,
+          maleLow: row.maleLow === '' ? null : Number(row.maleLow),
+          maleHigh: row.maleHigh === '' ? null : Number(row.maleHigh),
+          femaleLow: row.femaleLow === '' ? null : Number(row.femaleLow),
+          femaleHigh: row.femaleHigh === '' ? null : Number(row.femaleHigh),
+          hasSexRanges: !!row.hasSexRanges,
+          /*
+           * The operator is only meaningful on a written range, so it is sent
+           * only for that layout. Sending it everywhere would flag a CBC line
+           * against a limit nobody typed.
+           */
+          refOp: layout === 'ranges' && row.refValue !== '' ? (row.refOp || '<') : null,
+          refValue: layout === 'ranges' && row.refValue !== ''
+            ? Number(row.refValue) : null,
+          section: pending
+        })
+        pending = null
+      }
+      await api.saveServiceParameters(service.id, flat)
+      await api.saveReportLayout(service.id, layout)
       if (modules.stores) await api.saveServiceConsumables(service.id, recipe
         .filter((r) => r.itemId && Number(r.qty) > 0)
         .map((r) => ({ itemId: r.itemId, qty: Number(r.qty) })))
@@ -1340,27 +1524,174 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
         {tr('One row per line on the report. Leave the range blank for results that are words rather than numbers, and put the expected answer in Normal reading instead.')}
       </p>
 
+      {/*
+        How many columns the printed report has.
+
+        A chemistry panel needs units and a numeric range. A test answering
+        POSITIVE or NEGATIVE has neither, and two empty columns on the page
+        read as missing information rather than as columns that do not apply.
+      */}
+      <div className="mb-3 flex flex-wrap gap-3 rounded-xl border-2 border-line p-3">
+        {([
+          ['standard', tr('Numbers'), tr('Test, result, normal values, units')],
+          ['qualitative', tr('Positive or negative'), tr('Test, result, normal range')],
+          ['ranges', tr('Written range'), tr('Test, result, normal value')]
+        ] as const).map(([id, label, blurb]) => (
+          <label key={id} className="flex flex-1 cursor-pointer items-start gap-2">
+            <input type="radio" name="report-layout" checked={layout === id}
+              onChange={() => setLayout(id)} className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <span className="block text-sm text-heading">{label}</span>
+              <span className="block text-2xs text-muted">{blurb}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
       {params.length > 0 && (
         <table className="w-full">
           <thead className="thead-strip">
             <tr>
-              <Th>{tr('Name')}</Th><Th w="w-20">{tr('Unit')}</Th>
-              <Th w="w-20" right>{tr('Low')}</Th><Th w="w-20" right>{tr('High')}</Th>
-              <Th w="w-32">{tr('Normal reading')}</Th><Th w="w-8" />
+              <Th>{tr('Name')}</Th>
+              {/* Units and a numeric range mean nothing to a yes-or-no test. */}
+              {layout === 'standard' && <>
+                <Th w="w-20">{tr('Unit')}</Th>
+                {/*
+                  The sex ranges stand where the single pair stands: they are
+                  the same thing said twice over. In the normal value column
+                  the row appeared to claim two different ranges.
+                */}
+                <Th w="w-44" right>{tr('Low / High')}</Th>
+              </>}
+              {layout === 'ranges' && <Th w="w-20">{tr('Unit')}</Th>}
+              <Th w="w-44">{tr('Normal value')}</Th>
+              {layout === 'standard' && <Th w="w-10" right>{tr('M/F')}</Th>}
+              <Th w="w-8" />
             </tr>
           </thead>
           <tbody className="divide-y divide-divide">
-            {params.map((p, i) => (
+            {params.map((p, i) => p.kind === 'section' ? (
+              /*
+                A heading, spanning the row.
+                Everything below it belongs to it until the next one, which is
+                how it reads on the printed report.
+              */
+              <tr key={p.key} className="bg-raised">
+                <td colSpan={layout === 'standard' ? 6 : 2} className="px-1 py-1">
+                  <input value={p.heading} autoFocus={!p.heading}
+                    onChange={(e) => setParams((ps) => ps.map((x, j) =>
+                      j === i ? { ...x, heading: e.target.value } : x))}
+                    placeholder={tr('Section heading, e.g. After 1hr')}
+                    className="field py-1 text-2xs font-semibold" />
+                </td>
+                <td className="pr-1 text-right">
+                  <button onClick={() => setParams((ps) => ps.filter((_, j) => j !== i))}
+                    className="rounded-lg px-1.5 text-muted hover:bg-bad/10 hover:text-bad">&times;</button>
+                </td>
+              </tr>
+            ) : (
               <tr key={p.key}>
-                {(['name', 'unit', 'refLow', 'refHigh', 'refText'] as const).map((f) => (
+                {(layout === 'standard'
+                  ? (['name', 'unit'] as const)
+                  : layout === 'ranges'
+                  ? (['name', 'unit'] as const)
+                  : (['name'] as const)
+                ).map((f) => (
                   <td key={f} className="px-1 py-1">
                     <input value={p[f]}
                       onChange={(e) => setParams((ps) => ps.map((x, j) =>
                         j === i ? { ...x, [f]: e.target.value } : x))}
-                      className={`field py-1 text-2xs ${
-                        f === 'refLow' || f === 'refHigh' ? 'num text-right' : ''}`} />
+                      className="field py-1 text-2xs" />
                   </td>
                 ))}
+
+                {/*
+                  One normal value, or one for each sex.
+
+                  Haemoglobin is 13.0 to 17.5 for a man and 11.5 to 15.0 for a
+                  woman, and a single box could only ever hold one of them. The
+                  switch is per row because it is true of two or three lines on
+                  a CBC and of none on most other tests.
+
+                  Free text throughout: a laboratory writes "< 0.50" and
+                  "Upto 15 Years: < 345", neither of which is a number.
+                */}
+                {layout === 'standard' && (
+                  <td className="px-1 py-1">
+                    {p.hasSexRanges ? (
+                      <div className="grid grid-cols-2 gap-1">
+                        {([['maleLow', 'M low'], ['maleHigh', 'M high'],
+                           ['femaleLow', 'F low'], ['femaleHigh', 'F high']] as const)
+                          .map(([f, label]) => (
+                          <input key={f} value={p[f] ?? ''} placeholder={tr(label)}
+                            inputMode="decimal"
+                            onChange={(e) => setParams((ps) => ps.map((x, k) =>
+                              k === i ? { ...x, [f]: e.target.value } : x))}
+                            className="field num py-1 text-2xs" />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex gap-1">
+                        {(['refLow', 'refHigh'] as const).map((f) => (
+                          <input key={f} value={p[f] ?? ''} inputMode="decimal"
+                            placeholder={tr(f === 'refLow' ? 'Low' : 'High')}
+                            onChange={(e) => setParams((ps) => ps.map((x, k) =>
+                              k === i ? { ...x, [f]: e.target.value } : x))}
+                            className="field num py-1 text-2xs" />
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                )}
+
+                <td className="px-1 py-1">
+                  {layout === 'ranges' ? (
+                    <div className="flex gap-1">
+                      <select value={p.refOp ?? '<'}
+                        onChange={(e) => setParams((ps) => ps.map((x, k) =>
+                          k === i ? { ...x, refOp: e.target.value } : x))}
+                        className="field w-16 py-1 text-2xs">
+                        {['<', '<=', '>', '>=', '='].map((o) =>
+                          <option key={o} value={o}>{o}</option>)}
+                      </select>
+                      <input value={p.refValue ?? ''} inputMode="decimal"
+                        onChange={(e) => setParams((ps) => ps.map((x, k) =>
+                          k === i ? { ...x, refValue: e.target.value } : x))}
+                        placeholder="0.50" className="field num py-1 text-2xs" />
+                    </div>
+                  ) : layout === 'qualitative' ? (
+                    <input value={p.refText}
+                      onChange={(e) => setParams((ps) => ps.map((x, k) =>
+                        k === i ? { ...x, refText: e.target.value } : x))}
+                      placeholder={tr('Negative, Non reactive')}
+                      className="field py-1 text-2xs" />
+                  ) : (
+                    /*
+                      Numbers: the range is stated in the Low / High column
+                      beside this one, so here it is only shown back.
+                    */
+                    <span className="text-2xs text-muted">
+                      {p.hasSexRanges
+                        ? [p.maleLow && p.maleHigh ? `M: ${p.maleLow} - ${p.maleHigh}` : null,
+                           p.femaleLow && p.femaleHigh
+                             ? `F: ${p.femaleLow} - ${p.femaleHigh}` : null]
+                            .filter(Boolean).join('  ') || tr('from Low / High')
+                        : p.refLow !== '' && p.refHigh !== ''
+                          ? `${p.refLow} - ${p.refHigh}` : tr('from Low / High')}
+                    </span>
+                  )}
+                </td>
+
+                {layout === 'standard' && (
+                  <td className="px-1 py-1 text-center">
+                    <input type="checkbox" checked={!!p.hasSexRanges}
+                      title={tr('Different normal values for men and women')}
+                      onChange={(e) => setParams((ps) => ps.map((x, j) =>
+                        j === i ? { ...x, hasSexRanges: e.target.checked } : x))}
+                      className="h-4 w-4" />
+                  </td>
+                )}
+
                 <td className="pr-1 text-right">
                   <button onClick={() => setParams((ps) => ps.filter((_, j) => j !== i))}
                     className="rounded-lg px-1.5 text-muted hover:bg-bad/10 hover:text-bad">&times;</button>
@@ -1371,9 +1702,22 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
         </table>
       )}
 
-      <button onClick={() => setParams((ps) => [...ps, {
-        key: newId(), name: '', unit: '', refLow: '', refHigh: '', refText: '' }])}
-        className="btn-ghost mt-2 text-2xs">{tr('Add a line')}</button>
+      <div className="mt-2 flex gap-2">
+        <button onClick={() => setParams((ps) => [...ps, {
+          key: newId(), kind: 'param', name: '', unit: '',
+          refLow: '', refHigh: '', refText: '',
+          maleLow: '', maleHigh: '', femaleLow: '', femaleHigh: '',
+          hasSexRanges: false, refOp: '<', refValue: '' }])}
+          className="btn-ghost text-2xs">{tr('Add a line')}</button>
+        {/*
+          A heading goes on the end, and the lines typed after it fall under
+          it. That is the order somebody builds a report in: type the block,
+          name it, type the next block.
+        */}
+        <button onClick={() => setParams((ps) => [...ps, {
+          key: newId(), kind: 'section', heading: '' }])}
+          className="btn-ghost text-2xs">{tr('Add a section')}</button>
+      </div>
 
       {modules.stores && (
       <div className="mt-5 border-t-2 border-divide pt-4">
@@ -1484,6 +1828,8 @@ function EditStaff({ user, onClose, onDone }: {
             <option value="receptionist">{tr('OPD counter')}</option>
             <option value="ipd_counter">{tr('Emergency')}</option>
             <option value="doctor">{tr('Doctor')}</option>
+            <option value="ward">{tr('Ward')}</option>
+            <option value="kiosk">{tr('Attendance board')}</option>
             <option value="lab_tech">{tr('Laboratory')}</option>
             <option value="radiology">{tr('Radiology')}</option>
             <option value="store_keeper">{tr('Stores')}</option>

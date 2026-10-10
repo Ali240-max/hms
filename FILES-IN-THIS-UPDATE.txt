@@ -1,49 +1,293 @@
-57 files. Three migrations (0019, 0020, 0021_cross_match.sql).
+v52 — 62 files. Four migrations (0032 through 0035).
 
-DELETE after unzipping — stale, breaks the typecheck:
-  src/client/src/components/PdfPreview.tsx
+APPLY THIS INSTEAD OF v47 THROUGH v51. It contains all of them.
 
-Then:  npm install && npm run build && npm run verify
+  npm install && npm run build && npm run verify
 
-CROSS MATCH — now has its screen
-  Laboratory sidebar > Cross match. Its own tab rather than a button on the
-  work list, because a cross match is not a test somebody ordered and paid
-  for at the counter: it is a check run against a bag of blood, with a donor
-  on one side who is not a patient of the hospital at all. Radiology does not
-  see the tab.
+The migrations run by themselves when the server starts.
 
-  The list shows every report with a green or red result badge, searchable by
-  patient, MRN, donor or blood bag number.
 
-  New cross match: find the patient, fill in the donor, five screening
-  answers, two phases. Everything defaults to what is written nearly every
-  time, so a normal report is a name, a bag number and Save.
+THE LAB REPORT FILENAME — AND WHY MY LAST FIX DID NOT WORK
+==========================================================
 
-  Three things it says out loud:
-   * the conclusion, shown live and derived from the two phases — never typed
-   * a blood group or RH mismatch between donor and patient, as a WARNING not
-     a block, since O negative to anybody is deliberate
-   * a positive screening result, in red, saying the bag should not be issued
+It saved as "Lab report.pdf" because that is the fallback string in the code,
+and the fallback was doing all the work.
 
-  Saving prints the PDF straight away.
+There are two routes that serve a lab report: one per lab order, one per
+visit. Last update I fixed the per-order route and tested it. The Download
+button calls the PER-VISIT one, and that route took the patient's name from a
+function that returns the tests on a visit and no patient at all — so it got
+nothing, fell back to the generic name, and looked plausible doing it.
 
-  npm run verify:crossmatch — 22 assertions, no server needed.
+I tested the route I had changed instead of the route the button calls. That
+is the whole reason it shipped still broken, and the test now covers the
+per-visit route and asserts against the fallback string by name: a real report
+must never produce it. Putting the old code back makes three assertions fail
+with "Lab report.pdf" in the message, which is how I confirmed it reproduces
+what you saw.
 
-ALSO IN HERE
-  Report filenames as "Sami Ullah LAB-000351.pdf".
-  WhatsApp button beside each finished report (half-automatic — see below).
-  Report access per login, per-PC printers, department reports, new charts.
 
-WHATSAPP IS HALF-AUTOMATIC
-  It saves the PDF and opens the patient's chat with the message written. YOU
-  DRAG THE FILE IN. WhatsApp Web takes a number and a line of text from a
-  link and nothing else; there is no attachment parameter, by design. Fully
-  automatic needs the WhatsApp Business API, which needs internet.
+LAB REPORT LAYOUT
+=================
 
-VERIFIED
-  npm run verify passes every offline check on a copy of your tree:
-  typecheck, 72 renders, translations, tabs, print, cross match, roles, LAN.
-  Build clean. Both cross match PDFs generated and read back.
+LOGO SIZE. New setting in Lab → Report setup, next to the position: a slider
+and a box, 40% to 400%, default 100. A logo is whatever file you happen to
+have — a wide banner fills the default box, a tall round emblem fits inside it
+by its height and prints a third of the size, which is what you saw. Nothing
+about the file says what size it should be, so print a report, look at it,
+adjust. The hospital name and the patient block both move out of the way as
+the logo grows, so a large one does not print over them.
 
-  The thirteen HTTP suites still could not run here — my sandbox lost its
-  loopback networking. Run `npm run verify` with the server up.
+The cross match report reads the same setting, so the two reports from one
+laboratory cannot show the mark at different sizes.
+
+THE FOOTER RULE. It sat at a fixed height from the bottom of the page while a
+signatory block is as tall as that person has lines — signature image, name,
+qualification, designation, registration number. Three filled-in signatories
+reached past it by less than a point, which is why it looked like a touch
+rather than an overlap, and a wrapped name went straight through.
+
+It is now placed below whatever the signatures actually reached, measured
+rather than assumed, with more room reserved above them. On the test case
+there are 27 points of clear space where there used to be 0.8.
+
+Worth noting how that check nearly fooled me: the rule is drawn, not written,
+so no text extraction can see it. My first version of the check measured the
+gap to the footer's first line of text instead and passed cleanly on a layout
+I could see was wrong. The rule sits 15 points above that line, so the check
+now derives its position and compares against that.
+
+"FINAL REPORT" IS GONE. It printed between the sample and reported times and
+said "Final Report" on every sheet that ever reached a patient, because
+nothing unverified leaves the laboratory. A label that never varies is not
+information, and it sat in the middle of the one band whose job is to show how
+old the sample is.
+
+
+ORDERS AND RECEIVING ARE IN PACKS
+=================================
+
+You were right and I had it backwards. An order goes to a distributor, a
+distributor ships packs, and the number on the sheet has to be packs or
+somebody at the depot does the division.
+
+  The order box is now PACKS.
+  The suggestion is in packs, ROUNDED UP — 95 units of a pack of ten is ten
+  packs, not nine, because a depot cannot split one.
+  Receiving takes those packs straight across with no conversion. It used to
+  divide units into packs, which meant the figure on your screen could differ
+  from the figure on the sheet the rep was holding.
+
+The unit figure is kept beside it everywhere, because the shelf is counted in
+units and the sales figures are in units. Orders raised before this update are
+converted on upgrade.
+
+THE ORDER PDF drops Sold/7d and In stock. You asked for it and you were right
+for a second reason: that sheet leaves the building, and what your shop holds
+and what it sells is nobody's business at the depot. Both figures are still on
+the order inside the system, where the question actually gets asked.
+
+STOCK FIGURES NOW READ "1X10, 250" — the pack and the total units together,
+on the order screen, the order detail and the opening stock screen. Neither
+answers the question alone: "250" does not say whether that is twenty-five
+strips or two and a half boxes, and "25 packs" does not say what is left to
+sell.
+
+
+A BUG I FOUND WHILE DOING THAT, AND IT IS WORTH READING
+=======================================================
+
+RECEIVING AGAINST A PURCHASE ORDER NEVER CLOSED THE ORDER IN THE REAL APP.
+
+The route that books a delivery validates its input against a schema, and that
+schema never declared the purchase order id. The validator strips what it does
+not declare — so the screen sent it, the server silently dropped it, the stock
+went in, and the order stayed open forever with no delivery linked to it.
+
+My suite tested the function underneath the route, where it worked perfectly.
+Nothing tested the route. If you have been receiving against orders since v50,
+check Order → Orders: anything still showing as waiting that you know arrived
+can be deleted, and it will be marked cancelled rather than removed because a
+delivery points at it.
+
+There is now a test that goes through the route and fails the moment that
+field is dropped again.
+
+
+TAX WHEN RECEIVING
+==================
+
+Two taxes, because they are two different things.
+
+PER MEDICINE, on each line. A Tax % column in the receive table, defaulted
+from the medicine and correctable per delivery — what a distributor charged
+tax at is a fact about the invoice in front of you. Ten packs at Rs 100 with
+10% is Rs 110. Bonus packs are not taxed, because they are free.
+
+ON THE INVOICE TOTAL, at the bottom. Whatever the distributor adds — a further
+sales tax, a withholding line, a levy. It is computed on goods plus the
+per-line tax, which is what the distributors here do: the figure at the bottom
+of their invoice is worked out on the invoice as it stands. Taking it off the
+goods alone would under-state every delivery by a few rupees and leave your
+ledger disagreeing with their paper.
+
+The totals block now shows all four lines: goods, line tax, invoice tax, and
+the total.
+
+
+STOCK ADJUSTMENT VALUE
+======================
+
+Two new columns on Stock Adjustment Detail: Added and Removed, in rupees. Each
+row fills exactly one and the other prints BLANK rather than 0.00, because a
+column of zeroes reads as real figures and hides the one that matters.
+
+Both are totalled on the Grand Total row, and under it:
+
+  Stock value added          Rs 6,090.00
+  Stock value removed        Rs 2,500.00
+  Net change                 Rs 3,590.00 MORE stock than the system held
+
+Said in words rather than left as a signed number, because "-4,210.00" in a
+Net column gets read as a loss by some people and as a correction by others.
+
+THE COST IS CAPTURED WHEN THE ADJUSTMENT IS MADE, weighted across the batches
+actually on the shelf — a shortfall of a hundred units does not come out of
+one batch, and picking the cheapest or the dearest would both be a lie.
+Frozen onto the line, because reading today's purchase price to value a
+correction made in August would quietly revalue every past figure each time a
+distributor raised a rate.
+
+Adjustments made before this update are valued at the medicine's current
+purchase price, which is an estimate rather than a record. Where a medicine has
+no purchase price set they show as 0.00 — that is honest, not a bug.
+
+
+DISCOUNTS AT THE PHARMACY COUNTER
+=================================
+
+Pharmacy → Access, at the top. Two settings:
+
+  A switch. Off, the counter cannot reduce a bill at all.
+  A ceiling, as a percentage of the bill total. Zero means no limit.
+
+Measured against the WHOLE BILL, not per line. Three lines discounted ten per
+cent each is ten per cent of the bill; one line at thirty is not, and a
+per-line check would let a big discount be split across lines to get past it.
+
+Enforced on the server, not just hidden in the screen, and the refusal names
+the figure, the limit and the rupees: "That discount is 25.0% of the bill. The
+most allowed is 10%, which on this bill is Rs 16.00."
+
+Zero per cent means no ceiling rather than no discount — that is what the
+switch is for, and making zero mean both would be ambiguous.
+
+One thing to know: the billing screen has no discount box yet, so today a
+discount reaches a sale through the API rather than the till. These rules are
+on the server, which is where they belong, and they will hold whenever that
+box appears.
+
+
+FILES
+=====
+  .rendercheck/entry.tsx
+  drizzle/0032_stock_audit.sql
+  drizzle/0033_purchase_orders.sql
+  drizzle/0034_service_requires_doctor.sql
+  drizzle/0035_order_packs.sql
+  package.json
+  scripts/seed.ts
+  scripts/verify-all.mjs
+  src/client/src/components/Chit.tsx
+  src/client/src/components/CounterBill.tsx
+  src/client/src/lib/api.ts
+  src/client/src/lib/prefs.tsx
+  src/client/src/screens/Admin.tsx
+  src/client/src/screens/Lab.tsx
+  src/client/src/screens/MainCounter.tsx
+  src/client/src/screens/Pharmacy.tsx
+  src/client/src/screens/lab/ReportSetup.tsx
+  src/client/src/screens/pharma/Access.tsx
+  src/client/src/screens/pharma/Returns.tsx
+  src/client/src/screens/pharma/Setup.tsx
+  src/client/src/screens/pharmacy/Audits.tsx
+  src/client/src/screens/pharmacy/Medicines.tsx
+  src/client/src/screens/pharmacy/Opening.tsx
+  src/client/src/screens/pharmacy/Ordering.tsx
+  src/client/src/screens/pharmacy/Receive.tsx
+  src/server/api/index.ts
+  src/server/api/pharma.ts
+  src/server/api/pharmacy.ts
+  src/server/api/reports.ts
+  src/server/db/schema.ts
+  src/server/services/attendance.ts
+  src/server/services/audit-pdf.ts
+  src/server/services/billing.ts
+  src/server/services/clinical.ts
+  src/server/services/cross-match-pdf.ts
+  src/server/services/demo.ts
+  src/server/services/escpos.ts
+  src/server/services/hospital-reports.ts
+  src/server/services/lab-pdf.ts
+  src/server/services/order-pdf.ts
+  src/server/services/ordering.ts
+  src/server/services/pharma.ts
+  src/server/services/purchase.ts
+  src/server/services/report-access.ts
+  src/server/services/report-catalogue.ts
+  src/server/services/report-pdf.ts
+  src/server/services/returns.ts
+  src/server/services/sales.ts
+  src/server/services/stock-audit.ts
+  verify-audit.ts
+  verify-billing.mjs
+  verify-escpos.mjs
+  verify-i18n.mjs
+  verify-lab.mjs
+  verify-layouts.ts
+  verify-numbering.mjs
+  verify-ordering.ts
+  verify-pharmacy.mjs
+  verify-print.mjs
+  verify-reports.mjs
+  verify-returns.mjs
+  verify-tabs.mjs
+
+
+WHAT WAS CHECKED BEFORE THIS WENT OUT
+=====================================
+Applied onto a copy of the tree you are running, on a database built from
+empty by all 35 migrations in order, then seeded and run:
+
+  npm run build                          clean
+  npm run verify                         everything passed
+
+  20 suites, 969 assertions, 0 failures
+  typecheck clean, all 86 screens render in English and Urdu,
+  every translated string has its Urdu entry (18 new ones)
+
+Checked by hand:
+
+  - the per-visit lab route asked for a report and its filename read back
+  - the signature and footer positions read out of the PDF: 27 points of
+    clear space where there was 0.8
+  - the logo rendered at 100% and 220%, confirming the hospital name moves
+    from x=140 to x=243 as the logo grows
+  - an order raised in packs, printed, and the sheet read back: packs as the
+    headline figure, units beneath, no sales or stock columns
+  - a delivery received with 10% on the line and 5% on the invoice:
+    Rs 1,000 goods, Rs 100, Rs 55, total Rs 1,155
+  - an adjustment of +105 and -40 on real batches, with the weighted cost
+    frozen on the line, printed with the value columns and the net line
+  - discounts on with no ceiling, under a ceiling, over it, switched off, and
+    a cashier refused permission to change the rules
+
+Four checks proved by breaking the code they guard and watching them fail:
+the lab filename, the footer overlap, the stripped purchase order id, and the
+units alignment from last round.
+
+
+STILL OPEN
+==========
+  Attendance phase 4 — the reports. Waiting on the SLK20R test.
+  IPD — on hold at your word.

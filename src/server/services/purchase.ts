@@ -24,6 +24,14 @@ export type ReceiptLine = {
   bonusQty?: number
   costPaisa: number
   pricePaisa?: number
+  /**
+   * Sales tax this medicine carries on this delivery, in basis points.
+   *
+   * On the line rather than taken from the product, because what a
+   * distributor charges tax at is a fact about the invoice in front of you.
+   * The product's own rate is offered as the default and can be corrected.
+   */
+  taxRateBp?: number
 }
 
 export type GoodsReceipt = {
@@ -32,6 +40,24 @@ export type GoodsReceipt = {
   invoiceDate: string
   note?: string
   receivedBy?: string
+  /**
+   * The purchase order this delivery answers, where there was one.
+   *
+   * Receiving against an order closes it. A short delivery closes it too —
+   * the balance is not chased, because that was the explicit decision: one
+   * receive finishes an order. What never came is visible in the gap between
+   * the order's units and the delivery's, which both stay on record.
+   */
+  purchaseOrderId?: number | null
+  /**
+   * Whatever the distributor adds at the bottom of the invoice, in basis
+   * points of the total.
+   *
+   * Separate from the per-line tax because it applies to the invoice rather
+   * than to any one medicine — a further sales tax, a withholding line, a
+   * levy — and spreading it across the lines would lose which was which.
+   */
+  extraTaxBp?: number
   lines: ReceiptLine[]
 }
 
@@ -95,11 +121,13 @@ export async function receiveGoods(db: NodePgDatabase<typeof s>, input: GoodsRec
         invoiceDate: input.invoiceDate,
         note: input.note,
         receivedBy: input.receivedBy,
+        purchaseOrderId: input.purchaseOrderId ?? null,
         totalPaisa: 0
       })
       .returning()
 
     let total = 0
+    let taxTotal = 0
 
     for (const line of input.lines) {
       const [product] = await tx
@@ -146,12 +174,26 @@ export async function receiveGoods(db: NodePgDatabase<typeof s>, input: GoodsRec
         RETURNING id, qty_on_hand`)
       const batch = ((r as any).rows ?? [])[0]
 
+      /*
+       * Tax on the line's own value, bonus excluded.
+       *
+       * Bonus packs are free, so they are not taxed: ten paid plus one free
+       * at ten per cent is tax on ten, which is what the invoice says.
+       * Rounded once per line rather than per pack, so the sum of the lines
+       * agrees with the total printed on the paper.
+       */
+      const lineNet = line.qty * line.costPaisa
+      const taxBp = Math.max(0, Math.trunc(line.taxRateBp ?? 0))
+      const lineTax = Math.round((lineNet * taxBp) / 10000)
+
       await tx.insert(s.purchaseItems).values({
         purchaseId: purchase.id,
         batchId: Number(batch.id),
         qty: line.qty,
         bonusQty: bonus,
-        unitCostPaisa: line.costPaisa
+        unitCostPaisa: line.costPaisa,
+        taxRateBp: taxBp,
+        lineTaxPaisa: lineTax
       })
 
       await tx.insert(s.stockLedger).values({
@@ -167,11 +209,57 @@ export async function receiveGoods(db: NodePgDatabase<typeof s>, input: GoodsRec
       })
 
       // Bonus packs excluded: the invoice total is what the shop actually owes.
-      total += line.qty * line.costPaisa
+      total += lineNet
+      taxTotal += lineTax
     }
 
-    await tx.execute(sql`UPDATE purchases SET total_paisa = ${total} WHERE id = ${purchase.id}`)
+    /*
+     * The invoice-level tax applies to goods plus the per-line tax.
+     *
+     * That is what the distributors here do — the levy at the bottom is
+     * computed on the invoice as it stands, which already includes the sales
+     * tax on the lines. Applying it to the goods alone would under-state the
+     * total by a few rupees on every delivery and leave the ledger
+     * disagreeing with the paper.
+     */
+    const extraBp = Math.max(0, Math.trunc(input.extraTaxBp ?? 0))
+    const extraTax = Math.round(((total + taxTotal) * extraBp) / 10000)
 
-    return { purchase: { ...purchase, totalPaisa: total }, lines: input.lines.length }
+    await tx.execute(sql`
+      UPDATE purchases
+      SET total_paisa = ${total + taxTotal + extraTax},
+          tax_paisa = ${taxTotal},
+          extra_tax_bp = ${extraBp},
+          extra_tax_paisa = ${extraTax}
+      WHERE id = ${purchase.id}`)
+
+    /*
+     * The order is closed inside the same transaction as the stock.
+     *
+     * Closing it afterwards, in a second call, leaves a window where the
+     * delivery is booked and the order still looks open — and if that second
+     * call never happens, the order sits in the active list forever and
+     * somebody receives it twice.
+     *
+     * Only an order that is still open is closed, so re-posting a delivery
+     * cannot reopen and re-close an order that was already cancelled.
+     */
+    if (input.purchaseOrderId) {
+      await tx.execute(sql`
+        UPDATE purchase_orders
+        SET status = 'received', closed_by = ${input.receivedBy ?? null}, closed_at = now()
+        WHERE id = ${input.purchaseOrderId} AND status = 'open'`)
+    }
+
+    return {
+      purchase: {
+        ...purchase,
+        goodsPaisa: total,
+        taxPaisa: taxTotal,
+        extraTaxPaisa: extraTax,
+        totalPaisa: total + taxTotal + extraTax
+      },
+      lines: input.lines.length
+    }
   })
 }
