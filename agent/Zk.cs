@@ -107,6 +107,59 @@ namespace HmsAttendance
             _dbMatch = Find("DBMatch") ?? Find("Match");
             if (_dbMatch == null) throw new Exception(
                 "Neither DBMatch nor Match found on zkfp2.");
+
+            /*
+             * Optional: the reader's own lights and buzzer.
+             *
+             * Not required, because the agent works without them and some
+             * wrapper builds may not export it. Missing is said once in the
+             * log and otherwise ignored.
+             */
+            _setParameters = Find("SetParameters");
+        }
+
+        private static MethodInfo _setParameters;
+
+        public static bool CanSignal { get { return _setParameters != null; } }
+
+        /*
+         * Parameter codes for the reader's lights and buzzer, from the
+         * ZKFinger SDK's SetParameters: 101 white light, 102 green, 103 red,
+         * 104 buzzer; a 4-byte 1 turns one on and 0 off.
+         *
+         * NOT YET SEEN WORKING ON THE LIVE20R AT THIS HOSPITAL. A code the
+         * device does not know is refused with an error and does nothing,
+         * which is why this can be tried safely and switched off in agent.ini
+         * (Feedback=false) if it misbehaves.
+         */
+        private const int PARAM_GREEN = 102;
+        private const int PARAM_RED = 103;
+        private const int PARAM_BEEP = 104;
+
+        private static void SetParam(IntPtr dev, int code, int value)
+        {
+            if (_setParameters == null) return;
+            byte[] v = BitConverter.GetBytes(value);
+            try { _setParameters.Invoke(null, new object[] { dev, code, v, v.Length }); }
+            catch { /* a light that will not light must not stop the door */ }
+        }
+
+        /// <summary>
+        /// Green and a short beep for yes, red and a longer beep for no.
+        ///
+        /// Called only from the capture thread, so it never talks to the
+        /// device at the same moment as a capture.
+        /// </summary>
+        public static void Signal(IntPtr dev, bool ok)
+        {
+            if (_setParameters == null || dev == IntPtr.Zero) return;
+            int light = ok ? PARAM_GREEN : PARAM_RED;
+            SetParam(dev, light, 1);
+            SetParam(dev, PARAM_BEEP, 1);
+            System.Threading.Thread.Sleep(ok ? 150 : 400);
+            SetParam(dev, PARAM_BEEP, 0);
+            System.Threading.Thread.Sleep(ok ? 150 : 200);
+            SetParam(dev, light, 0);
         }
 
         private static Assembly LoadWrapper()

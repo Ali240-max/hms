@@ -35,7 +35,7 @@ using System.Reflection;
 internal static class ProtoTest
 {
     private static int pass = 0, fail = 0;
-    private static void Ok(string n, bool c, string x = "")
+    internal static void Ok(string n, bool c, string x = "")
     {
         if (c) { pass++; Console.WriteLine("  ok   " + n); }
         else { fail++; Console.WriteLine("  FAIL " + n + (x.Length > 0 ? " - " + x : "")); }
@@ -428,6 +428,9 @@ internal static class ProtoTest
                     p2.Count.ToString());
             }
         }
+
+        /* The reader's scan decisions and creating users on a terminal. */
+        AgentTest.Run();
 
         Console.WriteLine("\n" + pass + " passed, " + fail + " failed\n");
         return fail > 0 ? 1 : 0;

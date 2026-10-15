@@ -25,6 +25,11 @@ namespace HmsAttendance
     /// Everything downstream, the queue and the posting and the retry, is
     /// shared with reader mode and untouched.
     ///
+    /// The one thing it WRITES is a new user, when HMS asks (EnsureUser):
+    /// only when nobody is there under that id, and only reported as done
+    /// once read back. It never deletes, never overwrites, never sends
+    /// fingerprints, and never clears the log.
+    ///
     /// WRITTEN AGAINST THE PROTOCOL, NOT THE SDK.
     ///
     /// ZKTeco ship zkemkeeper.dll for this, and it would have been less code.
@@ -62,6 +67,13 @@ namespace HmsAttendance
         private const ushort CMD_GET_FREE_SIZES = 50;
         private const ushort CMD_GET_TIME = 201;
         private const ushort CMD_SET_TIME = 202;
+        /*
+         * Writing a user, and asking the device to re-read its tables so the
+         * new user shows in its own menus. Numbers from the same reference
+         * implementation as everything else here (pyzk's set_user).
+         */
+        private const ushort CMD_USER_WRQ = 8;
+        private const ushort CMD_REFRESHDATA = 1013;
 
         /** The data set being asked for, inside a buffered read. */
         private const int FCT_USER = 5;
@@ -269,6 +281,7 @@ namespace HmsAttendance
                 s.Users = BitConverter.ToInt32(d, 4 * 4);
                 s.Fingers = BitConverter.ToInt32(d, 6 * 4);
                 s.Records = BitConverter.ToInt32(d, 8 * 4);
+                s.UserCapacity = BitConverter.ToInt32(d, 15 * 4);
                 s.RecordCapacity = BitConverter.ToInt32(d, 16 * 4);
             }
             return s;
@@ -307,6 +320,7 @@ namespace HmsAttendance
                 if (body % candidate == 0) { size = candidate; count = body / candidate; break; }
             }
             if (count == 0) { size = 72; count = body / 72; }
+            if (count > 0) _userLayout = size;
 
             for (int i = 0; i < count; i++)
             {
@@ -319,8 +333,15 @@ namespace HmsAttendance
                 if (size == 28)
                 {
                     /* <HB5s8sIxBhI : uid, privilege, password, name, card,
-                     * pad, group, timezone, user_id (an integer here) */
-                    u.Name = Str(data, o + 14, 8);
+                     * pad, group, timezone, user_id (an integer here).
+                     *
+                     * The name starts at 8: two bytes of uid, one of
+                     * privilege, five of password. It was read from 14,
+                     * which is the middle of the name, and nothing noticed
+                     * because the K50 uses the 72-byte layout. Creating
+                     * users reads their names back to check them, so it
+                     * matters now. */
+                    u.Name = Str(data, o + 8, 8);
                     u.UserId = BitConverter.ToUInt32(data, o + 24)
                         .ToString(CultureInfo.InvariantCulture);
                 }
@@ -337,6 +358,295 @@ namespace HmsAttendance
             }
             GC.KeepAlive(total);
             return users;
+        }
+
+        /*
+         * The user record layout this device answered with: 72 bytes on
+         * current firmware, the K50 included, or 28 on old firmware. Zero
+         * until a user list has been read with somebody on it.
+         */
+        private int _userLayout;
+
+        /* ================================================ creating users */
+
+        /// <summary>
+        /// Make sure a user with this id is on the device, creating one if
+        /// not.
+        ///
+        /// THE RULES, in the order they are applied:
+        ///
+        ///   1. Read the device's users first. A user already there under
+        ///      that id is NOT written to — not renamed, not given a new
+        ///      privilege, nothing. It is reported, with the name the device
+        ///      holds, and HMS decides whether it is the same person. Writing
+        ///      over a stranger enrolled years ago in ZKBio would take their
+        ///      fingerprints' owner away from them.
+        ///
+        ///   2. A new user gets the next free internal slot, ordinary user
+        ///      privilege, no password and no card. HMS holds none of those
+        ///      for anybody, and inventing them would be worse than leaving
+        ///      them empty: a device administrator nobody chose is a way to
+        ///      wipe the terminal from its own keypad.
+        ///
+        ///   3. Nothing is called created until the user list has been read
+        ///      AGAIN and the user is in it. The device saying "ok" to the
+        ///      write is not the same thing as the user existing.
+        ///
+        /// Fingerprints are not sent. The person enrols a finger on the K50
+        /// itself, against the id this creates.
+        /// </summary>
+        public UserSyncResult EnsureUser(string userId, string name)
+        {
+            UserSyncResult res = new UserSyncResult();
+            res.UserId = userId ?? "";
+
+            if (!IsDeviceId(res.UserId))
+            {
+                res.Code = "DEVICE_ERROR";
+                res.Message = "\"" + res.UserId + "\" is not an id a terminal can hold.";
+                return res;
+            }
+
+            List<TerminalUser> users = GetUsers();
+            int layout = _userLayout == 28 ? 28 : 72;
+            res.ExpectedName = FitName(name, layout == 28 ? 8 : 24);
+
+            TerminalUser there = FindUser(users, res.UserId, layout);
+            if (there != null)
+            {
+                res.Code = "ALREADY_PRESENT";
+                res.DeviceName = there.Name;
+                res.Uid = there.Uid;
+                return res;
+            }
+
+            Sizes sizes = ReadSizes();
+            if (sizes.UserCapacity > 0 && sizes.Users >= sizes.UserCapacity)
+            {
+                res.Code = "DEVICE_FULL";
+                res.Message = "The terminal is full: " + sizes.Users + " of " +
+                    sizes.UserCapacity + " users.";
+                return res;
+            }
+
+            int uid = 1;
+            foreach (TerminalUser u in users) if (u.Uid >= uid) uid = u.Uid + 1;
+            if (uid > 65534)
+            {
+                res.Code = "DEVICE_FULL";
+                res.Message = "The terminal has no free internal user slot.";
+                return res;
+            }
+
+            byte[] record = layout == 28
+                ? PackUser28(uid, res.UserId, res.ExpectedName)
+                : PackUser72(uid, res.UserId, res.ExpectedName);
+
+            try
+            {
+                Send(CMD_USER_WRQ, record);
+            }
+            catch (TerminalRefused)
+            {
+                /*
+                 * A plain no. The reply was read, so the session is still in
+                 * step and the next job can go ahead. Anything else thrown
+                 * here — out of step, a timeout — is left for
+                 * EnsureUserSafely, which stops using the connection.
+                 */
+                res.Code = "DEVICE_ERROR";
+                res.Message = "The terminal refused to add the user.";
+                return res;
+            }
+            if (_lastCode != CMD_ACK_OK)
+            {
+                res.Code = "DEVICE_ERROR";
+                res.Message = "The terminal answered the write with code " + _lastCode + ".";
+                return res;
+            }
+
+            /* So the user appears in the device's own menus straight away. */
+            try { Send(CMD_REFRESHDATA, new byte[0]); } catch (TerminalError) { }
+
+            TerminalUser made = FindUser(GetUsers(), res.UserId, layout);
+            if (made == null)
+            {
+                res.Code = "VERIFY_FAILED";
+                res.Message = "The terminal accepted the user but does not list " +
+                    "them when asked. Nothing is mapped in HMS until it does.";
+                return res;
+            }
+
+            res.Code = "CREATED";
+            res.DeviceName = made.Name;
+            res.Uid = made.Uid;
+            return res;
+        }
+
+        /// <summary>
+        /// EnsureUser, with every way a connection can fail turned into an
+        /// answer for HMS rather than an exception.
+        ///
+        /// After a failure that leaves the connection in doubt — a timeout, a
+        /// reset, a reply out of step — the session is marked broken and the
+        /// remaining jobs are answered without touching the device: half a
+        /// conversation is how one command's reply gets read as another's.
+        /// </summary>
+        public UserSyncResult EnsureUserSafely(string userId, string name)
+        {
+            if (Broken != null)
+            {
+                UserSyncResult skip = new UserSyncResult();
+                skip.UserId = userId ?? "";
+                skip.Code = "DEVICE_ERROR";
+                skip.Message = "Not tried: the connection to the terminal failed " +
+                    "on an earlier step (" + Broken + ").";
+                return skip;
+            }
+            try
+            {
+                return EnsureUser(userId, name);
+            }
+            catch (Exception e)
+            {
+                Broken = DescribeFailure(e);
+                UserSyncResult res = new UserSyncResult();
+                res.UserId = userId ?? "";
+                res.Code = "DEVICE_ERROR";
+                res.Message = Broken;
+                return res;
+            }
+        }
+
+        /// <summary>Why the connection stopped being usable, once it has.</summary>
+        public string Broken;
+
+        internal static string DescribeFailure(Exception e)
+        {
+            SocketException se = e as SocketException;
+            if (se != null && se.SocketErrorCode == SocketError.ConnectionRefused)
+                return "nothing is answering on that address and port";
+            if (e is System.IO.IOException || e is SocketException)
+            {
+                string m = e.Message ?? "";
+                if (m.IndexOf("period of time", StringComparison.OrdinalIgnoreCase) >= 0
+                    || m.IndexOf("timed out", StringComparison.OrdinalIgnoreCase) >= 0
+                    || m.IndexOf("did not properly respond", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "the terminal stopped answering (timed out)";
+                }
+                return "the connection to the terminal broke: " + Trim(m);
+            }
+            if (e is TerminalError) return Trim(e.Message);
+            return Trim(e.GetType().Name + ": " + e.Message);
+        }
+
+        private static string Trim(string s)
+        {
+            if (s == null) return "";
+            return s.Length > 200 ? s.Substring(0, 200) : s;
+        }
+
+        /// <summary>
+        /// Digits only, at most nine, not all zeros. What the keypad can type
+        /// and what the 28-byte layout's integer can hold.
+        /// </summary>
+        internal static bool IsDeviceId(string id)
+        {
+            if (string.IsNullOrEmpty(id) || id.Length > 9) return false;
+            bool nonZero = false;
+            foreach (char c in id)
+            {
+                if (c < '0' || c > '9') return false;
+                if (c != '0') nonZero = true;
+            }
+            return nonZero;
+        }
+
+        /// <summary>
+        /// The user with this id, if the device has one.
+        ///
+        /// On the 28-byte layout the id is an integer, so "0042" comes back
+        /// as "42": compared as numbers there, as exact strings otherwise.
+        /// </summary>
+        internal static TerminalUser FindUser(List<TerminalUser> users, string userId, int layout)
+        {
+            foreach (TerminalUser u in users)
+            {
+                if (layout == 28)
+                {
+                    uint a, b;
+                    if (uint.TryParse(u.UserId, out a) && uint.TryParse(userId, out b) && a == b)
+                        return u;
+                }
+                else if (string.Equals(u.UserId, userId, StringComparison.Ordinal))
+                {
+                    return u;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// A name cut to fit the device's field, on a character boundary, so
+        /// a multi-byte letter is never written in half.
+        /// </summary>
+        internal static string FitName(string name, int maxBytes)
+        {
+            if (name == null) return "";
+            StringBuilder sb = new StringBuilder();
+            int bytes = 0;
+            string clean = name.Trim();
+            for (int i = 0; i < clean.Length; i++)
+            {
+                string ch = char.IsHighSurrogate(clean[i]) && i + 1 < clean.Length
+                    ? clean.Substring(i, 2) : clean.Substring(i, 1);
+                if (ch.Length == 2) i++;
+                if (ch[0] < ' ') ch = " ";
+                int n = Encoding.UTF8.GetByteCount(ch);
+                if (bytes + n > maxBytes) break;
+                sb.Append(ch);
+                bytes += n;
+            }
+            return sb.ToString().Trim();
+        }
+
+        /// <summary>
+        /// The 72-byte user record: uid, privilege, password[8], name[24],
+        /// card, pad, group[7], pad, user_id[24]. Laid out the way the
+        /// reference packs it ('HB8s24s4sx7sx24s'), and the same offsets
+        /// GetUsers reads back.
+        /// </summary>
+        internal static byte[] PackUser72(int uid, string userId, string name)
+        {
+            byte[] r = new byte[72];
+            Buffer.BlockCopy(BitConverter.GetBytes((ushort)uid), 0, r, 0, 2);
+            r[2] = 0;                          // privilege: ordinary user
+            /* password 3..10, card 35..38 and group 40..46 stay zero */
+            PutStr(r, 11, name, 24);
+            PutStr(r, 48, userId, 24);
+            return r;
+        }
+
+        /// <summary>
+        /// The 28-byte record of older firmware: uid, privilege, password[5],
+        /// name[8], card, pad, group, timezone, user_id as an integer.
+        /// </summary>
+        internal static byte[] PackUser28(int uid, string userId, string name)
+        {
+            byte[] r = new byte[28];
+            Buffer.BlockCopy(BitConverter.GetBytes((ushort)uid), 0, r, 0, 2);
+            r[2] = 0;
+            PutStr(r, 8, name, 8);
+            Buffer.BlockCopy(BitConverter.GetBytes(uint.Parse(userId,
+                CultureInfo.InvariantCulture)), 0, r, 24, 4);
+            return r;
+        }
+
+        private static void PutStr(byte[] into, int at, string s, int max)
+        {
+            byte[] b = Encoding.UTF8.GetBytes(s ?? "");
+            Buffer.BlockCopy(b, 0, into, at, Math.Min(b.Length, max));
         }
 
         /* ===================================================== attendance */
@@ -777,7 +1087,7 @@ namespace HmsAttendance
             Buffer.BlockCopy(payload, 8, data, 0, data.Length);
 
             if (_lastCode == CMD_ACK_ERROR)
-                throw new TerminalError("the terminal answered with an error");
+                throw new TerminalRefused("the terminal answered with an error");
 
             return data;
         }
@@ -913,12 +1223,33 @@ namespace HmsAttendance
         public TerminalError(string m) : base(m) { }
     }
 
+    /// <summary>The device answered ACK_ERROR: a refusal, with the session still in step.</summary>
+    internal class TerminalRefused : TerminalError
+    {
+        public TerminalRefused(string m) : base(m) { }
+    }
+
     internal class Sizes
     {
         public int Users;
         public int Fingers;
         public int Records;
+        public int UserCapacity;
         public int RecordCapacity;
+    }
+
+    /// <summary>What EnsureUser found or did, in the words HMS expects.</summary>
+    internal class UserSyncResult
+    {
+        /** CREATED, ALREADY_PRESENT, DEVICE_FULL, DEVICE_ERROR, VERIFY_FAILED */
+        public string Code = "DEVICE_ERROR";
+        public string Message = "";
+        public string UserId = "";
+        /** What the device holds under that id, read back off it. */
+        public string DeviceName = "";
+        /** What this job writes, cut to fit the device's record. */
+        public string ExpectedName = "";
+        public int Uid;
     }
 
     internal class TerminalUser

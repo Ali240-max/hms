@@ -39,7 +39,7 @@ if exist protocol-test.exe del protocol-test.exe
 
 "%CSC%" /nologo /target:exe /main:ProtoTest /out:protocol-test.exe ^
   /reference:System.Web.Extensions.dll ^
-  Program.cs Support.cs Zk.cs Terminal.cs FakeDevice.cs ProtoTest.cs
+  Program.cs Support.cs Zk.cs Terminal.cs Scan.cs FakeDevice.cs ProtoTest.cs AgentTest.cs
 
 if errorlevel 1 (
   echo.
@@ -47,7 +47,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-protocol-test.exe
+rem  .\ so it runs on a shell set not to search the current folder.
+.\protocol-test.exe
 set RC=%ERRORLEVEL%
 del protocol-test.exe
 exit /b %RC%

@@ -96,6 +96,27 @@ namespace HmsAttendance
          */
         public bool TrustDeviceIds = false;
 
+        /*
+         * Reader mode: light the reader green or red and beep after a scan.
+         *
+         * On by default, because somebody at a door with no screen in front
+         * of them otherwise has no idea whether to press again. Off if the
+         * reader's SDK build turns out not to like it.
+         */
+        public bool Feedback = true;
+
+        /*
+         * Terminal mode: how often to ask HMS whether anybody is waiting to be
+         * created on the device, in seconds.
+         *
+         * Separate from PollSeconds because it costs the terminal nothing —
+         * it is a question to the HMS server, and the device is only
+         * connected to when there IS somebody to create. Short, so the
+         * administrator who pressed the button sees the answer while still
+         * at the screen.
+         */
+        public int JobSeconds = 5;
+
         public static Config Load()
         {
             string dir = AppDomain.CurrentDomain.BaseDirectory;
@@ -137,6 +158,9 @@ namespace HmsAttendance
                 else if (key == "backfilldays") c.BackfillDays = ToInt(val, 14);
                 else if (key == "trustdeviceids")
                     c.TrustDeviceIds = val.Trim().ToLowerInvariant() == "true";
+                else if (key == "feedback")
+                    c.Feedback = val.Trim().ToLowerInvariant() != "false";
+                else if (key == "jobseconds") c.JobSeconds = ToInt(val, 5);
             }
 
             if (c.DeviceKey.Length < 8)
@@ -178,6 +202,7 @@ namespace HmsAttendance
                  */
                 if (c.PollSeconds < 10) c.PollSeconds = 10;
                 if (c.BackfillDays < 0) c.BackfillDays = 0;
+                if (c.JobSeconds < 2) c.JobSeconds = 2;
             }
 
             return c;
@@ -218,6 +243,12 @@ namespace HmsAttendance
                 "# How often to re-read the enrolled fingers, in seconds." +
                 Environment.NewLine +
                 "ReloadSeconds=300" + Environment.NewLine +
+                Environment.NewLine +
+                "# Light the reader green or red and beep after each scan." +
+                Environment.NewLine +
+                "# Set false if the reader misbehaves with it." +
+                Environment.NewLine +
+                "Feedback=true" + Environment.NewLine +
                 Environment.NewLine +
                 "# =====================================================" +
                 Environment.NewLine +
@@ -266,6 +297,11 @@ namespace HmsAttendance
                 "# How often to ask the terminal for new punches, in seconds." +
                 Environment.NewLine +
                 "PollSeconds=20" + Environment.NewLine +
+                Environment.NewLine +
+                "# How often to ask HMS whether anybody is waiting to be" +
+                Environment.NewLine +
+                "# created on the terminal, in seconds." + Environment.NewLine +
+                "JobSeconds=5" + Environment.NewLine +
                 Environment.NewLine +
                 "# On the FIRST run, ignore anything older than this many" +
                 Environment.NewLine +

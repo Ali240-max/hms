@@ -18,6 +18,7 @@ const OFFLINE = [
   ['layouts', 'npm run verify:layouts'],
   ['ipd', 'npm run verify:ipd'],
   ['attendance', 'npm run verify:attendance'],
+  ['terminal', 'npm run verify:terminal'],
   ['audit', 'npm run verify:audit'],
   ['ordering', 'npm run verify:ordering'],
   ['writeoff', 'npm run verify:writeoff'],

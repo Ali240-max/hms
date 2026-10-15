@@ -367,6 +367,14 @@ export const api = {
     req<any>(`/attendance/fingerprints/${id}`, { method: 'DELETE' }),
   attendanceFingerprints: (staffId: number) =>
     req<any[]>(`/attendance/fingerprints/${staffId}`),
+  /* Putting somebody onto the network terminal, through its agent. */
+  terminalSyncStatus: (staffId: number) =>
+    req<any>(`/attendance/terminal-sync/${staffId}`),
+  requestTerminalSync: (b: {
+    staffId: number; deviceId?: number | null; deviceUserId?: string | null
+  }) => req<any>('/attendance/terminal-sync', { method: 'POST', body: JSON.stringify(b) }),
+  cancelTerminalSync: (jobId: number) =>
+    req<any>(`/attendance/terminal-sync/${jobId}/cancel`, { method: 'POST' }),
 
   /* ------------------------------------------------------------- IPD */
   wards: (all = false) => req<any[]>(`/ipd/wards${all ? '?all=1' : ''}`),

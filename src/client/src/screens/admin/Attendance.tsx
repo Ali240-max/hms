@@ -17,7 +17,15 @@ import { EnrolFinger } from './Enrol'
  * corrects every day it touches.
  */
 
-const today = () => new Date().toISOString().slice(0, 10)
+/*
+ * Today on this machine's calendar, not UTC's: before five in the morning
+ * here the UTC date is still yesterday, and the sheet opened on the wrong day.
+ */
+const today = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${
+    String(d.getDate()).padStart(2, '0')}`
+}
 
 const clock = (iso: string | null) => iso
   ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
@@ -72,7 +80,7 @@ function DayView({ me }: { me: SessionUser }) {
 
   return (
     <Card title={tr('Attendance')}
-      hint={tr('The first scan of a day is the arrival and the last is the leaving.')}
+      hint={tr('Scans alternate through the day: the first is a check-in, the second a check-out, the third a check-in again.')}
       action={
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
           className="field num w-auto py-1.5 text-2xs" />
@@ -149,6 +157,10 @@ function DayView({ me }: { me: SessionUser }) {
                             <li key={p.id} className="flex items-center justify-between gap-2">
                               <span className="num text-2xs">
                                 {clock(p.at)}
+                                <span className={`ml-1 ${p.direction === 'out'
+                                  ? 'text-primary' : 'text-ok'}`}>
+                                  {p.direction === 'out' ? tr('out') : tr('in')}
+                                </span>
                                 {p.source === 'manual' && (
                                   <span className="ml-1 text-warn">{tr('by hand')}</span>
                                 )}
@@ -481,7 +493,7 @@ function AddReader({ onClose, onDone }: {
                 placeholder="192.168.1.201" className="field mt-1 num" />
             </Field>
             <p className="text-2xs text-muted sm:col-span-2">
-              {tr('The terminal holds its own fingerprints and matches people itself, so staff are enrolled ON THE DEVICE, not here. What HMS needs is each person\u2019s id from the device, set under Staff, Edit.')}
+              {tr('The terminal holds its own fingerprints and matches people itself, so fingers are enrolled ON THE DEVICE. People can be created on it from Staff, Edit, and HMS then fills in their terminal id.')}
             </p>
           </>
         )}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { CheckCircle2, LogOut, Clock, WifiOff, Fingerprint } from 'lucide-react'
+import { CheckCircle2, LogOut, Clock, WifiOff, Fingerprint, XCircle } from 'lucide-react'
 import { api, type SessionUser } from '../lib/api'
 import { t as tr } from '../lib/prefs'
 
@@ -27,6 +27,17 @@ const SHOW_MS = 6000
 
 const clock = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+
+/*
+ * The reader agent, when it runs on THIS PC.
+ *
+ * Only for scans that failed. A failure never reaches the server, so without
+ * this somebody whose finger was not recognised saw nothing happen and kept
+ * pressing. It is never used to say a scan COUNTED — that still comes only
+ * from the server, for the reason at the top of this file.
+ */
+const AGENT = 'http://127.0.0.1:5577'
+const FAILED_MS = 4000
 
 export function Kiosk({ me }: { me: SessionUser }) {
   const [latest, setLatest] = useState<any | null>(null)
@@ -85,6 +96,51 @@ export function Kiosk({ me }: { me: SessionUser }) {
     return () => clearInterval(t)
   }, [poll])
 
+  /* A failed scan at the reader on this PC, briefly. */
+  const [failed, setFailed] = useState<string | null>(null)
+  const failedUntil = useRef<number>(0)
+  const agentSeq = useRef<number | null>(null)
+
+  useEffect(() => {
+    let stopped = false
+    let misses = 0
+    let timer: any
+    const check = async () => {
+      try {
+        const st = await (await fetch(AGENT + '/status')).json()
+        misses = 0
+        const seq = st?.lastScan?.seq
+        if (typeof seq === 'number') {
+          /* The first read only sets the mark: an old failure is not news. */
+          if (agentSeq.current != null && seq > agentSeq.current) {
+            setFailed(String(st.lastScan.result || 'not_recognised'))
+            failedUntil.current = Date.now() + FAILED_MS
+          }
+          agentSeq.current = seq
+        }
+      } catch {
+        /* No agent on this PC, which is normal on most. Ask rarely after that. */
+        misses++
+      }
+      if (!stopped) timer = setTimeout(check, misses >= 3 ? 30_000 : 1000)
+    }
+    check()
+    return () => { stopped = true; clearTimeout(timer) }
+  }, [])
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (failedUntil.current && Date.now() > failedUntil.current) {
+        failedUntil.current = 0
+        setFailed(null)
+      }
+    }, 500)
+    return () => clearInterval(t)
+  }, [])
+
+  /* A punch that did go through replaces any failure still showing. */
+  useEffect(() => { if (latest) { failedUntil.current = 0; setFailed(null) } }, [latest])
+
   /* The clock, and clearing a confirmation once its time is up. */
   useEffect(() => {
     const t = setInterval(() => {
@@ -124,6 +180,22 @@ export function Kiosk({ me }: { me: SessionUser }) {
               </p>
               <p className="mt-1 text-sm text-muted">
                 {tr('Scans are still being recorded and will appear when it returns.')}
+              </p>
+            </motion.div>
+          ) : failed && !latest ? (
+            <motion.div key={'failed-' + failed}
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              className="text-center">
+              <XCircle size={88} className="mx-auto text-bad" />
+              <p className="mt-5 text-3xl font-semibold text-bad">
+                {failed === 'unreadable'
+                  ? tr('Could not read your finger')
+                  : tr('Not recognised')}
+              </p>
+              <p className="mt-2 text-sm text-muted">
+                {tr('Lift your finger, then press it again, flat and firm.')}
               </p>
             </motion.div>
           ) : latest ? (

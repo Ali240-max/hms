@@ -39,7 +39,7 @@ if exist hms-attendance-agent.exe del hms-attendance-agent.exe
 "%CSC%" /nologo /target:exe /platform:x86 /optimize+ ^
   /out:hms-attendance-agent.exe ^
   /reference:System.Web.Extensions.dll ^
-  Program.cs Support.cs Zk.cs Terminal.cs FakeDevice.cs
+  Program.cs Support.cs Zk.cs Terminal.cs Scan.cs FakeDevice.cs
 
 if errorlevel 1 (
   echo.

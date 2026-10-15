@@ -45,6 +45,7 @@
     "verify:layouts": "tsx verify-layouts.ts",
     "verify:ipd": "tsx verify-ipd.ts",
     "verify:attendance": "tsx verify-attendance.ts",
+    "verify:terminal": "tsx verify-terminal.ts",
     "verify:agent": "node verify-agent.mjs",
     "verify:audit": "tsx verify-audit.ts",
     "verify:ordering": "tsx verify-ordering.ts",

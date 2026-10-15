@@ -279,5 +279,85 @@ console.log('\n— a device says which kind it is —')
         .every((d) => d.kind === 'reader' || d.kind === 'terminal'))
 }
 
+/* ===================== creating staff on the terminal, over HTTP ========== */
+
+/**
+ * The routes the screen and the agent use to put somebody onto a terminal.
+ *
+ * Exercised the way they are reached: the agent with only its device key, on
+ * exact paths; the browser with a session, and only an administrator who may
+ * edit staff. The device half — the bytes to the K50 — is agent/AgentTest.cs.
+ */
+console.log('\n— creating staff on the terminal —')
+{
+  const AH = { 'content-type': 'application/json', authorization: 'Bearer ' + tok }
+  const t = await (await fetch(B + '/attendance/devices', { method: 'POST', headers: AH,
+    body: JSON.stringify({ name: 'Sync terminal ' + (Date.now() % 100000), kind: 'terminal' })
+  })).json()
+  const TK = { 'x-device-key': t.api_key, 'content-type': 'application/json' }
+
+  const person = await (await fetch(B + '/staff', { method: 'POST', headers: AH,
+    body: JSON.stringify({ username: 'sync' + stamp, displayName: 'Sana Tariq',
+      password: 'sync-1234', role: 'ward' }) })).json()
+  const pid = person.user?.id ?? person.id
+
+  const asked = await fetch(B + '/attendance/terminal-sync', { method: 'POST', headers: AH,
+    body: JSON.stringify({ staffId: pid, deviceId: t.id }) })
+  const job = (await asked.json()).job
+  ok('an administrator can ask for somebody to be created', asked.status === 202, String(asked.status))
+  ok('under their staff id', job?.device_user_id === String(pid), JSON.stringify(job))
+
+  const noKey = await fetch(B + '/attendance/agent/jobs')
+  ok('the job list is refused without a device key', noKey.status === 401, String(noKey.status))
+
+  const jobs = await (await fetch(B + '/attendance/agent/jobs', { headers: TK })).json()
+  ok('the terminal’s agent is handed the job with its key',
+    Array.isArray(jobs) && jobs.some((j) => j.id === job.id), JSON.stringify(jobs).slice(0, 120))
+
+  const readerTakes = await (await fetch(B + '/attendance/agent/jobs', { headers: KEY })).json()
+  ok('a USB reader’s key is given nothing', Array.isArray(readerTakes) && readerTakes.length === 0)
+
+  const wrongDevice = await fetch(B + '/attendance/agent/job-result', { method: 'POST', headers: KEY,
+    body: JSON.stringify({ id: job.id, code: 'CREATED' }) })
+  ok('another device cannot report on this terminal’s job', wrongDevice.status === 404,
+    String(wrongDevice.status))
+
+  const badCode = await fetch(B + '/attendance/agent/job-result', { method: 'POST', headers: TK,
+    body: JSON.stringify({ id: job.id, code: 'MADE_IT_UP' }) })
+  ok('an answer the server does not know is refused', badCode.status === 400, String(badCode.status))
+
+  const done = await fetch(B + '/attendance/agent/job-result', { method: 'POST', headers: TK,
+    body: JSON.stringify({ id: job.id, code: 'CREATED', deviceName: 'Sana Tariq', expectedName: 'Sana Tariq' }) })
+  ok('the agent reports it created', done.status === 200, String(done.status))
+
+  const st = await (await fetch(B + '/attendance/terminal-sync/' + pid, { headers: AH })).json()
+  ok('the screen then reads it as done',
+    st.jobs?.some((j) => j.id === job.id && j.status === 'done'), JSON.stringify(st.jobs).slice(0, 160))
+  ok('with their terminal id filled in', st.staff?.device_user_id === String(pid))
+
+  const roster = await (await fetch(B + '/attendance/agent/roster', { headers: TK })).json()
+  ok('and the roster maps that id to them',
+    roster.some((r) => Number(r.staff_id) === Number(pid) && r.mapped === true))
+
+  /* Who may press the button. */
+  const ward = await (await fetch(B + '/staff', { method: 'POST', headers: AH,
+    body: JSON.stringify({ username: 'wardsync' + stamp, displayName: 'Ward Sync',
+      password: 'ward-1234', role: 'ward' }) })).json()
+  const wtok = (await (await fetch(B + '/auth/login', { method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'wardsync' + stamp, password: 'ward-1234' }) })).json()).token
+  const asWard = await fetch(B + '/attendance/terminal-sync', { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + wtok },
+    body: JSON.stringify({ staffId: pid, deviceId: t.id }) })
+  ok('a ward login cannot create anybody on the terminal', asWard.status === 403, String(asWard.status))
+  const asKiosk = await fetch(B + '/attendance/terminal-sync/' + pid,
+    { headers: { authorization: 'Bearer ' + ktok } })
+  ok('nor read anybody’s terminal status from the door screen', asKiosk.status === 403,
+    String(asKiosk.status))
+  const anon = await fetch(B + '/attendance/terminal-sync/' + pid)
+  ok('nor anybody signed out', anon.status === 401, String(anon.status))
+  void ward
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

@@ -12,6 +12,7 @@ import { AdminAccess } from './admin/AdminAccess'
 import { ReportAccess } from './admin/ReportAccess'
 import { WardSetup } from './admin/WardSetup'
 import { Attendance } from './admin/Attendance'
+import { TerminalSync } from './admin/TerminalSync'
 import {
   LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
   Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle,
@@ -1949,6 +1950,15 @@ function EditStaff({ user, onClose, onDone }: {
   const isDoctor = f.role === 'doctor'
   const isPharmacist = f.role === 'pharmacist'
 
+  /*
+   * A person created on the terminal from this dialog has their terminal id
+   * set by the server. The form is told too, or pressing Save afterwards
+   * would send the blank it opened with and undo it.
+   */
+  const terminalIdSet = useCallback((id: string) => {
+    setF((prev) => ({ ...prev, deviceUserId: id }))
+  }, [])
+
   useEffect(() => { api.departments().then(setDepts).catch(() => {}) }, [])
 
   /*
@@ -2094,6 +2104,11 @@ function EditStaff({ user, onClose, onDone }: {
             onChange={(e) => setF({ ...f, deviceUserId: e.target.value })}
             placeholder={String(user.id)} className="field mt-1 num" />
         </Field>
+
+        {f.attendanceRequired && (
+          <TerminalSync staffId={Number(user.id)} savedId={user.device_user_id ?? null}
+            typedId={f.deviceUserId} onMapped={terminalIdSet} />
+        )}
 
         <label className="flex items-start gap-2 sm:col-span-2">
           <input type="checkbox" checked={f.attendanceRequired} className="mt-0.5"

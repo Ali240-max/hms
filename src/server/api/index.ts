@@ -37,8 +37,11 @@ import {
   recentPunches,
   deletePunch, devices, saveDevice, deviceByKey, fingerprintsFor,
   saveFingerprint,
-  deleteFingerprint, templatesForAgent, rosterForAgent
+  deleteFingerprint, templatesForAgent, rosterForAgent, todayLocal
 } from '../services/attendance'
+import {
+  syncStatus, requestSync, cancelJob, claimJobs, finishJob, TerminalSyncError
+} from '../services/terminal-sync'
 import {
   wards, saveWard, deleteWard, bedBoard, saveBed, deleteBed, setBedStatus,
   admit, transfer, account, addCharge, takePayment, discharge, admissions
@@ -114,6 +117,11 @@ api.onError((err, c) => {
   if (err instanceof AuthError) {
     return c.json({ error: err.message, code: err.code }, err.code === 'BAD_CREDENTIALS' ? 401 : 409)
   }
+  if (err instanceof TerminalSyncError) {
+    const status = err.code === 'NOT_FOUND' || err.code === 'NO_STAFF' ? 404
+      : err.code === 'BAD_ID' ? 400 : 409
+    return c.json({ error: err.message, code: err.code }, status)
+  }
   if (err instanceof PatientError || err instanceof ClinicalError) {
     return c.json({ error: err.message, code: err.code }, err.code === 'NOT_FOUND' ? 404 : 409)
   }
@@ -163,7 +171,7 @@ const bearer = (c: any): string | undefined =>
  * package.json: the version there has not moved since the first commit and
  * making it meaningful now would mean remembering two things instead of one.
  */
-const BUILD = 'v57'
+const BUILD = 'v58'
 
 api.get('/health', async (c) => {
   let migration: string | null = null
@@ -244,7 +252,13 @@ api.use('*', async (c, next) => {
      * missing. Listed by exact path like the other two.
      */
     '/attendance/agent/roster',
-    '/attendance/agent/punch'
+    '/attendance/agent/punch',
+    /*
+     * Terminal jobs: putting staff onto the device from HMS. Two exact paths,
+     * the job id travelling in the body, so nothing here needs a pattern.
+     */
+    '/attendance/agent/jobs',
+    '/attendance/agent/job-result'
   ]
   if (DEVICE_KEY_ROUTES.includes(path)) return next()
 
@@ -1245,7 +1259,7 @@ api.post('/printing/sale/:id', async (c) => {
 const attendanceAdmin = adminCan('admin.staff.edit')
 
 api.get('/attendance/day', allow('admin', 'reports'), async (c) =>
-  c.json(await attendanceDay(c.req.query('date') ?? new Date().toISOString().slice(0, 10))))
+  c.json(await attendanceDay(c.req.query('date') ?? todayLocal())))
 
 /*
  * The screen by the door.
@@ -1331,6 +1345,32 @@ api.post('/attendance/fingerprints', attendanceAdmin, async (c) => {
 api.delete('/attendance/fingerprints/:id', attendanceAdmin, async (c) =>
   c.json(await deleteFingerprint(Number(c.req.param('id')))))
 
+/* ------------------------------------ staff onto the network terminal */
+
+/*
+ * Behind the same permission as setting somebody's terminal id by hand,
+ * because that is what it ends up doing — and the first administrator's
+ * account is theirs alone to change, here as on the staff form.
+ */
+api.get('/attendance/terminal-sync/:staffId', attendanceAdmin, async (c) =>
+  c.json(await syncStatus(Number(c.req.param('staffId')))))
+
+api.post('/attendance/terminal-sync', attendanceAdmin, async (c) => {
+  const b = z.object({
+    staffId: z.number().int().positive(),
+    deviceId: z.number().int().positive().nullable().optional(),
+    deviceUserId: z.string().max(24).nullable().optional()
+  }).parse(await c.req.json())
+  try { await guardRootAccount(b.staffId, me(c).id) }
+  catch (e: any) { return c.json({ error: e.message, code: 'NOT_ALLOWED' }, 403) }
+
+  const r = await requestSync({ ...b, by: me(c).displayName })
+  return c.json(r, r.existing ? 200 : 202)
+})
+
+api.post('/attendance/terminal-sync/:jobId/cancel', attendanceAdmin, async (c) =>
+  c.json(await cancelJob(Number(c.req.param('jobId')))))
+
 /* ------------------------------------------------- what the agent calls */
 
 /*
@@ -1391,6 +1431,35 @@ api.post('/attendance/agent/punch', async (c) => {
     if (e.code === 'TOO_SOON') return c.json({ ok: true, duplicate: true })
     return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 409)
   }
+})
+
+/*
+ * Jobs for a terminal's agent: people to create on the device.
+ *
+ * Taking them marks them as the agent's, so a second copy of the agent
+ * running by mistake with the same key does not do them twice.
+ */
+api.get('/attendance/agent/jobs', async (c) => {
+  let device: any
+  try { device = await agentDevice(c) }
+  catch (e: any) { return c.json({ error: e.message, code: 'NO_DEVICE' }, 401) }
+  return c.json(await claimJobs(device.id))
+})
+
+api.post('/attendance/agent/job-result', async (c) => {
+  let device: any
+  try { device = await agentDevice(c) }
+  catch (e: any) { return c.json({ error: e.message, code: 'NO_DEVICE' }, 401) }
+
+  const b = z.object({
+    id: z.number().int().positive(),
+    code: z.enum(['CREATED', 'ALREADY_PRESENT', 'DEVICE_FULL', 'DEVICE_ERROR',
+      'DEVICE_UNREACHABLE', 'VERIFY_FAILED']),
+    message: z.string().max(1000).nullable().optional(),
+    deviceName: z.string().max(100).nullable().optional(),
+    expectedName: z.string().max(100).nullable().optional()
+  }).parse(await c.req.json())
+  return c.json(await finishJob(device.id, b))
 })
 
 /* --------------------------------------------------------------- IPD */

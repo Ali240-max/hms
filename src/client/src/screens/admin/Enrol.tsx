@@ -166,6 +166,14 @@ export function EnrolFinger({ staff, onClose }: {
           <p className="mt-2 text-sm font-medium text-heading">
             {tr('Press the same finger three times')}
           </p>
+          {/*
+            Lifting matters: three presses from one placement make a template
+            that only recognises that one placement, and the person then
+            presses five times at the door every morning.
+          */}
+          <p className="mt-1 text-2xs text-muted">
+            {tr('Lift it off the reader completely between presses, and place it a little differently each time.')}
+          </p>
           <div className="mt-3 flex justify-center gap-2">
             {[0, 1, 2].map((i) => (
               <span key={i}

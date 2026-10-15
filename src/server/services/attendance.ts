@@ -12,15 +12,99 @@ import { randomBytes } from 'node:crypto'
 
 export class AttendanceError extends Error {
   constructor(msg: string, public code:
-    'NO_STAFF' | 'TOO_SOON' | 'EXEMPT' | 'NO_DEVICE' | 'NOT_FOUND') { super(msg) }
+    'NO_STAFF' | 'TOO_SOON' | 'EXEMPT' | 'NO_DEVICE' | 'NOT_FOUND' | 'BAD_TIME') { super(msg) }
 }
 
-/** Two scans inside this window are one arrival, not an arrival and a leave. */
+/** Two scans inside this window are one scan, not a check-in and a check-out. */
 export const REPEAT_WINDOW_MINUTES = 5
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const dateOf = (d: Date) =>
   `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+
+/**
+ * Today, on the server's own calendar.
+ *
+ * Not `toISOString().slice(0, 10)`, which is the UTC date: between midnight
+ * and five in the morning here that is still yesterday, and the day sheet
+ * opened at 02:00 showed the wrong night.
+ */
+export const todayLocal = () => dateOf(new Date())
+
+/**
+ * Which way a scan goes, from where it falls in the day.
+ *
+ * The first valid scan of a work day is a check-in, the second a check-out,
+ * the third a check-in again, and so on. That is the hospital's rule, and it
+ * is read from the ORDER of the day's stored punches rather than stored on
+ * each one. Two reasons:
+ *
+ *   - A punch removed as a mistake re-pairs everything after it. A stored
+ *     direction would leave two check-ins side by side for somebody to fix
+ *     by hand.
+ *   - A terminal's punches can reach the server late, after a network cut. A
+ *     stored direction would be decided by arrival order; this is decided by
+ *     the time on the punch, which is what actually happened.
+ *
+ * Only stored punches count. A finger the reader did not recognise never
+ * becomes a punch, so it cannot move anybody's sequence on.
+ */
+export function directionOf(position: number): 'in' | 'out' {
+  return position % 2 === 1 ? 'in' : 'out'
+}
+
+/**
+ * One person's day, read from their punches in time order.
+ *
+ * `minutes` is the sum of each check-in to the check-out after it, so a scan
+ * out to lunch and back in is time away rather than time worked. A check-in
+ * with no check-out yet counts nothing until it is closed.
+ *
+ * `last` is the check-out that ends the day, and only exists when the day's
+ * last scan IS a check-out. Somebody back from lunch shows as in, with no
+ * leaving time, rather than with the time they went to lunch.
+ */
+export function readDay<T extends { at: string | Date }>(punches: T[]) {
+  const sorted = [...punches].sort(
+    (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+  const withDirection = sorted.map((p, i) => ({ ...p, direction: directionOf(i + 1) }))
+
+  let worked = 0
+  let closed = false
+  let openedAt: number | null = null
+  for (const p of withDirection) {
+    const t = new Date(p.at).getTime()
+    if (p.direction === 'in') openedAt = t
+    else if (openedAt != null) {
+      worked += t - openedAt
+      openedAt = null
+      closed = true
+    }
+  }
+
+  const n = sorted.length
+  return {
+    punches: withDirection,
+    first: (n > 0 ? sorted[0].at : null) as T['at'] | null,
+    last: (n > 0 && n % 2 === 0 ? sorted[n - 1].at : null) as T['at'] | null,
+    minutes: closed ? Math.round(worked / 60_000) : null,
+    /** in the building now, gone for the day, or never came */
+    state: n === 0 ? 'absent' as const : n % 2 === 1 ? 'in' as const : 'left' as const
+  }
+}
+
+/*
+ * The lock that makes "which scan of the day is this" a question with one
+ * answer.
+ *
+ * Two scans from one person arriving together — a K50 back-fill landing at
+ * the same moment as a USB reader, or an agent retrying while the first post
+ * is still in flight — would otherwise both pass the repeat check and both be
+ * stored, and the day would read in, out where it should read in. The lock is
+ * per person and lasts for one transaction, so one person's scan never waits
+ * for anybody else's.
+ */
+const PUNCH_LOCK = 30
 
 /**
  * Which day a punch belongs to.
@@ -153,7 +237,7 @@ export async function deviceByKey(apiKey: string) {
 
 /* --------------------------------------------------------------- punches */
 
-export async function recordPunch(input: {
+type PunchInput = {
   staffId: number
   at?: Date | string
   source?: 'device' | 'manual'
@@ -161,10 +245,24 @@ export async function recordPunch(input: {
   note?: string | null
   raw?: string | null
   by?: string
-}) {
-  const at = input.at ? new Date(input.at) : new Date()
+}
 
-  const staff = ((await db.execute<any>(sql`
+export async function recordPunch(input: PunchInput) {
+  const at = input.at ? new Date(input.at) : new Date()
+  if (Number.isNaN(at.getTime())) {
+    throw new AttendanceError('That time could not be read', 'BAD_TIME')
+  }
+  return db.transaction((tx) => recordPunchLocked(tx, input, at))
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+/** The whole of recording one punch, under that person's lock. */
+async function recordPunchLocked(tx: Tx, input: PunchInput, at: Date) {
+  await tx.execute(sql`
+    SELECT pg_advisory_xact_lock(${PUNCH_LOCK}::int, ${input.staffId}::int)`)
+
+  const staff = ((await tx.execute<any>(sql`
     SELECT id, display_name, shift_start, shift_end, attendance_required
     FROM staff WHERE id = ${input.staffId} AND is_active`)).rows as any[])[0]
   if (!staff) throw new AttendanceError('No such staff member', 'NO_STAFF')
@@ -184,24 +282,29 @@ export async function recordPunch(input: {
   const workDate = workDateFor(at, staff)
 
   /*
-   * A second scan within five minutes is the same arrival.
+   * A second scan within five minutes is the same scan.
    *
    * People press twice when the first beep is quiet, and a reader by a door
-   * catches somebody walking back for their bag. Treating those as a leave
-   * would show a nurse working four minutes.
+   * catches somebody walking back for their bag. Treating those as a
+   * check-out would show a nurse working four minutes.
+   *
+   * Checked both sides of the punch, not only before it. A terminal's
+   * back-fill can deliver a punch a minute EARLIER than one already stored,
+   * and that is still one person pressing twice.
    */
-  const recent = ((await db.execute<any>(sql`
+  const windowMs = REPEAT_WINDOW_MINUTES * 60_000
+  const recent = ((await tx.execute<any>(sql`
     SELECT at FROM attendance_events
     WHERE staff_id = ${input.staffId}
-      AND at > ${new Date(at.getTime() - REPEAT_WINDOW_MINUTES * 60_000).toISOString()}
-      AND at <= ${at.toISOString()}
-    ORDER BY at DESC LIMIT 1`)).rows as any[])[0]
+      AND at > ${new Date(at.getTime() - windowMs).toISOString()}
+      AND at < ${new Date(at.getTime() + windowMs).toISOString()}
+    LIMIT 1`)).rows as any[])[0]
   if (recent) {
     throw new AttendanceError(
       `${staff.display_name} already scanned a moment ago.`, 'TOO_SOON')
   }
 
-  const r = await db.execute<any>(sql`
+  const r = await tx.execute<any>(sql`
     INSERT INTO attendance_events
       (staff_id, at, source, device_id, work_date, note, added_by, raw)
     VALUES (${input.staffId}, ${at.toISOString()}, ${input.source ?? 'device'},
@@ -222,25 +325,30 @@ export async function recordPunch(input: {
    *
    * The agent cannot work any of this out. Direction is not stored on a punch
    * — it is read from the order of the day's punches — so only the server
-   * knows whether this was an arrival or a leaving, and only the server knows
-   * the shift it is late against. Returning it here is what lets the screen
-   * say "Checked in, 12 minutes late" instead of "Recorded".
+   * knows whether this was a check-in or a check-out, and only the server
+   * knows the shift it is late against. Returning it here is what lets the
+   * screen say "Checked in, 12 minutes late" instead of "Recorded".
+   *
+   * The punch's POSITION in the day, not the day's count: a back-filled punch
+   * from earlier in the day is the second scan of the day even if it arrived
+   * fifth. Read inside the lock, so no other scan of this person's can land
+   * between the insert and this count.
    */
-  const countToday = Number(((await db.execute<any>(sql`
+  const position = Number(((await tx.execute<any>(sql`
     SELECT COUNT(*)::int AS n FROM attendance_events
-    WHERE staff_id = ${input.staffId} AND work_date = ${workDate}`)).rows as any[])[0].n)
+    WHERE staff_id = ${input.staffId} AND work_date = ${workDate}
+      AND at <= ${at.toISOString()}`)).rows as any[])[0].n)
 
   return {
     ...saved,
     staff_name: staff.display_name,
+    direction: directionOf(position),
+    punch_no: position,
     /*
-     * The first punch of a day is the arrival; anything after it is the
-     * current leaving time. Somebody who scans a third time has simply moved
-     * their leaving time later, which is what "out" keeps meaning.
+     * Late only means something on the day's first check-in. Coming back in
+     * from lunch is a check-in too, and it is not late for the shift.
      */
-    direction: countToday <= 1 ? 'in' : 'out',
-    punch_no: countToday,
-    late_minutes: lateMinutesFor(at, staff),
+    late_minutes: position === 1 ? lateMinutesFor(at, staff) : null,
     shift_start: staff.shift_start,
     work_date: workDate
   }
@@ -287,13 +395,12 @@ type DayRow = {
 /**
  * One day, every person.
  *
- * Direction is worked out here rather than stored: the first punch of a day
- * is the arrival and the last is the leaving. That is what the hospital asked
- * for, and it has one consequence worth knowing — somebody who scans on the
- * way out to lunch and again on the way back shows a shorter day than they
- * worked, because the middle two punches are not read as a break. The
- * punches are all kept, so if that becomes a problem it is answerable later
- * without re-collecting anything.
+ * Direction is worked out here rather than stored: scans alternate check-in,
+ * check-out, check-in through the day (see `readDay`). Time on site is the
+ * sum of each check-in to the check-out after it, so a scan out to lunch and
+ * back is time away. This used to read only the first and last punch, which
+ * counted lunch as worked; the punches were always all kept, which is why the
+ * change needed no data touched.
  */
 export async function day(date: string) {
   const staff = (await db.execute<any>(sql`
@@ -317,13 +424,8 @@ export async function day(date: string) {
     minutes: number | null; late_minutes: number | null
     status: string
   } => {
-    const punches = byStaff.get(s.id) ?? []
-    const first = punches[0]?.at ?? null
-    const last = punches.length > 1 ? punches[punches.length - 1].at : null
-
-    const minutes = first && last
-      ? Math.round((new Date(last).getTime() - new Date(first).getTime()) / 60_000)
-      : null
+    const read = readDay(byStaff.get(s.id) ?? [])
+    const { first, last, minutes } = read
 
     /*
      * Lateness only means something against a shift.
@@ -342,16 +444,14 @@ export async function day(date: string) {
       lateMinutes = diff > 0 ? diff : 0
     }
 
-    const status = !s.attendance_required ? 'exempt'
-      : punches.length === 0 ? 'absent'
-      : last ? 'left' : 'in'
+    const status = !s.attendance_required ? 'exempt' : read.state
 
     return {
       staff_id: s.id, display_name: s.display_name, role: s.role,
       shift_start: s.shift_start, shift_end: s.shift_end,
       attendance_required: s.attendance_required,
-      punches: punches.map((p) => ({
-        id: p.id, at: p.at, source: p.source, note: p.note
+      punches: read.punches.map((p) => ({
+        id: p.id, at: p.at, source: p.source, note: p.note, direction: p.direction
       })),
       first, last, minutes, late_minutes: lateMinutes, status
     }
@@ -360,8 +460,7 @@ export async function day(date: string) {
 
 /** Who is in the building right now: punched in today, no leaving punch yet. */
 export async function onSite() {
-  const today = dateOf(new Date())
-  return (await day(today)).filter((r) => r.status === 'in')
+  return (await day(todayLocal())).filter((r) => r.status === 'in')
 }
 
 /**
@@ -398,19 +497,14 @@ export async function monthFor(staffId: number, year: number, month: number) {
   const last = new Date(year, month, 0).getDate()
   for (let d = 1; d <= last; d++) {
     const date = `${year}-${pad(month)}-${pad(d)}`
-    const punches = byDate.get(date) ?? []
-    const first = punches[0]?.at ?? null
-    const lastAt = punches.length > 1 ? punches[punches.length - 1].at : null
+    const read = readDay(byDate.get(date) ?? [])
     days.push({
       date,
-      punches,
-      first,
-      last: lastAt,
-      minutes: first && lastAt
-        ? Math.round((new Date(lastAt).getTime() - new Date(first).getTime()) / 60_000)
-        : null,
-      status: !staff.attendance_required ? 'exempt'
-        : punches.length === 0 ? 'absent' : lastAt ? 'left' : 'in'
+      punches: read.punches,
+      first: read.first,
+      last: read.last,
+      minutes: read.minutes,
+      status: !staff.attendance_required ? 'exempt' : read.state
     })
   }
 
@@ -486,6 +580,20 @@ export async function rosterForAgent() {
            (s.device_user_id IS NOT NULL AND s.device_user_id <> '') AS mapped
     FROM staff s
     WHERE s.is_active AND s.attendance_required
+      /*
+       * A guess never shadows a real mapping.
+       *
+       * Staff 15 with no terminal id would otherwise be offered as the guess
+       * for device user 15 — while somebody else has been created on the
+       * terminal AS user 15. With TrustDeviceIds on, whichever row the agent
+       * read last would win. The mapping somebody set is the truth.
+       */
+      AND (
+        (s.device_user_id IS NOT NULL AND s.device_user_id <> '')
+        OR NOT EXISTS (
+          SELECT 1 FROM staff o
+          WHERE o.id <> s.id AND o.device_user_id = s.id::text)
+      )
     ORDER BY s.display_name`)
   return r.rows
 }
@@ -541,7 +649,8 @@ export async function recentPunches(opts: { since?: number; limit?: number } = {
 
   return rows.map((r) => ({
     ...r,
-    direction: Number(r.punch_no) <= 1 ? 'in' : 'out',
-    late_minutes: lateMinutesFor(new Date(r.at), r)
+    direction: directionOf(Number(r.punch_no)),
+    /* Late is about the day's first check-in, not coming back from lunch. */
+    late_minutes: Number(r.punch_no) === 1 ? lateMinutesFor(new Date(r.at), r) : null
   }))
 }

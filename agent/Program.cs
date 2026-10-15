@@ -35,21 +35,43 @@ namespace HmsAttendance
             new Dictionary<int, string>();
 
         /*
-         * The last time each finger was accepted.
+         * ONE LOCK for the matching library and everything that decides what
+         * a capture means.
          *
-         * The reader fires continuously while a finger rests on the glass, so
-         * one press is twenty captures. The server also refuses repeats
-         * within five minutes, but letting twenty posts leave this machine
-         * for one press would fill the log and the network for nothing. This
-         * is the local half of that rule.
+         * The template reload used to clear and refill the library on its own
+         * thread while the capture thread was identifying against it, with
+         * nothing between them. For the moment of the reload the library was
+         * empty or half full, and a perfectly good finger came back "not
+         * recognised" — and the SDK's handle was being used from two threads
+         * at once, which it does not promise to survive. Everything that
+         * touches the library now takes this lock.
          */
-        private static readonly Dictionary<int, DateTime> _lastSeen =
-            new Dictionary<int, DateTime>();
+        private static readonly object _readerLock = new object();
 
-        private static readonly TimeSpan COOLDOWN = TimeSpan.FromSeconds(5);
+        /*
+         * What a capture means: lift detection, retries within one placement,
+         * enrolment, repeats. Kept out of this file, with no SDK in it, so it
+         * can be tested without a reader (see Scan.cs and AgentTest.cs).
+         */
+        private static ReaderLogic _logic;
 
-        private static Enrolment _enrolling;
-        private static readonly object _enrolLock = new object();
+        /*
+         * The template list as last loaded.
+         *
+         * A reload that brings back exactly the same list is skipped instead
+         * of emptying the library and filling it again every five minutes.
+         */
+        private static string _loadedBody;
+
+        /*
+         * The last scan that did NOT produce a punch, for the screen by the
+         * door. A punch shows there from the server; a failure never reaches
+         * the server, so without this somebody pressing a finger that is not
+         * recognised sees nothing at all happen.
+         */
+        private static int _scanSeq;
+        private static string _scanResult = "";
+        private static DateTime _scanAt;
 
         private static volatile bool _running = true;
 
@@ -114,6 +136,10 @@ namespace HmsAttendance
             }
 
             if (!StartReader()) return 4;
+            _logic = new ReaderLogic(new ZkOps());
+
+            if (_cfg.Feedback && !Zk.CanSignal)
+                Log("this SDK build has no SetParameters, so the reader will not light or beep");
 
             Console.CancelKeyPress += delegate (object s, ConsoleCancelEventArgs e)
             {
@@ -237,7 +263,10 @@ namespace HmsAttendance
                 return;
             }
 
-            lock (_enrolLock)
+            /* Nobody enrolled or removed since last time: nothing to do. */
+            if (body == _loadedBody) return;
+
+            lock (_readerLock)
             {
                 Zk.DBClear(_db);
                 _names.Clear();
@@ -266,6 +295,7 @@ namespace HmsAttendance
 
                 Log("templates loaded: " + loaded +
                     (refused > 0 ? " (" + refused + " refused)" : ""));
+                _loadedBody = body;
             }
         }
 
@@ -292,6 +322,8 @@ namespace HmsAttendance
             byte[] image = new byte[Zk.IMAGE_BYTES];
             byte[] template = new byte[Zk.TEMPLATE_BYTES];
 
+            int lastOddCode = 0;
+
             while (_running)
             {
                 int size = Zk.TEMPLATE_BYTES;
@@ -307,143 +339,167 @@ namespace HmsAttendance
                     continue;
                 }
 
-                if (r != Zk.OK)
+                /*
+                 * A fresh copy of exactly what this capture produced. The
+                 * buffers above are reused, so nothing may hold on to them.
+                 */
+                byte[] captured = null;
+                if (r == Zk.OK && size > 0 && size <= template.Length)
                 {
-                    /*
-                     * An empty glass is the normal answer, and arrives many
-                     * times a second. Only the unusual codes are logged, or
-                     * the log would be nothing but "nothing on the glass".
-                     */
-                    if (r != Zk.ERR_CAPTURE && r != Zk.ERR_BUSY)
-                    {
-                        if (r == Zk.ERR_EXTRACT_FP) Log("unreadable print");
-                        else Log("capture: " + Zk.Explain(r));
-                    }
+                    captured = new byte[size];
+                    Array.Copy(template, captured, size);
+                }
+
+                /*
+                 * An empty glass is the normal answer, many times a second.
+                 * Other codes are logged once each time they change, so a
+                 * reader that has gone wrong says so without the log filling
+                 * with one line per tenth of a second.
+                 */
+                if (r != Zk.OK && r != Zk.ERR_CAPTURE && r != Zk.ERR_EXTRACT_FP)
+                {
+                    if (r != lastOddCode && r != Zk.ERR_BUSY) Log("capture: " + Zk.Explain(r));
+                    lastOddCode = r;
                     Thread.Sleep(120);
                     continue;
                 }
+                lastOddCode = 0;
 
-                byte[] captured = new byte[size];
-                Array.Copy(template, captured, size);
+                ScanResult res;
+                lock (_readerLock) { res = _logic.OnCapture(r, captured, DateTime.Now); }
 
-                Enrolment job;
-                lock (_enrolLock) { job = _enrolling; }
-
-                if (job != null) HandleEnrolCapture(job, captured);
-                else HandleIdentify(captured);
+                Act(res);
+                Thread.Sleep(PauseAfter(res.Outcome));
             }
         }
 
-        private static void HandleIdentify(byte[] captured)
+        /*
+         * How long to wait before the next capture.
+         *
+         * Short while watching for a finger to land or lift, so neither is
+         * missed; shortest between retries on one placement, so a person does
+         * not feel the reader hesitate. After a decided scan there is no
+         * pause at all here, because the lights and beep take that long.
+         */
+        private static int PauseAfter(Outcome o)
         {
-            int fid = 0, score = 0;
-            int r = Zk.DBIdentify(_db, captured, ref fid, ref score);
-
-            if (r != Zk.OK)
+            switch (o)
             {
-                Log("not recognised");
-                Thread.Sleep(600);
-                return;
+                case Outcome.Nothing: return 80;
+                case Outcome.Waiting: return 100;
+                case Outcome.Retrying: return 60;
+                default: return 0;
             }
-
-            DateTime now = DateTime.Now;
-            lock (_lastSeen)
-            {
-                DateTime last;
-                if (_lastSeen.TryGetValue(fid, out last) && now - last < COOLDOWN)
-                {
-                    /* Same finger still resting on the glass. */
-                    Thread.Sleep(300);
-                    return;
-                }
-                _lastSeen[fid] = now;
-            }
-
-            int staffId = Fid.StaffId(fid);
-            string who;
-            if (!_names.TryGetValue(fid, out who)) who = "staff " + staffId;
-
-            Log("matched " + who + " (score " + score + ")");
-
-            Queue.Add(new Punch(staffId, now,
-                "SLK20R fid=" + fid + " score=" + score));
-
-            /* Let the finger come off the glass before looking again. */
-            Thread.Sleep(900);
         }
 
-        /* ----------------------------------------------------- the enrolment */
-
-        private static void HandleEnrolCapture(Enrolment job, byte[] captured)
+        /// <summary>What to do about a decided scan: post, log, light, beep.</summary>
+        private static void Act(ScanResult res)
         {
-            lock (_enrolLock)
+            switch (res.Outcome)
             {
-                if (_enrolling != job) return;
-
-                /*
-                 * Every capture must be the same finger as the first.
-                 *
-                 * Without this, somebody using a different finger each time
-                 * produces a merged template that matches none of the three,
-                 * and the failure only shows up weeks later at a door.
-                 */
-                if (job.Captures.Count > 0)
+                case Outcome.Matched:
                 {
-                    int m = Zk.DBMatch(_db, job.Captures[0], captured);
-                    if (m <= 0)
+                    int staffId = Fid.StaffId(res.Fid);
+                    string who;
+                    lock (_readerLock)
                     {
-                        job.Message = "That is a different finger. Use the same one.";
-                        Log("enrol: different finger, ignored");
-                        Thread.Sleep(900);
-                        return;
+                        if (!_names.TryGetValue(res.Fid, out who)) who = "staff " + staffId;
                     }
+                    Log("matched " + who + " (score " + res.Score + ")");
+                    Queue.Add(new Punch(staffId, DateTime.Now,
+                        "reader fid=" + res.Fid + " score=" + res.Score));
+                    Signal(true);
+                    break;
                 }
-
-                job.Captures.Add(captured);
-                job.Message = "";
-                Log("enrol: capture " + job.Captures.Count + " of 3");
-
-                if (job.Captures.Count < 3)
+                case Outcome.Repeat:
+                    /* Recognised again within seconds: not a second punch. */
+                    Signal(true);
+                    break;
+                case Outcome.NotRecognised:
+                    Log("not recognised after " + ReaderLogic.MAX_ATTEMPTS + " tries on one press");
+                    Remember("not_recognised");
+                    Signal(false);
+                    break;
+                case Outcome.Unreadable:
+                    Log("unreadable print after " + ReaderLogic.MAX_ATTEMPTS + " tries on one press");
+                    Remember("unreadable");
+                    Signal(false);
+                    break;
+                case Outcome.EnrolCaptured:
                 {
-                    Thread.Sleep(900);
-                    return;
+                    int n = 0;
+                    lock (_readerLock) { if (_logic.Enrolling != null) n = _logic.Enrolling.Captures.Count; }
+                    Log("enrol: press " + n + " of 3 taken — waiting for the finger to lift");
+                    Signal(true);
+                    break;
                 }
+                case Outcome.EnrolDifferent:
+                    Log("enrol: different finger, ignored");
+                    Signal(false);
+                    break;
+                case Outcome.EnrolDone:
+                    Log("enrol: done");
+                    Signal(true);
+                    break;
+                case Outcome.EnrolFailed:
+                    Log("enrol: failed: " + res.Message);
+                    Signal(false);
+                    break;
+            }
+        }
 
+        private static void Signal(bool ok)
+        {
+            if (_cfg.Feedback) Zk.Signal(_dev, ok);
+        }
+
+        private static void Remember(string result)
+        {
+            lock (_readerLock)
+            {
+                _scanSeq++;
+                _scanResult = result;
+                _scanAt = DateTime.Now;
+            }
+        }
+
+        /// <summary>
+        /// The matching library, for ReaderLogic. Every call is made with
+        /// _readerLock held, by the caller.
+        /// </summary>
+        private class ZkOps : IFingerOps
+        {
+            public bool Identify(byte[] template, out int fid, out int score)
+            {
+                fid = 0; score = 0;
+                return Zk.DBIdentify(_db, template, ref fid, ref score) == Zk.OK;
+            }
+
+            public bool Same(byte[] a, byte[] b)
+            {
+                return Zk.DBMatch(_db, a, b) > 0;
+            }
+
+            public byte[] Merge(byte[] a, byte[] b, byte[] c, out string why)
+            {
                 byte[] reg = new byte[Zk.TEMPLATE_BYTES];
-                int regLen = Zk.TEMPLATE_BYTES;
-                int r = Zk.DBMerge(_db, job.Captures[0], job.Captures[1],
-                    job.Captures[2], reg, ref regLen);
-
-                if (r != Zk.OK)
+                int len = Zk.TEMPLATE_BYTES;
+                int r = Zk.DBMerge(_db, a, b, c, reg, ref len);
+                if (r != Zk.OK || len <= 0 || len > reg.Length)
                 {
-                    job.Failed = true;
-                    job.Message = Zk.Explain(r) + " — start again";
-                    Log("enrol: merge failed: " + Zk.Explain(r));
-                    /*
-                     * Kept so the screen can read the outcome AFTER the job
-                     * ends. Clearing _enrolling without this left the browser
-                     * polling an idle agent, with no way to tell a finished
-                     * enrolment from one that never started.
-                     */
-                    _lastEnrolment = job;
-                    _enrolling = null;
-                    return;
+                    why = Zk.Explain(r);
+                    return null;
                 }
+                why = "";
+                byte[] stored = new byte[len];
+                Array.Copy(reg, stored, len);
+                return stored;
+            }
 
-                byte[] stored = new byte[regLen];
-                Array.Copy(reg, stored, regLen);
-                job.Template = Convert.ToBase64String(stored);
-
-                int fid = Fid.Make(job.StaffId, job.FingerIndex);
+            public void Store(int fid, byte[] registered)
+            {
                 Zk.DBDel(_db, fid);          // replacing an earlier enrolment
-                Zk.DBAdd(_db, fid, stored);
-
-                job.Done = true;
-                job.Message = "Finger enrolled.";
-                Log("enrol: done for staff " + job.StaffId +
-                    " finger " + job.FingerIndex);
-                _lastEnrolment = job;
-                _enrolling = null;
+                Zk.DBAdd(_db, fid, registered);
             }
         }
 
@@ -515,6 +571,13 @@ namespace HmsAttendance
             res.AddHeader("Access-Control-Allow-Origin", "*");
             res.AddHeader("Access-Control-Allow-Headers", "content-type");
             res.AddHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+            /*
+             * A page served from the HMS server reaching this machine's
+             * loopback is what Chrome calls a private-network request, and
+             * newer versions ask first whether that is allowed. Saying yes is
+             * safe for the same reason as the headers above.
+             */
+            res.AddHeader("Access-Control-Allow-Private-Network", "true");
 
             if (req.HttpMethod == "OPTIONS") { Send(res, 204, ""); return; }
 
@@ -522,12 +585,24 @@ namespace HmsAttendance
 
             if (path == "/status")
             {
-                lock (_enrolLock)
+                lock (_readerLock)
                 {
+                    /*
+                     * `lastScan` is the last scan that did NOT become a punch,
+                     * for the screen by the door. Only the outcome and when:
+                     * no name, because a scan that was not recognised has
+                     * nobody to name.
+                     */
                     Send(res, 200, "{\"ok\":true,\"reader\":\"" +
                         Json.Escape(_cfg.DeviceName) + "\",\"templates\":" +
                         _names.Count + ",\"queued\":" + Queue.Count() +
-                        ",\"enrolling\":" + (_enrolling != null ? "true" : "false") + "}");
+                        ",\"enrolling\":" + (_logic.Enrolling != null ? "true" : "false") +
+                        ",\"lastScan\":{\"seq\":" + _scanSeq +
+                        ",\"result\":\"" + Json.Escape(_scanResult) + "\"" +
+                        ",\"secondsAgo\":" + (_scanSeq == 0 ? "null"
+                            : ((int)(DateTime.Now - _scanAt).TotalSeconds).ToString(
+                                CultureInfo.InvariantCulture)) +
+                        "}}");
                 }
                 return;
             }
@@ -550,11 +625,14 @@ namespace HmsAttendance
                 if (finger <= 0) finger = 1;
                 if (staffId <= 0) { Send(res, 400, "{\"error\":\"staffId\"}"); return; }
 
-                lock (_enrolLock)
+                lock (_readerLock)
                 {
-                    /* A new run must not report the previous run's result. */
-                    _lastEnrolment = null;
-                    _enrolling = new Enrolment(staffId, finger);
+                    /*
+                     * A new run must not report the previous run's result, and
+                     * its first press must be a fresh one: a finger already on
+                     * the glass when the button was clicked is not a press.
+                     */
+                    _logic.StartEnrolment(staffId, finger);
                 }
                 Log("enrol: started for staff " + staffId + " finger " + finger);
                 Send(res, 200, "{\"ok\":true}");
@@ -563,12 +641,12 @@ namespace HmsAttendance
 
             if (path == "/enrol/progress")
             {
-                lock (_enrolLock)
+                lock (_readerLock)
                 {
-                    Enrolment j = _enrolling;
+                    Enrolment j = _logic.Enrolling;
                     if (j == null)
                     {
-                        Enrolment last = _lastEnrolment;
+                        Enrolment last = _logic.LastEnrolment;
                         if (last != null && (last.Done || last.Failed))
                         {
                             Send(res, 200, "{\"captures\":" + last.Captures.Count +
@@ -591,7 +669,7 @@ namespace HmsAttendance
 
             if (path == "/enrol/cancel" && req.HttpMethod == "POST")
             {
-                lock (_enrolLock) { _enrolling = null; }
+                lock (_readerLock) { _logic.CancelEnrolment(); }
                 Log("enrol: cancelled");
                 Send(res, 200, "{\"ok\":true}");
                 return;
@@ -599,8 +677,6 @@ namespace HmsAttendance
 
             Send(res, 404, "{\"error\":\"no such path\"}");
         }
-
-        private static Enrolment _lastEnrolment;
 
         private static void Send(HttpListenerResponse res, int code, string body)
         {
@@ -881,6 +957,22 @@ namespace HmsAttendance
             bool first = _mark == DateTime.MinValue;
             int quietPolls = 0;
 
+            /*
+             * Two clocks on one thread.
+             *
+             * Punches are read every PollSeconds. Jobs — people HMS wants
+             * created on the device — are asked for every JobSeconds, which
+             * is a question to the HMS server and costs the terminal nothing
+             * unless there is something to do.
+             *
+             * Both run HERE, one after the other, never side by side. Some
+             * firmware allows only one connection at a time, and two
+             * conversations on one device is how replies end up answering the
+             * wrong question.
+             */
+            DateTime nextPoll = DateTime.UtcNow;
+            DateTime nextJobs = DateTime.UtcNow;
+
             while (_running)
             {
                 if ((DateTime.UtcNow - rosterAt).TotalSeconds >= _cfg.ReloadSeconds)
@@ -888,6 +980,24 @@ namespace HmsAttendance
                     LoadRoster();
                     rosterAt = DateTime.UtcNow;
                 }
+
+                if (DateTime.UtcNow >= nextJobs)
+                {
+                    try
+                    {
+                        /* Somebody just created changes the roster; read it now. */
+                        if (RunJobs() > 0) { LoadRoster(); rosterAt = DateTime.UtcNow; }
+                    }
+                    catch (Exception e) { Log("jobs: " + Short(e)); }
+                    nextJobs = DateTime.UtcNow.AddSeconds(_cfg.JobSeconds);
+                }
+
+                if (DateTime.UtcNow < nextPoll)
+                {
+                    SleepUpTo(1);
+                    continue;
+                }
+                nextPoll = DateTime.UtcNow.AddSeconds(_cfg.PollSeconds);
 
                 try
                 {
@@ -918,13 +1028,139 @@ namespace HmsAttendance
                 {
                     Log("terminal: " + Short(e));
                 }
-
-                SleepUpTo(_cfg.PollSeconds);
             }
 
             Log("stopping");
             SaveMark();
             return 0;
+        }
+
+        /* ------------------------------------------------- jobs from HMS */
+
+        /// <summary>
+        /// Create anybody HMS has asked for, and say how it went.
+        ///
+        /// Returns how many were created or found, so the caller knows to
+        /// re-read the roster.
+        ///
+        /// The device is only connected to when there is a job. A result is
+        /// posted for EVERY job taken, including when the device could not be
+        /// reached at all, so the administrator sees "could not reach the
+        /// terminal" within seconds instead of a spinner that never stops.
+        /// </summary>
+        private static int RunJobs()
+        {
+            string body;
+            try
+            {
+                body = Http.Get(_cfg.Server + "/api/attendance/agent/jobs", _cfg.DeviceKey);
+            }
+            catch (Exception)
+            {
+                /* The server is unreachable; the punch loop already says so. */
+                return 0;
+            }
+
+            object[] rows = null;
+            try { rows = new JavaScriptSerializer().DeserializeObject(body) as object[]; }
+            catch (Exception e) { Log("jobs came back unreadable: " + Short(e)); return 0; }
+            if (rows == null || rows.Length == 0) return 0;
+
+            List<Dictionary<string, object>> jobs = new List<Dictionary<string, object>>();
+            foreach (object o in rows)
+            {
+                Dictionary<string, object> j = o as Dictionary<string, object>;
+                if (j != null && Json.Int(j, "id") > 0) jobs.Add(j);
+            }
+            if (jobs.Count == 0) return 0;
+
+            Log("jobs: " + jobs.Count + " to do on the terminal");
+
+            Dictionary<int, UserSyncResult> done = new Dictionary<int, UserSyncResult>();
+            try
+            {
+                using (Terminal t = new Terminal(_cfg.DeviceIp, _cfg.DevicePort,
+                                                 _cfg.DevicePassword, 8))
+                {
+                    t.Connect();
+                    foreach (Dictionary<string, object> j in jobs)
+                    {
+                        int id = Json.Int(j, "id");
+                        UserSyncResult r = t.EnsureUserSafely(
+                            Json.Str(j, "device_user_id"), Json.Str(j, "name"));
+                        done[id] = r;
+                        Log("job " + id + ": user " + r.UserId + " " + r.Code +
+                            (r.DeviceName.Length > 0 ? " (\"" + r.DeviceName + "\")" : "") +
+                            (r.Message.Length > 0 ? " - " + r.Message : ""));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                /* Could not connect, or the connection failed outside a job. */
+                string why = Terminal.DescribeFailure(e);
+                Log("jobs: could not reach the terminal: " + why);
+                foreach (Dictionary<string, object> j in jobs)
+                {
+                    int id = Json.Int(j, "id");
+                    if (done.ContainsKey(id)) continue;
+                    UserSyncResult r = new UserSyncResult();
+                    r.UserId = Json.Str(j, "device_user_id");
+                    r.Code = "DEVICE_UNREACHABLE";
+                    r.Message = "Could not reach the terminal at " + _cfg.DeviceIp + ": " + why;
+                    done[id] = r;
+                }
+            }
+
+            int good = 0;
+            foreach (KeyValuePair<int, UserSyncResult> kv in done)
+            {
+                UserSyncResult r = kv.Value;
+                if (r.Code == "CREATED" || r.Code == "ALREADY_PRESENT") good++;
+                PostJobResult(kv.Key, r);
+            }
+            return good;
+        }
+
+        /// <summary>
+        /// Tell HMS how a job went. Tried three times; if the server cannot be
+        /// reached at all, HMS offers the job again in a few minutes, and the
+        /// device is read before anything is written, so nobody is created
+        /// twice.
+        /// </summary>
+        private static void PostJobResult(int id, UserSyncResult r)
+        {
+            string json = "{\"id\":" + id +
+                ",\"code\":\"" + Json.Escape(r.Code) + "\"" +
+                ",\"message\":\"" + Json.Escape(r.Message) + "\"" +
+                ",\"deviceName\":\"" + Json.Escape(r.DeviceName) + "\"" +
+                ",\"expectedName\":\"" + Json.Escape(r.ExpectedName) + "\"}";
+
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    Http.Post(_cfg.Server + "/api/attendance/agent/job-result",
+                        _cfg.DeviceKey, json);
+                    return;
+                }
+                catch (HttpError he)
+                {
+                    /* The server's considered answer; retrying will not change it. */
+                    Log("job " + id + ": server refused the result: " + he.Status + " " + he.Body);
+                    return;
+                }
+                catch (Exception e)
+                {
+                    if (attempt == 3)
+                    {
+                        Log("job " + id + ": could not report the result (" + Short(e) +
+                            "). HMS will offer it again in a few minutes.");
+                        return;
+                    }
+                    Thread.Sleep(1000);
+                }
+            }
         }
 
         /// <summary>

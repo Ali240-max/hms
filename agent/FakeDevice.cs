@@ -58,6 +58,8 @@ namespace HmsAttendance
         private const ushort CMD_USERTEMP_RRQ = 9;
         private const ushort CMD_GET_FREE_SIZES = 50;
         private const ushort CMD_GET_TIME = 201;
+        private const ushort CMD_USER_WRQ = 8;
+        private const ushort CMD_ACK_ERROR = 2001;
 
         private readonly TcpListener _listener;
         private readonly Thread _thread;
@@ -81,6 +83,44 @@ namespace HmsAttendance
         public readonly int Port;
         public readonly List<string> Seen = new List<string>();
 
+        /* ------------------------------------------------ users, writable */
+
+        /// <summary>One user as the device holds it.</summary>
+        public class FakeUser
+        {
+            public int Uid;
+            public string Name;
+            public string UserId;
+            public FakeUser(int uid, string name, string userId)
+            {
+                Uid = uid; Name = name; UserId = userId;
+            }
+        }
+
+        /** Who is on the device. Two people to start, as on a fresh trace. */
+        public readonly List<FakeUser> Users = new List<FakeUser>
+        {
+            new FakeUser(1, "Yasir", "1"),
+            new FakeUser(7, "Saleem", "7")
+        };
+
+        /** 72 on current firmware, the K50 included; 28 on old firmware. */
+        public int UserLayout = 72;
+
+        /** What the counters report. 58 matches the real K50 trace. */
+        public int ReportedUsers = 58;
+        public int UserCapacity = 3000;
+
+        /** Answer a user write with ACK_ERROR: a device that says no. */
+        public bool RefuseWrites = false;
+        /** Answer ACK_OK and keep nothing: a device that says yes and lies. */
+        public bool IgnoreWrites = false;
+        /** Never answer a user write: a device that stops talking mid-job. */
+        public bool SilentOnWrite = false;
+
+        /** How many user writes arrived, whatever happened to them. */
+        public int Writes;
+
         public FakeDevice()
         {
             _listener = new TcpListener(IPAddress.Loopback, 0);
@@ -100,17 +140,68 @@ namespace HmsAttendance
         /* ------------------------------------------------- the data it holds */
 
         /// <summary>
-        /// Two users, in the 72-byte layout current firmware uses.
+        /// Everybody on the device, in whichever layout it is pretending to be.
         /// </summary>
-        public static byte[] UserPayload()
+        public byte[] UserPayload()
         {
-            byte[] a = User(1, "Yasir", "1");
-            byte[] b = User(7, "Saleem", "7");
-            byte[] all = new byte[4 + a.Length + b.Length];
-            Buffer.BlockCopy(BitConverter.GetBytes(a.Length + b.Length), 0, all, 0, 4);
-            Buffer.BlockCopy(a, 0, all, 4, a.Length);
-            Buffer.BlockCopy(b, 0, all, 4 + a.Length, b.Length);
+            List<byte[]> recs = new List<byte[]>();
+            lock (Users)
+            {
+                foreach (FakeUser u in Users)
+                    recs.Add(UserLayout == 28 ? User28(u.Uid, u.Name, u.UserId)
+                                              : User(u.Uid, u.Name, u.UserId));
+            }
+            int body = 0;
+            foreach (byte[] r in recs) body += r.Length;
+            byte[] all = new byte[4 + body];
+            Buffer.BlockCopy(BitConverter.GetBytes(body), 0, all, 0, 4);
+            int at = 4;
+            foreach (byte[] r in recs) { Buffer.BlockCopy(r, 0, all, at, r.Length); at += r.Length; }
             return all;
+        }
+
+        /* <HB5s8sIxBhI : uid, privilege, password, name, card, pad, group,
+         * timezone, user_id as an integer */
+        private static byte[] User28(int uid, string name, string userId)
+        {
+            byte[] r = new byte[28];
+            Buffer.BlockCopy(BitConverter.GetBytes((ushort)uid), 0, r, 0, 2);
+            Put(r, 8, name, 8);
+            uint id;
+            uint.TryParse(userId, out id);
+            Buffer.BlockCopy(BitConverter.GetBytes(id), 0, r, 24, 4);
+            return r;
+        }
+
+        /// <summary>A user write, read the way the device would read it.</summary>
+        private void TakeUser(byte[] data)
+        {
+            FakeUser u;
+            if (UserLayout == 28)
+            {
+                if (data.Length < 28) return;
+                u = new FakeUser(BitConverter.ToUInt16(data, 0), Get(data, 8, 8),
+                    BitConverter.ToUInt32(data, 24).ToString());
+            }
+            else
+            {
+                if (data.Length < 72) return;
+                u = new FakeUser(BitConverter.ToUInt16(data, 0), Get(data, 11, 24),
+                    Get(data, 48, 24));
+            }
+            lock (Users)
+            {
+                /* A write to a uid that exists replaces that slot, as a device does. */
+                Users.RemoveAll(delegate (FakeUser x) { return x.Uid == u.Uid; });
+                Users.Add(u);
+            }
+        }
+
+        private static string Get(byte[] b, int at, int max)
+        {
+            int end = at;
+            while (end < at + max && end < b.Length && b[end] != 0) end++;
+            return Encoding.UTF8.GetString(b, at, end - at);
         }
 
         private static byte[] User(int uid, string name, string userId)
@@ -228,11 +319,22 @@ namespace HmsAttendance
                     case CMD_GET_FREE_SIZES:
                     {
                         byte[] sizes = new byte[80];
-                        Buffer.BlockCopy(BitConverter.GetBytes(58), 0, sizes, 4 * 4, 4);
+                        Buffer.BlockCopy(BitConverter.GetBytes(ReportedUsers), 0, sizes, 4 * 4, 4);
                         Buffer.BlockCopy(BitConverter.GetBytes(61), 0, sizes, 6 * 4, 4);
                         Buffer.BlockCopy(BitConverter.GetBytes(3), 0, sizes, 8 * 4, 4);
+                        Buffer.BlockCopy(BitConverter.GetBytes(UserCapacity), 0, sizes, 15 * 4, 4);
                         Buffer.BlockCopy(BitConverter.GetBytes(100000), 0, sizes, 16 * 4, 4);
                         Reply(n, CMD_ACK_OK, sizes, reply);
+                        break;
+                    }
+
+                    case CMD_USER_WRQ:
+                    {
+                        Writes++;
+                        if (SilentOnWrite) break;
+                        if (RefuseWrites) { Reply(n, CMD_ACK_ERROR, new byte[0], reply); break; }
+                        if (!IgnoreWrites) TakeUser(data);
+                        Reply(n, CMD_ACK_OK, new byte[0], reply);
                         break;
                     }
 
