@@ -34,6 +34,10 @@ export function CounterBilling({ me, target, onDone, onCancel }: {
   const [tendered, setTendered] = useState('')
   const [method, setMethod] = useState<string>('cash')
   const [discount, setDiscount] = useState('')
+  /* Rupees or per cent, because customers ask for both. */
+  const [asPct, setAsPct] = useState(false)
+  /** The counter's own rules. Enforced on the server; read here to draw. */
+  const [rules, setRules] = useState<{ on: boolean; maxPct: number } | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [done, setDone] = useState<any>(null)
@@ -50,8 +54,35 @@ export function CounterBilling({ me, target, onDone, onCancel }: {
       .catch((e: any) => setErr(e.message))
   }, [target])
 
+  useEffect(() => {
+    api.counterDiscount()
+      .then((d: any) => setRules({
+        on: !!d.discountEnabled,
+        maxPct: Math.max(0, Number(d.discountMaxPct) || 0)
+      }))
+      /* Unreadable rules must not hand out a power nobody granted. */
+      .catch(() => setRules({ on: false, maxPct: 0 }))
+  }, [])
+
   const subtotal = draft ? Number(draft.totalPaisa) : 0
-  const off = Math.min(toPaisa(discount), subtotal)
+
+  /*
+   * What was typed, and what is allowed.
+   *
+   * Capped at the bill so a typo cannot produce a negative total, and at
+   * the ceiling so the bill is not sent only to come back refused. The box
+   * keeps whatever was typed and a note says what was actually used — a box
+   * that rewrites itself under somebody's fingers is worse than one that
+   * explains.
+   */
+  const typed = Math.max(0, asPct
+    ? Math.round(subtotal * (Number(discount) || 0) / 100)
+    : toPaisa(discount))
+  const ceiling = rules && rules.maxPct > 0
+    ? Math.floor(subtotal * rules.maxPct / 100)
+    : Infinity
+  const off = rules?.on ? Math.min(typed, subtotal, ceiling) : 0
+  const overCeiling = typed > off && typed > 0
   const total = subtotal - off
   const paid = method === 'cash' ? toPaisa(tendered) : total
   const change = paid - total
@@ -199,10 +230,6 @@ export function CounterBilling({ me, target, onDone, onCancel }: {
             ))}
           </div>
 
-          <label className="label mt-3">{tr('Discount')}</label>
-          <input value={discount} onChange={(e) => setDiscount(e.target.value)}
-            placeholder="0.00" className="field num text-right" />
-
           {method === 'cash' && (
             <>
               <label className="label mt-3">{tr('Cash received')}</label>
@@ -223,7 +250,44 @@ export function CounterBilling({ me, target, onDone, onCancel }: {
         <div className="panel mt-auto p-4">
           <dl className="space-y-1 text-sm">
             <Row k={tr('Subtotal')} v={rs(subtotal)} />
-            {off > 0 && <Row k={tr('Discount')} v={`-${rs(off)}`} />}
+
+            {/*
+              The discount, laid out exactly as it is at the pharmacy till.
+            
+              Staff move between these two windows, and a box that sits in a
+              different place and behaves differently for no reason is a box
+              that gets used wrong. Hidden when the counter has discounts
+              switched off, because a box that always refuses is worse than
+              no box at all.
+            */}
+            {rules?.on && (
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <dt className="shrink-0 text-muted">{tr('Discount')}</dt>
+                <dd className="flex items-center gap-1">
+                  <input value={discount} onChange={(e) => setDiscount(e.target.value)}
+                    placeholder="0" inputMode="decimal"
+                    className="field num w-20 py-1 text-right text-2xs" />
+                  <button type="button" onClick={() => setAsPct((v) => !v)}
+                    title={tr('Switch between rupees and per cent')}
+                    className="rounded-lg border-2 border-line px-1.5 py-1 text-2xs
+                               text-muted hover:border-primary hover:text-primary">
+                    {asPct ? '%' : 'Rs'}
+                  </button>
+                  <span className="num w-16 text-right text-body">
+                    {off > 0 ? `-${rs(off)}` : '0.00'}
+                  </span>
+                </dd>
+              </div>
+            )}
+
+            {overCeiling && (
+              <p className="rounded-lg border border-warn/25 bg-warn/5 px-2 py-1 text-2xs text-warn">
+                {typed > subtotal
+                  ? tr('More than the bill comes to. Only the bill total was taken off.')
+                  : `${tr('The most allowed on this bill is')} ${rules?.maxPct}% ` +
+                    `(Rs ${rs(ceiling)}). ${tr('That is what was taken off.')}`}
+              </p>
+            )}
             <div className="flex justify-between border-t-2 border-divide pt-2 text-lg font-semibold">
               <dt>{tr('Total')}</dt>
               <dd className="num text-primary">Rs {rs(total)}</dd>

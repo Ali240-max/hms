@@ -1,0 +1,150 @@
+THE ATTENDANCE READ — agent only, eight files. No server change, no
+migration. You are still on v57 on the server side and that is correct.
+
+    copy these over D:\Programming\hms\agent\
+    build.bat
+    test-protocol.bat            <- 49 checks, touches no real device
+    hms-attendance-agent.exe --probe
+
+
+WHAT WAS WRONG: ONE UNREAD PACKET
+=================================
+
+Your trace solved it. Look at the reply numbers:
+
+    request              sent    got
+    connect                 0      0
+    auth                    1      1
+    get time                2      2
+    sizes                   3      3
+    prepare users           4      4
+    read chunk              5      5
+    free data               6      5   <-- one behind
+    prepare attlog          7      6   <-- one behind
+    exit                    8      7   <-- one behind
+
+Everything goes wrong immediately after the chunked data read, and stays
+wrong.
+
+A buffered read is answered with THREE packets: CMD_PREPARE_DATA, then
+CMD_DATA, then a bare CMD_ACK_OK. I read two. The third stayed in the socket,
+so the next command read it as its own answer, and from then on every reply
+belonged to the command before it.
+
+The user list still worked, because it came first. By the time the attendance
+request went out, the thing it read was the previous command's empty
+acknowledgement — correct code, no data — and my code reported:
+
+    the terminal would not start a buffered read (code 2000).
+    Very old firmware may not support it.
+
+Every word of that was wrong. Your firmware is fine. The device HAD started
+the read and HAD answered properly. Its answer was the packet my code then
+read as the reply to EXIT, and it was sitting right there in your trace:
+
+    recv body 21 bytes: d0 07 b4 89 38 58 07 00 00 1c 3f 03 00 1c 3f 03 00 ...
+                                                    ^^^^^^^^^^^
+                                                    0x00033f1c = 212764
+
+212764 = 5319 records x 40 bytes + 4. Your attendance log, correctly
+described, read one packet too late.
+
+That message has also been rewritten. Blaming your firmware sent you looking
+at the wrong thing, and it was the only clue you had.
+
+
+TWO FIXES, EITHER OF WHICH IS ENOUGH
+====================================
+
+1. The trailing acknowledgement is now read and discarded. Given its own
+   short timeout and a silence is accepted, because I have seen traces from
+   one device and there is a lot of ZKTeco firmware in the world. Hanging
+   forever waiting for a packet some version might not send would be the
+   opposite mistake, and a worse one.
+
+2. Every reply is now checked against the reply number of the request that
+   asked for it. A stale packet is skipped, and three in a row is reported as
+   "out of step" rather than carried on with. That is the guard that stops
+   this class of fault cascading — the real problem was never the missing
+   read, it was that the symptom appeared two commands away from the cause.
+
+I removed each fix in turn to check: either one on its own fixes your bug.
+Removing both reproduces your error message word for word.
+
+
+THE TEST THAT SHOULD HAVE EXISTED
+=================================
+
+My 34 checks all passed on a build that could not read an attendance log,
+because every one of them tested arithmetic — checksums, clock encoding,
+record offsets — and none of them tested the CONVERSATION.
+
+There is now a fake ZKTeco terminal in the test, on loopback, replaying the
+sequence your K50 produced, trailing packet and all. It connects, authorises,
+reads the clock, the counters, the user list and the attendance log, twice
+over. 49 checks. It touches nothing real.
+
+With both fixes removed it fails exactly where yours did, with your message.
+
+It also runs the same conversation against a fake device that does NOT send
+the trailing packet, and requires that to work too — so neither firmware
+behaviour can break it.
+
+
+AND NOW THE SERIOUS ONE, WHICH YOU MAY NOT HAVE NOTICED
+=======================================================
+
+From your probe:
+
+    id 1       Yasir           staff 1  Administrator
+    id 2       Farhan          staff 2  Sana Tariq
+    id 3       Sana            staff 3  Hina Butt
+    id 4       Sania           staff 4  Nadia Aslam
+
+THOSE ARE NOT THE SAME PEOPLE. Nineteen of them, every pairing wrong, every
+one looking perfectly ordinary in the output. In normal mode that build would
+have filed Yasir's punch as the Administrator's attendance, and so on down
+the list.
+
+That is my design error, not a setting you got wrong.
+
+I built a fallback that reads device user 7 as HMS staff 7 when no mapping is
+set, so a terminal enrolled alongside HMS would need no setup. That is right
+only when the two numberings are the same thing. Your K50 came out of ZKBio
+Time with its own numbering, and there is no way for the agent to tell the
+difference. So it guessed, nineteen times, and was wrong nineteen times.
+
+I had written in the last bundle that an unclaimed id is "never guessed into
+a staff member" because a wrong guess is worse than a gap. The fallback made
+that claim false. It took a real device to show it.
+
+FIXED, AND THE FIX IS A DEFAULT CHANGE:
+
+  TrustDeviceIds=false   is now the default, and new in agent.ini.
+
+  An unmapped id is counted, named in the log, and DROPPED. You get a gap
+  you can see. Nothing is lost by it — the device keeps its own log, so the
+  moment you set the id the punch is picked up on the next poll.
+
+  The probe now prints the device's own name beside the HMS name, and marks
+  any pairing of two different names with  <<< DIFFERENT PERSON.
+
+  If you ever do enrol a device to match HMS, TrustDeviceIds=true turns the
+  shortcut back on, and the probe will tell you whether it is safe.
+
+So your next step after this build: map the nineteen. Administration > Staff
+> Edit > "Id on the attendance terminal", working from the probe list. Until
+then the punches are dropped and counted, which is the honest state.
+
+
+YOUR DEVICE, FOR THE RECORD
+===========================
+
+  58 users enrolled, 61 fingers, 5319 records of 100000
+  40-byte record layout (current firmware)
+  72-byte user layout
+  clock within a minute of the PC
+  comm key: none
+
+All of which the probe read correctly on the first try. Only the attendance
+read was broken, and only by packet accounting.

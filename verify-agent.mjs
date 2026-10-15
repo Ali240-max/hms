@@ -150,5 +150,134 @@ for (const [what, path] of [['patients', '/patients/search?q=a'],
   ok('refused ' + what, s === 403, String(s))
 }
 
+
+/* ============================ a terminal, not a reader ==================== */
+
+/**
+ * The server half of terminal mode.
+ *
+ * A ZKTeco K50 on the wall is not a second kind of reader. It holds its own
+ * fingerprints, matches people itself, and hands over a decision it has
+ * already made: a user id it chose and a time off its own clock. So it needs
+ * none of the templates and exactly one thing HMS knows and it does not —
+ * whose user id is whose.
+ *
+ * The agent half cannot be exercised from here: it speaks a binary protocol
+ * to a device on a LAN, and there is no device. Its arithmetic has its own
+ * test that runs on Windows (agent/test-protocol.bat) against vectors taken
+ * from the reference implementation. What CAN be checked here is everything
+ * the agent will ask the server for, and that is what this does.
+ */
+console.log('\n— a terminal asks for the roster, not the templates —')
+{
+  const noKey = await fetch(B + '/attendance/agent/roster')
+  ok('the roster is refused without the device key', noKey.status === 401,
+    String(noKey.status))
+
+  const r = await fetch(B + '/attendance/agent/roster', { headers: KEY })
+  ok('and served with it', r.status === 200, String(r.status))
+  const roster = await r.json()
+  ok('it is a list', Array.isArray(roster), typeof roster)
+  ok('with people on it', roster.length > 0, `${roster.length}`)
+
+  /*
+   * EVERY ROW CARRIES A MAPPING, set or fallen back to.
+   *
+   * A row with a staff id and no device user id would be a person the agent
+   * can never match a punch to, which shows up as attendance quietly missing
+   * for one member of staff. The fallback — the staff id as a string — is
+   * what makes a terminal enrolled alongside HMS work with no setup at all.
+   */
+  const bad = roster.filter((x) => !x.device_user_id || !x.staff_id)
+  ok('every row has both a staff id and a device user id', bad.length === 0,
+    JSON.stringify(bad.slice(0, 2)))
+
+  ok('the fallback is the staff id as text, so an unmapped person still works',
+    roster.some((x) => String(x.device_user_id) === String(x.staff_id)))
+
+  ok('and it says whether the mapping was set or guessed',
+    roster.every((x) => typeof x.mapped === 'boolean'))
+
+  /*
+   * The mapping is settable, and it is what the roster then returns. This is
+   * the path somebody walks when the terminal was already in service with
+   * its own numbering.
+   */
+  const who = roster[0]
+  const DEV_ID = 'T-' + (Date.now() % 100000)
+  let put = await fetch(B + '/staff/' + who.staff_id, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok },
+    body: JSON.stringify({ deviceUserId: DEV_ID })
+  })
+  ok('a terminal id can be set against a staff member', put.status === 200,
+    String(put.status))
+
+  const again = await (await fetch(B + '/attendance/agent/roster', { headers: KEY })).json()
+  const row = again.find((x) => Number(x.staff_id) === Number(who.staff_id))
+  ok('and the roster hands that id to the agent', row && row.device_user_id === DEV_ID,
+    JSON.stringify(row))
+  ok('marked as a real mapping rather than the fallback', row && row.mapped === true)
+
+  /*
+   * Two people cannot share one id on the device. Without this the punches
+   * from that id would land on whichever row the query returned first —
+   * silently, and differently on different days.
+   */
+  const other = again.find((x) => Number(x.staff_id) !== Number(who.staff_id))
+  if (other) {
+    const clash = await fetch(B + '/staff/' + other.staff_id, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok },
+      body: JSON.stringify({ deviceUserId: DEV_ID })
+    })
+    ok('two people cannot be given the same terminal id',
+      clash.status >= 400, String(clash.status))
+  }
+
+  /* Put it back, so a second run of this suite starts where it started. */
+  await fetch(B + '/staff/' + who.staff_id, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok },
+    body: JSON.stringify({ deviceUserId: null })
+  })
+  const back = await (await fetch(B + '/attendance/agent/roster', { headers: KEY })).json()
+  const cleared = back.find((x) => Number(x.staff_id) === Number(who.staff_id))
+  ok('clearing it returns to the staff-id fallback',
+    cleared && String(cleared.device_user_id) === String(who.staff_id)
+    && cleared.mapped === false, JSON.stringify(cleared))
+}
+
+console.log('\n— a device says which kind it is —')
+{
+  const made = await (await fetch(B + '/attendance/devices', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tok },
+    body: JSON.stringify({
+      name: 'Test terminal ' + (Date.now() % 100000),
+      kind: 'terminal', host: '192.168.1.201'
+    })
+  })).json()
+  ok('a terminal can be added', made.id > 0, JSON.stringify(made).slice(0, 120))
+  /*
+   * Checked on the way back out, not just on the way in. `kind` not being
+   * declared in the route's schema would have zod strip it and every device
+   * would quietly stay a reader — the same failure that left purchase orders
+   * open forever.
+   */
+  ok('and comes back as a terminal rather than silently a reader',
+    made.kind === 'terminal', String(made.kind))
+  ok('with its address kept', made.host === '192.168.1.201', String(made.host))
+
+  const list = await (await fetch(B + '/attendance/devices',
+    { headers: { authorization: 'Bearer ' + tok } })).json()
+  const mine = list.find((d) => Number(d.id) === Number(made.id))
+  ok('the list says what it is', mine && mine.kind === 'terminal',
+    JSON.stringify(mine))
+  ok('and existing devices are still readers',
+    list.filter((d) => Number(d.id) !== Number(made.id))
+        .every((d) => d.kind === 'reader' || d.kind === 'terminal'))
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail ? 1 : 0)

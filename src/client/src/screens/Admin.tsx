@@ -72,7 +72,7 @@ export function Admin({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as Tab)}
-        title="Administration" subtitle={me.displayName} />
+        title="Administration" subtitle={me.displayName} brandIcon={Building2} />
       {/*
         A keyed panel that animates in, with no exit and no AnimatePresence.
 
@@ -1051,6 +1051,15 @@ function DepartmentsTab() {
 function DemoTab() {
   const [hasData, setHasData] = useState<boolean | null>(null)
   const [days, setDays] = useState('45')
+  /*
+   * The pharmacy's trading, on by default.
+   *
+   * It was never loaded from this screen at all, so a trial install got a
+   * pharmacy full of medicines with no bills behind them and the whole
+   * module looked unfinished. It is the slow half, so it can be turned off
+   * for somebody who only wants the hospital side.
+   */
+  const [withPharmacy, setWithPharmacy] = useState(true)
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<any>(null)
@@ -1065,7 +1074,8 @@ function DemoTab() {
   async function run() {
     setBusy(true); setErr(null); setResult(null)
     try {
-      const r = await api.loadDemoData(needsConfirm, Math.max(1, Number(days) || 45))
+      const r = await api.loadDemoData(
+        needsConfirm, Math.max(1, Number(days) || 45), withPharmacy)
       setResult(r)
       setTyped('')
       setHasData(true)
@@ -1086,6 +1096,28 @@ function DemoTab() {
             a stocked pharmacy. Today keeps a few patients still waiting so the queue
             screens have something live in them.
           </p>
+
+          {/*
+            The pharmacy tick.
+          
+            Spelled out rather than silent, because it is the difference
+            between a two-second load and a two-minute one, and somebody
+            watching a button do nothing for ninety seconds assumes it has
+            hung.
+          */}
+          <label className="flex items-start gap-2 rounded-xl border-2 border-line
+                            bg-raised px-3 py-2">
+            <input type="checkbox" checked={withPharmacy} className="mt-0.5"
+              onChange={(e) => setWithPharmacy(e.target.checked)} />
+            <span>
+              <span className="block text-2xs font-medium text-heading">
+                {tr('Include the pharmacy\u2019s trading')}
+              </span>
+              <span className="block text-2xs text-muted">
+                {tr('Deliveries, batches, counter sales and returns, so the till, the stock screens and every pharmacy report have something in them. Takes a minute or two on its own \u2014 without it the pharmacy has medicines and no bills.')}
+              </span>
+            </span>
+          </label>
 
           <div className="flex flex-wrap items-end gap-3">
             <Field label={tr('Days of history')}>
@@ -1137,6 +1169,14 @@ function DemoTab() {
                 <Stat label={tr('Visits')} value={String(result.visits)} />
                 <Stat label={tr('Doctor earnings')} value={`Rs ${rs(result.earningsPaisa)}`} tone="accent" />
               </div>
+              {result.pharmacy && (
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                  <Stat label={tr('Medicines')} value={String(result.pharmacy.products)} />
+                  <Stat label={tr('Batches on the shelf')} value={String(result.pharmacy.batches)} />
+                  <Stat label={tr('Pharmacy bills')} value={String(result.pharmacy.invoices)}
+                    tone="ok" />
+                </div>
+              )}
               <p className="mt-3 text-2xs text-muted">
                 {tr('Sign in as')} <span className="num">{tr('reception / 1234')}</span>,{' '}
                 <span className="num">{tr('dr.yasir / 1234')}</span> or{' '}
@@ -1233,6 +1273,95 @@ function ModulesCard() {
   )
 }
 
+/**
+ * Discounts at the main counter.
+ *
+ * The same pair of rules the pharmacy has, kept separate on purpose: a
+ * hospital that lets the chemist knock ten per cent off a strip of tablets
+ * does not necessarily let the front desk do the same to a consultation
+ * fee, and one shared setting would force that decision.
+ *
+ * Both are enforced on the server when the bill is completed, not just
+ * here. This screen decides the rule; the till obeys it.
+ */
+function CounterDiscountCard() {
+  const [s, setS] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.counterDiscount().then(setS).catch((e: any) => setErr(e.message))
+  }, [])
+
+  async function save() {
+    setBusy(true); setErr(null); setSaved(false)
+    try {
+      setS(await api.saveCounterDiscount({
+        discountEnabled: !!s.discountEnabled,
+        discountMaxPct: Math.max(0, Math.min(100, Number(s.discountMaxPct) || 0))
+      }))
+      setSaved(true); setTimeout(() => setSaved(false), 2500)
+    } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Card title={tr('Discounts at the main counter')}
+      hint={tr('A rule about the counter, not about one cashier. The pharmacy has its own, under Pharmacy, Access.')}
+      action={
+        <button onClick={save} disabled={busy || !s} className="btn-primary">
+          {busy ? tr('Saving…') : saved ? tr('Saved') : tr('Save')}
+        </button>
+      }>
+      <ErrorNote>{err}</ErrorNote>
+      {!s ? <p className="text-2xs text-muted">{tr('Loading…')}</p> : (
+        <div className="space-y-3">
+          <label className="flex items-start gap-2">
+            <input type="checkbox" checked={!!s.discountEnabled} className="mt-0.5"
+              onChange={(e) => setS({ ...s, discountEnabled: e.target.checked })} />
+            <span>
+              <span className="block text-sm text-heading">
+                {tr('Allow discounts on a counter bill')}
+              </span>
+              <span className="block text-2xs text-muted">
+                {tr('Off, the box disappears from the till and the server refuses any discount.')}
+              </span>
+            </span>
+          </label>
+
+          {s.discountEnabled && (
+            <Field label={tr('Most that may be taken off, as a percentage of the bill')}>
+              <div className="flex items-center gap-2">
+                <input inputMode="numeric" value={s.discountMaxPct ?? 0}
+                  onChange={(e) => setS({
+                    ...s,
+                    discountMaxPct: Math.max(0, Math.min(100,
+                      Number(e.target.value.replace(/[^0-9]/g, '')) || 0))
+                  })}
+                  className="field num w-20 text-right" />
+                <span className="text-2xs text-muted">%</span>
+                <span className="text-2xs text-muted">
+                  {Number(s.discountMaxPct) > 0
+                    ? `${tr('On a Rs 1,000 bill that is Rs')} ${
+                        (Number(s.discountMaxPct) * 10).toLocaleString('en-PK')}.`
+                    /* Zero is no ceiling, not "no discount". The switch
+                     * above is what turns it off, and making zero mean
+                     * both would be ambiguous. */
+                    : tr('Zero means no limit. Use the switch above to stop discounts entirely.')}
+                </span>
+              </div>
+            </Field>
+          )}
+
+          <p className="text-2xs text-muted">
+            {tr('A discount does not change what a doctor earns. Their share is worked out on the fee, so the hospital absorbs it rather than the doctor.')}
+          </p>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 function SettingsTab() {
   const [f, setF] = useState<any>(null)
   const [busy, setBusy] = useState(false)
@@ -1256,6 +1385,7 @@ function SettingsTab() {
   return (
     <div className="space-y-5">
       <ModulesCard />
+      <CounterDiscountCard />
 
       <Card title={tr('Hospital details')}
         hint={tr('Printed at the top of every chit, receipt and prescription')}
@@ -1781,20 +1911,64 @@ export function TestSetup({ service, onClose }: { service: any; onClose: () => v
 function EditStaff({ user, onClose, onDone }: {
   user: any; onClose: () => void; onDone: () => void
 }) {
+  /*
+   * Everything the add form offers, so the two are the same dialog.
+   *
+   * This had four fields. A doctor's consultation fee, their share of it,
+   * their share of tests, their qualification and their room could be set
+   * once when the account was made and then never again — so correcting a
+   * fee meant deleting the account and making a new one, which takes their
+   * name off every slip they have ever signed.
+   */
   const [f, setF] = useState({
     displayName: user.display_name ?? '',
     role: user.role,
     departmentId: user.department_id ? String(user.department_id) : '',
-    phone: user.phone ?? ''
+    phone: user.phone ?? '',
+    shiftStart: (user.shift_start ?? '').slice(0, 5),
+    shiftEnd: (user.shift_end ?? '').slice(0, 5),
+    attendanceRequired: user.attendance_required !== false,
+    deviceUserId: user.device_user_id ?? '',
+    specialisation: user.specialisation ?? '',
+    qualification: user.qualification ?? '',
+    room: user.room ?? '',
+    fee: user.consultation_fee_paisa != null
+      ? (Number(user.consultation_fee_paisa) / 100).toFixed(2) : '',
+    consultShare: user.consultation_share_bp != null
+      ? String(bpToPct(user.consultation_share_bp)) : '100',
+    serviceShare: user.default_service_share_bp != null
+      ? String(bpToPct(user.default_service_share_bp)) : '0',
+    pharmacyAdmin: false
   })
   const [depts, setDepts] = useState<any[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  /** What this person holds now, so the tick opens in the right position. */
+  const [heldAdmin, setHeldAdmin] = useState<boolean | null>(null)
+
+  const isDoctor = f.role === 'doctor'
+  const isPharmacist = f.role === 'pharmacist'
 
   useEffect(() => { api.departments().then(setDepts).catch(() => {}) }, [])
 
+  /*
+   * A pharmacy administrator is a pharmacist holding every pharmacy
+   * permission, including the one that sets other people's. It is stored as
+   * permissions rather than a role, so the only way to know is to ask.
+   */
+  useEffect(() => {
+    if (user.role !== 'pharmacist') { setHeldAdmin(false); return }
+    Promise.all([api.pharmaPermissions(), api.permissionsFor(user.id)])
+      .then(([all, mine]: any[]) => {
+        const has = (all ?? []).every((p: any) => (mine.allowed ?? []).includes(p.key))
+        setHeldAdmin(has)
+        setF((prev) => ({ ...prev, pharmacyAdmin: has }))
+      })
+      .catch(() => setHeldAdmin(false))
+  }, [user.id, user.role])
+
   return (
-    <Modal title={`${tr('Edit')} ${user.username}`} onClose={onClose}
+    <Modal title={`${tr('Edit')} ${user.username}`} wide onClose={onClose}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
         <button disabled={busy || !f.displayName.trim()} className="btn-primary"
@@ -1805,8 +1979,46 @@ function EditStaff({ user, onClose, onDone }: {
                 displayName: f.displayName.trim(),
                 role: f.role,
                 departmentId: f.departmentId ? Number(f.departmentId) : null,
-                phone: f.phone.trim() || null
+                phone: f.phone.trim() || null,
+                shiftStart: f.shiftStart || null,
+                shiftEnd: f.shiftEnd || null,
+                attendanceRequired: f.attendanceRequired,
+                deviceUserId: f.deviceUserId.trim() || null
               })
+
+              /*
+               * The doctor's own record is a second call, because it is a
+               * second table. Only when this account already has one: giving
+               * a doctor's record to somebody whose role was just changed TO
+               * doctor is a different job, and quietly inventing one here
+               * would create a doctor with a zero fee that reception can
+               * book against.
+               */
+              if (user.doctor_id) {
+                await api.updateDoctor(Number(user.doctor_id), {
+                  specialisation: f.specialisation.trim() || null,
+                  qualification: f.qualification.trim() || null,
+                  room: f.room.trim() || null,
+                  consultationFeePaisa: toPaisa(f.fee),
+                  consultationShareBp: pctToBp(f.consultShare),
+                  defaultServiceShareBp: pctToBp(f.serviceShare)
+                })
+              }
+
+              /*
+               * The pharmacy administrator tick, only when it changed.
+               *
+               * Writing it every time would wipe a carefully tailored set of
+               * per-person permissions on any save of this dialog, including
+               * a save that only corrected a phone number.
+               */
+              if (isPharmacist && heldAdmin !== null
+                  && f.pharmacyAdmin !== heldAdmin) {
+                const all = await api.pharmaPermissions()
+                await api.savePermissions(user.id,
+                  f.pharmacyAdmin ? all.map((p: any) => p.key) : [])
+              }
+
               onDone()
             } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
           }}>
@@ -1850,7 +2062,124 @@ function EditStaff({ user, onClose, onDone }: {
           <input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })}
             className="field mt-1 num" />
         </Field>
+
+        {/*
+          The shift, which decides whether a scan reads as late.
+        
+          Blank on both means no shift is recorded, which is different from
+          a shift of 00:00 and has to stay tellable apart.
+        */}
+        <Field label={tr('Shift starts')} hint={tr('Blank if they have no fixed shift')}>
+          <input type="time" value={f.shiftStart}
+            onChange={(e) => setF({ ...f, shiftStart: e.target.value })}
+            className="field mt-1 num" />
+        </Field>
+        <Field label={tr('Shift ends')}>
+          <input type="time" value={f.shiftEnd}
+            onChange={(e) => setF({ ...f, shiftEnd: e.target.value })}
+            className="field mt-1 num" />
+        </Field>
+
+        {/*
+          Their id on a standalone attendance terminal, where one is in use.
+        
+          Only needed when the terminal was already in service with its own
+          numbering before HMS arrived. Left blank, the agent treats the
+          device's user id as the staff id, which is right for a terminal
+          enrolled alongside HMS.
+        */}
+        <Field label={tr('Id on the attendance terminal')}
+          hint={tr('Blank unless the terminal numbers people its own way')} span>
+          <input value={f.deviceUserId}
+            onChange={(e) => setF({ ...f, deviceUserId: e.target.value })}
+            placeholder={String(user.id)} className="field mt-1 num" />
+        </Field>
+
+        <label className="flex items-start gap-2 sm:col-span-2">
+          <input type="checkbox" checked={f.attendanceRequired} className="mt-0.5"
+            onChange={(e) => setF({ ...f, attendanceRequired: e.target.checked })} />
+          <span>
+            <span className="block text-2xs font-medium text-heading">
+              {tr('Expected to mark attendance')}
+            </span>
+            <span className="block text-2xs text-muted">
+              {tr('Untick for a visiting consultant who is not on a shift. They stay off the absentee list.')}
+            </span>
+          </span>
+        </label>
       </div>
+
+      {/*
+        The doctor's own record.
+      
+        Shown when this account HAS one, not when the role happens to say
+        doctor: changing somebody's role to doctor in this dialog does not
+        create the record, and offering a fee box that saves nowhere is
+        worse than not offering it.
+      */}
+      {user.doctor_id ? (
+        <div className="mt-4 rounded-xl border-2 border-line bg-raised p-3">
+          <p className="mb-3 text-2xs font-medium uppercase tracking-wide text-muted">
+            {tr('Consultation and shares')}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label={tr('Specialisation')}>
+              <input value={f.specialisation}
+                onChange={(e) => setF({ ...f, specialisation: e.target.value })}
+                placeholder={tr('General Physician')} className="field mt-1" />
+            </Field>
+            <Field label={tr('Qualification')}>
+              <input value={f.qualification}
+                onChange={(e) => setF({ ...f, qualification: e.target.value })}
+                placeholder={tr('MBBS, FCPS')} className="field mt-1" />
+            </Field>
+            <Field label={tr('Room')}>
+              <input value={f.room} onChange={(e) => setF({ ...f, room: e.target.value })}
+                placeholder="OPD-3" className="field mt-1 num" />
+            </Field>
+            <Field label={tr('Consultation fee')}
+              hint={tr('What the counter charges for seeing them')}>
+              <input value={f.fee} onChange={(e) => setF({ ...f, fee: e.target.value })}
+                placeholder="0.00" className="field mt-1 num text-right" />
+            </Field>
+            <Field label={tr('Keeps of the fee')} hint={tr('Per cent')}>
+              <input value={f.consultShare}
+                onChange={(e) => setF({ ...f, consultShare: e.target.value })}
+                className="field mt-1 num text-right" />
+            </Field>
+            <Field label={tr('Default share of tests')} hint={tr('Per cent, before any override')}>
+              <input value={f.serviceShare}
+                onChange={(e) => setF({ ...f, serviceShare: e.target.value })}
+                className="field mt-1 num text-right" />
+            </Field>
+          </div>
+          <p className="mt-2 text-2xs text-muted">
+            {tr('Changing a share does not touch what has already been earned. Past statements keep the share that was agreed at the time.')}
+          </p>
+        </div>
+      ) : isDoctor && (
+        <p className="mt-3 rounded-xl border border-warn/25 bg-warn/5 px-3 py-2 text-2xs text-warn">
+          {tr('This account has no doctor record, so there is no fee or share to set. Saving the role as Doctor does not create one — add the account again as a doctor, or ask for this to be fixed.')}
+        </p>
+      )}
+
+      {isPharmacist && (
+        <label className="mt-4 flex items-start gap-2 rounded-xl border-2 border-line
+                          bg-raised px-3 py-2">
+          <input type="checkbox" checked={f.pharmacyAdmin} className="mt-0.5"
+            disabled={heldAdmin === null}
+            onChange={(e) => setF({ ...f, pharmacyAdmin: e.target.checked })} />
+          <span>
+            <span className="block text-2xs font-medium text-heading">
+              {tr('Pharmacy administrator')}
+            </span>
+            <span className="block text-2xs text-muted">
+              {tr('Every pharmacy permission, including setting what other counter staff can do. Unticking it removes all of them.')}
+            </span>
+          </span>
+        </label>
+      )}
+
       <div className="mt-2"><ErrorNote>{err}</ErrorNote></div>
     </Modal>
   )

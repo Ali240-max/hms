@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type SessionUser } from '../../lib/api'
-import { Card, Empty, ErrorNote, Th } from '../../components/ui'
+import { Card, Empty, ErrorNote } from '../../components/ui'
 import { t as tr } from '../../lib/prefs'
 
 /**

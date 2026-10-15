@@ -388,7 +388,21 @@ export const PERMISSIONS: { group: string; key: string; label: string }[] = [
 
   { group: 'Stock',   key: 'stock.view',     label: 'See stock levels' },
   { group: 'Stock',   key: 'stock.adjust',   label: 'Adjust stock after a count' },
+  /*
+   * Two separate ticks, and neither is on for counter staff by default.
+   *
+   * `stock.expiry` has been defined since the pharmacy was rebuilt and
+   * nothing ever checked it; the screen it was written for is now here, so
+   * it is used as it stands rather than replaced. `stock.damage` is its
+   * twin.
+   *
+   * Separate because the shops here treat them differently: the monthly
+   * expiry sweep is often done by whoever is minding the counter, while a
+   * broken carton is written off by the person who has to answer for it.
+   * One tick would force both to the same person.
+   */
   { group: 'Stock',   key: 'stock.expiry',   label: 'Write off expired stock' },
+  { group: 'Stock',   key: 'stock.damage',   label: 'Write off damaged stock' },
   /*
    * Off for counter staff by default; the pharmacy administrator has it and
    * hands it out.
@@ -463,6 +477,24 @@ const ROLE_DEFAULTS: Record<string, string[]> = {
                 * untick it per person.
                 */
                'sale.return',
+               /*
+                * On by default, like returns, and for the same reason.
+                *
+                * The till now has a discount box, and it is hidden from
+                * anybody without this tick. Leaving it off by default would
+                * mean an owner switches discounts on in Access, goes to the
+                * counter, finds no box, and has no way of knowing there is a
+                * second switch somewhere else. Two hidden controls for one
+                * feature is how a feature gets reported as broken.
+                *
+                * The control that matters is the CEILING, which is set once
+                * for the shop and enforced on the server. Out of the box
+                * there is no ceiling, which is how this till behaved before
+                * any of this existed — the difference now is that a shop
+                * that wants a limit can set one, and can take this tick off
+                * any individual.
+                */
+               'sale.discount',
                /*
                 * On by default, so nothing changes for a hospital pharmacy
                 * that already uses it. A standalone chemist turns it off once

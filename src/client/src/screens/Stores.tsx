@@ -5,15 +5,18 @@ import { api, rs, toPaisa, today, newId, type SessionUser } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../components/ui'
 import { t as tr } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
+import {
+  Boxes, PackageMinus, PackagePlus, ArrowLeftRight, BarChart3, Warehouse
+} from 'lucide-react'
 
 type Tab = 'stock' | 'issue' | 'receive' | 'movements' | 'reports'
 
 const NAV: (NavItem & { id: Tab })[] = [
-  { id: 'stock', label: 'Stock', glyph: 'S' },
-  { id: 'issue', label: 'Issue', glyph: 'out' },
-  { id: 'receive', label: 'Receive', glyph: 'in' },
-  { id: 'movements', label: 'Movements', glyph: 'M' },
-  { id: 'reports', label: 'Reports', glyph: 'Rp' }
+  { id: 'stock', label: 'Stock', glyph: 'S', icon: Boxes },
+  { id: 'issue', label: 'Issue', glyph: 'out', icon: PackageMinus },
+  { id: 'receive', label: 'Receive', glyph: 'in', icon: PackagePlus },
+  { id: 'movements', label: 'Movements', glyph: 'M', icon: ArrowLeftRight },
+  { id: 'reports', label: 'Reports', glyph: 'Rp', icon: BarChart3 }
 ]
 
 const FILTERS: [string, string][] = [
@@ -35,7 +38,7 @@ export function Stores({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
-        title="Stores" subtitle={me.displayName} />
+        title="Stores" subtitle={me.displayName} brandIcon={Warehouse} />
       {/*
         A keyed panel that animates in, with no exit and no AnimatePresence.
 

@@ -557,7 +557,7 @@ export function IpdCounter({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id: string) => setTab(id as 'work' | 'reports')}
-        title="Emergency" subtitle={me.displayName} />
+        title="Emergency" subtitle={me.displayName} brandIcon={Siren} />
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'work' ? <IpdCounterWork me={me} /> : <Reports me={me} />}
       </div>

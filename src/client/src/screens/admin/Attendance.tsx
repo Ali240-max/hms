@@ -333,23 +333,24 @@ function Readers() {
   useEffect(() => { load() }, [load])
 
   return (
-    <Card title={tr('Fingerprint readers')}
-      hint={tr('Each reader has a key that its agent sends with every scan.')}
+    <Card title={tr('Attendance devices')}
+      hint={tr('A USB reader on a PC, or a terminal on the network. Each has a key its agent sends with every scan.')}
       action={<button onClick={() => setAdding(true)}
         className="btn-primary inline-flex items-center gap-1.5">
-        <Plus size={14} /> {tr('Add a reader')}
+        <Plus size={14} /> {tr('Add a device')}
       </button>}>
       <ErrorNote>{err}</ErrorNote>
 
       {!rows ? <SkeletonRows rows={3} cols={4} />
         : rows.length === 0 ? (
-          <Empty title={tr('No readers yet')}
-            hint={tr('Add one for each PC with a fingerprint reader plugged into it.')} />
+          <Empty title={tr('No devices yet')}
+            hint={tr('One for each PC with a reader plugged in, and one for each terminal on the wall.')} />
         ) : (
         <table className="w-full">
           <thead className="thead-strip">
             <tr>
-              <Th>{tr('Reader')}</Th><Th w="w-32">{tr('Where')}</Th>
+              <Th>{tr('Device')}</Th><Th w="w-36">{tr('Kind')}</Th>
+              <Th w="w-32">{tr('Where')}</Th>
               <Th w="w-28">{tr('Key')}</Th><Th w="w-40">{tr('Last heard from')}</Th>
             </tr>
           </thead>
@@ -357,6 +358,14 @@ function Readers() {
             {rows.map((d) => (
               <tr key={d.id} className={d.is_active ? '' : 'opacity-50'}>
                 <td className="px-3 py-2 text-sm text-heading">{d.name}</td>
+                <td className="px-3 py-2 text-2xs">
+                  {d.kind === 'terminal' ? (
+                    <span>
+                      <Badge tone="primary">{tr('Terminal')}</Badge>
+                      {d.host && <span className="ml-1 num text-muted">{d.host}</span>}
+                    </span>
+                  ) : <Badge>{tr('USB reader')}</Badge>}
+                </td>
                 <td className="px-3 py-2 text-2xs text-muted">{d.location ?? '—'}</td>
                 <td className="px-3 py-2 num text-2xs text-muted">{d.key_hint}</td>
                 <td className="px-3 py-2 text-2xs text-muted">
@@ -400,12 +409,12 @@ function Readers() {
 function AddReader({ onClose, onDone }: {
   onClose: () => void; onDone: (made: any) => void
 }) {
-  const [f, setF] = useState({ name: '', location: '' })
+  const [f, setF] = useState({ name: '', location: '', kind: 'reader', host: '' })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   return (
-    <Modal title={tr('Add a reader')} onClose={onClose}
+    <Modal title={tr('Add a device')} wide onClose={onClose}
       footer={<>
         <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
         <button disabled={busy || !f.name.trim()} className="btn-primary"
@@ -413,7 +422,8 @@ function AddReader({ onClose, onDone }: {
             setBusy(true); setErr(null)
             try {
               onDone(await api.saveAttendanceDevice({
-                name: f.name.trim(), location: f.location.trim() || null
+                name: f.name.trim(), location: f.location.trim() || null,
+                kind: f.kind, host: f.host.trim() || null
               }))
             } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
           }}>
@@ -430,6 +440,51 @@ function AddReader({ onClose, onDone }: {
           <input value={f.location} onChange={(e) => setF({ ...f, location: e.target.value })}
             placeholder={tr('Main door, ground floor')} className="field mt-1" />
         </Field>
+
+        {/*
+          WHICH KIND OF MACHINE, which decides how everything else works.
+        
+          Not a cosmetic label. A reader has no brain: HMS holds the
+          fingerprints, the agent on that PC does the matching, and people
+          are enrolled from the Fingerprints tab here. A terminal is a
+          complete computer: it holds its own fingerprints, matches people
+          itself, and is enrolled ON THE DEVICE — the Fingerprints tab has
+          nothing to do with it.
+        
+          Getting this wrong does not break a punch, because both arrive the
+          same way. It makes somebody spend an afternoon trying to enrol a
+          nurse onto a box that was never going to listen.
+        */}
+        <Field label={tr('Kind of device')} span>
+          <select value={f.kind}
+            onChange={(e) => setF({ ...f, kind: e.target.value })}
+            className="field mt-1">
+            <option value="reader">
+              {tr('USB reader on a PC — Live20R, SLK20R, ZK9500')}
+            </option>
+            <option value="terminal">
+              {tr('Terminal on the network — K50 and similar')}
+            </option>
+          </select>
+        </Field>
+
+        {f.kind === 'reader' ? (
+          <p className="text-2xs text-muted sm:col-span-2">
+            {tr('HMS holds the fingerprints and the agent on that PC does the matching. Enrol staff from the Fingerprints tab, with the reader plugged into the PC you are sitting at.')}
+          </p>
+        ) : (
+          <>
+            <Field label={tr('Address on the network')}
+              hint={tr('From the device: Menu, Comm, Ethernet')} span>
+              <input value={f.host}
+                onChange={(e) => setF({ ...f, host: e.target.value })}
+                placeholder="192.168.1.201" className="field mt-1 num" />
+            </Field>
+            <p className="text-2xs text-muted sm:col-span-2">
+              {tr('The terminal holds its own fingerprints and matches people itself, so staff are enrolled ON THE DEVICE, not here. What HMS needs is each person\u2019s id from the device, set under Staff, Edit.')}
+            </p>
+          </>
+        )}
       </div>
     </Modal>
   )

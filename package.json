@@ -47,7 +47,9 @@
     "verify:attendance": "tsx verify-attendance.ts",
     "verify:agent": "node verify-agent.mjs",
     "verify:audit": "tsx verify-audit.ts",
-    "verify:ordering": "tsx verify-ordering.ts"
+    "verify:ordering": "tsx verify-ordering.ts",
+    "verify:writeoff": "tsx verify-writeoff.ts",
+    "verify:demo": "tsx verify-demo.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

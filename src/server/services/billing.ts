@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
 import { documentNo } from './numbering'
+import { getSetting } from './settings'
 
 /**
  * Billing at the main counter window.
@@ -20,7 +21,7 @@ import { documentNo } from './numbering'
 export class BillError extends Error {
   constructor(msg: string, public code:
     'NOT_FOUND' | 'ALREADY_BILLED' | 'SHORT_PAYMENT' | 'NOTHING_TO_BILL' | 'NO_PRICE'
-    | 'DOCTOR_REQUIRED') {
+    | 'DOCTOR_REQUIRED' | 'DISCOUNT_OFF' | 'DISCOUNT_TOO_BIG') {
     super(msg)
   }
 }
@@ -127,6 +128,40 @@ export async function completeBill(input: {
     : await draftForChit(input.chitId!)
 
   const discount = Math.max(0, input.discountPaisa ?? 0)
+
+  /*
+   * The counter's discount rules, checked here rather than in the screen.
+   *
+   * The counter has had a discount box since it was built, with no switch,
+   * no ceiling and nothing on the server stopping any amount — while the
+   * pharmacy, which came later, got all three. The same two settings now
+   * apply here, under their own keys: a hospital that lets the pharmacy
+   * give ten per cent does not necessarily let the front desk do the same
+   * on a consultation, and one shared setting would force the decision.
+   *
+   * Read at bill time rather than cached, so turning discounts off takes
+   * effect on the next bill rather than at the next sign-in.
+   */
+  if (discount > 0) {
+    const enabled = ((await getSetting('counter.discountEnabled')) ?? 'true') !== 'false'
+    if (!enabled) {
+      throw new BillError(
+        'Discounts are switched off at the main counter', 'DISCOUNT_OFF')
+    }
+    const maxPct = Number((await getSetting('counter.discountMaxPct')) ?? '0')
+    /* Zero is no ceiling, which is what the switch above is for. */
+    if (maxPct > 0) {
+      const ceiling = Math.floor((draft.totalPaisa * maxPct) / 100)
+      if (discount > ceiling) {
+        throw new BillError(
+          `That discount is ${(discount * 100 / Math.max(1, draft.totalPaisa)).toFixed(1)}% ` +
+          `of the bill. The most allowed is ${maxPct}%, which on this bill is ` +
+          `Rs ${(ceiling / 100).toFixed(2)}.`,
+          'DISCOUNT_TOO_BIG')
+      }
+    }
+  }
+
   const total = Math.max(0, draft.totalPaisa - discount)
 
   /**

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, rs, toPaisa, type SearchHit, type SessionUser } from '../../lib/api'
-import { useCart, totals as cartTotals } from '../../lib/cart'
+import { useCart, totals as cartTotals, effectivePrice } from '../../lib/cart'
 import { ExpiryPill } from '../../components/Expiry'
 import { Badge, ErrorNote, PrintButton } from '../../components/ui'
 import { ReceiptPreview } from '../../components/Chit'
@@ -32,6 +32,21 @@ export function Billing({ me, pending, onConsumed }: {
   const [labels, setLabels] = useState<number | null>(null)
   const [linked, setLinked] = useState<typeof pending>(null)
   const [missing, setMissing] = useState<string[]>([])
+  /*
+   * The discount, typed against the WHOLE BILL.
+   *
+   * Per line is how the sale is stored, because tax is computed per line on
+   * the discounted amount and a bill-level figure would have to be split to
+   * get the tax right. But nobody at a counter thinks per line: a customer
+   * asks for fifty rupees off the bill, so that is the box, and it is spread
+   * across the lines on the way out. The server's ceiling is measured
+   * against the whole bill for the same reason.
+   */
+  const [discount, setDiscount] = useState('')
+  const [asPct, setAsPct] = useState(false)
+  /** The shop's rules: whether discounts are on at all, and the ceiling. */
+  const [rules, setRules] = useState<{ on: boolean; maxPct: number } | null>(null)
+  const [mayDiscount, setMayDiscount] = useState(false)
   const box = useRef<HTMLInputElement>(null)
 
   /* ------------------------------------------- load a prescription in */
@@ -60,6 +75,27 @@ export function Billing({ me, pending, onConsumed }: {
 
   useEffect(() => { box.current?.focus() }, [])
 
+  /*
+   * The rules are read once, from the server.
+   *
+   * Both halves are enforced in the sale as well — this is so the box can be
+   * hidden when discounts are off and the ceiling shown before somebody
+   * types past it, not so the screen can decide.
+   */
+  useEffect(() => {
+    api.ph.pharmacySettings()
+      .then((d: any) => setRules({
+        on: !!d.discountEnabled,
+        maxPct: Math.max(0, Number(d.discountMaxPct) || 0)
+      }))
+      .catch(() => setRules({ on: false, maxPct: 0 }))
+    api.permissionsFor(me.id)
+      .then((d: any) => setMayDiscount(
+        me.role === 'admin' || (d.allowed ?? []).includes('sale.discount')))
+      /* Unreadable permissions must not hand out a power nobody granted. */
+      .catch(() => setMayDiscount(me.role === 'admin'))
+  }, [me.id, me.role])
+
   useEffect(() => {
     if (q.trim().length < 2) { setHits([]); return }
     const t = setTimeout(() => {
@@ -69,7 +105,57 @@ export function Billing({ me, pending, onConsumed }: {
   }, [q])
 
   const sums = cartTotals(cart.lines)
-  const total = sums.total
+
+  /*
+   * The bill-level discount, in paisa, and what it is allowed to be.
+   *
+   * Capped at the goods total so a typo cannot produce a negative bill, and
+   * at the ceiling so the sale is not posted only to be refused. The cap is
+   * applied to what is CHARGED, while the box keeps whatever was typed: a
+   * cashier who types 500 against a 300 rupee bill should see the figure
+   * they typed and the note saying what was used, not have the box silently
+   * rewrite itself under their fingers.
+   */
+  const typed = Math.max(0, asPct
+    ? Math.round(sums.gross * (Number(discount) || 0) / 100)
+    : toPaisa(discount))
+  const ceiling = rules && rules.maxPct > 0
+    ? Math.floor(sums.gross * rules.maxPct / 100)
+    : Infinity
+  const allowed = rules?.on && mayDiscount
+    ? Math.min(typed, sums.gross, ceiling)
+    : 0
+  const overCeiling = typed > allowed && typed > 0
+
+  /*
+   * Spread across the lines, largest remainder on the last one.
+   *
+   * The lines are what the sale stores and what tax is computed on, so the
+   * split has to add up to the figure on screen exactly. Giving the rounding
+   * remainder to the last line rather than dividing evenly is what makes the
+   * sum come out right: four lines sharing 10.01 rupees cannot each take a
+   * quarter.
+   */
+  const spread = (() => {
+    const out = new Map<string, number>()
+    if (allowed <= 0 || sums.gross <= 0) return out
+    let left = allowed
+    cart.lines.forEach((l, i) => {
+      const gross = l.qty * effectivePrice(l)
+      const share = i === cart.lines.length - 1
+        ? left
+        : Math.min(left, Math.round(allowed * gross / sums.gross))
+      out.set(l.key, Math.max(0, Math.min(share, gross)))
+      left -= out.get(l.key)!
+    })
+    return out
+  })()
+
+  /* What the bill comes to once the discount is in. */
+  const discounted = cartTotals(cart.lines.map((l) => ({
+    ...l, discountPaisa: spread.get(l.key) ?? 0
+  })))
+  const total = discounted.total
   const change = toPaisa(tendered) - total
   const controlled = cart.lines.filter((l) => l.schedule === 'controlled')
   const needsPrescriber = controlled.length > 0 && !cart.doctorName.trim()
@@ -82,7 +168,13 @@ export function Billing({ me, pending, onConsumed }: {
       const r = await api.ph.sell({
         lines: cart.lines.map((l) => ({
           productId: l.productId, qty: l.qty, soldAs: l.soldAs,
-          discountPaisa: l.discountPaisa
+          /*
+           * The bill-level figure, already split across the lines. The sale
+           * stores discounts per line because tax is computed per line on
+           * the discounted amount, so the split has to happen somewhere and
+           * it happens where the figure was typed.
+           */
+          discountPaisa: spread.get(l.key) ?? l.discountPaisa
         })),
         customerName: cart.customerName || undefined,
         doctorName: cart.doctorName || undefined,
@@ -93,12 +185,15 @@ export function Billing({ me, pending, onConsumed }: {
       })
       setDone({ ...r, change: (cart.payMethod === 'cash' ? toPaisa(tendered) : total) - total })
       cart.clear(); setTendered(''); setLinked(null); setMissing([])
+      setDiscount('')
     } catch (e: any) {
       setErr(e.message ?? 'Could not complete the sale')
     } finally { setBusy(false) }
     // tendered must be in here: without it the closure keeps the old value and
-    // every sale records zero cash received.
-  }, [cart, tendered, total, linked])
+    // every sale records zero cash received. `spread` for the same reason —
+    // the closure would post the discount as it stood two keystrokes ago.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart, tendered, total, linked, spread])
 
   /*
    * Printed once, when the sale first completes.
@@ -346,9 +441,53 @@ export function Billing({ me, pending, onConsumed }: {
 
         <div className="panel mt-auto p-4">
           <dl className="space-y-1 text-sm">
-            <Row k="Subtotal" v={rs(sums.gross)} />
-            {sums.tax > 0 && <Row k="Tax" v={rs(sums.tax)} />}
-            {sums.discount > 0 && <Row k="Discount" v={`-${rs(sums.discount)}`} />}
+            <Row k={tr('Subtotal')} v={rs(sums.gross)} />
+            {discounted.tax > 0 && <Row k={tr('Tax')} v={rs(discounted.tax)} />}
+
+            {/*
+              The discount box.
+            
+              Hidden entirely when the shop has discounts switched off, or
+              when this person does not hold the tick for it — a box that
+              always refuses is worse than no box, because the cashier has
+              to find out by trying it in front of a customer.
+            */}
+            {rules?.on && mayDiscount && (
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <dt className="shrink-0 text-muted">{tr('Discount')}</dt>
+                <dd className="flex items-center gap-1">
+                  <input value={discount} onChange={(e) => setDiscount(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') box.current?.focus() }}
+                    placeholder="0" inputMode="decimal"
+                    className="field num w-20 py-1 text-right text-2xs" />
+                  {/*
+                    Rupees or a percentage, because customers ask for both.
+                    "Fifty off" and "ten per cent" are the same request in
+                    two shapes and a cashier should not be doing the
+                    arithmetic at the counter.
+                  */}
+                  <button type="button" onClick={() => setAsPct((v) => !v)}
+                    title={tr('Switch between rupees and per cent')}
+                    className="rounded-lg border-2 border-line px-1.5 py-1 text-2xs
+                               text-muted hover:border-primary hover:text-primary">
+                    {asPct ? '%' : 'Rs'}
+                  </button>
+                  <span className="num w-16 text-right text-body">
+                    {allowed > 0 ? `-${rs(allowed)}` : '0.00'}
+                  </span>
+                </dd>
+              </div>
+            )}
+
+            {overCeiling && (
+              <p className="rounded-lg border border-warn/25 bg-warn/5 px-2 py-1 text-2xs text-warn">
+                {typed > sums.gross
+                  ? tr('More than the bill comes to. Only the bill total was taken off.')
+                  : `${tr('The most allowed on this bill is')} ${rules?.maxPct}% ` +
+                    `(Rs ${rs(ceiling)}). ${tr('That is what was taken off.')}`}
+              </p>
+            )}
+
             <div className="flex justify-between border-t border-divide pt-2 text-lg font-semibold">
               <dt>{tr('Total')}</dt>
               <dd className="num text-primary">Rs {rs(total)}</dd>

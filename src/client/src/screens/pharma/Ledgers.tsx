@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, rs, toPaisa, today, type SessionUser } from '../../lib/api'
-import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../../components/ui'
+import { Card, Empty, ErrorNote, Field, Modal, Stat, Th, SkeletonRows } from '../../components/ui'
 import { t as tr } from '../../lib/prefs'
 
 /**

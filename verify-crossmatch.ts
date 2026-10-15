@@ -13,6 +13,8 @@ import {
 } from './src/server/services/cross-match'
 import { crossMatchPdf } from './src/server/services/cross-match-pdf'
 import { writeFile } from 'node:fs/promises'
+/* Samples to a scratch directory; text extraction only if the tool is here. */
+import { savePdf, pdfText, notePdfToolMissing } from './verify-pdf.mjs'
 
 let pass = 0, fail = 0
 const ok = (n: string, c: boolean, x = '') => {
@@ -84,11 +86,11 @@ console.log('\n— the printed report —')
 const pdf = await crossMatchPdf(made.id)
 ok('a PDF is produced', pdf.length > 1000, `${pdf.length} bytes`)
 ok('it is a PDF', pdf.subarray(0, 4).toString() === '%PDF')
-await writeFile('/mnt/user-data/outputs/sample-cross-match.pdf', pdf)
+savePdf('sample-cross-match.pdf', pdf)
 
 const badPdf = await crossMatchPdf(second.id)
 ok('an incompatible one also prints', badPdf.length > 1000)
-await writeFile('/mnt/user-data/outputs/sample-cross-match-incompatible.pdf', badPdf)
+savePdf('sample-cross-match-incompatible.pdf', badPdf)
 
 console.log('\n— the printed page carries the signatures —')
 {
@@ -99,7 +101,6 @@ console.log('\n— the printed page carries the signatures —')
    * report where it goes wrong and nobody writes short notes on the hard
    * cases.
    */
-  const { execSync } = await import('node:child_process')
   const signers = await (await import('./src/server/services/lab')).signatories()
 
   const wordy = await createCrossMatch({
@@ -108,11 +109,12 @@ console.log('\n— the printed page carries the signatures —')
     notes: 'Sample received haemolysed and redrawn at 09:10. '.repeat(14)
   })
   const long = await crossMatchPdf(wordy.id)
-  await writeFile('/mnt/user-data/outputs/sample-cross-match-long.pdf', long)
-  const text = execSync(
-    'pdftotext -layout /mnt/user-data/outputs/sample-cross-match-long.pdf -',
-    { encoding: 'utf8' })
+  const longFile = savePdf('sample-cross-match-long.pdf', long)
+  const text = pdfText(longFile, 'layout')
 
+  if (text === null) {
+    notePdfToolMissing()
+  } else {
   if (signers.length === 0) {
     console.log('  skip  no signatories configured in this database')
   } else {
@@ -135,6 +137,7 @@ console.log('\n— the printed page carries the signatures —')
   ok('the conclusion is centred, not against the margin',
     (line.length - line.trimStart().length) > 10,
     `${line.length - line.trimStart().length} spaces in`)
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`)

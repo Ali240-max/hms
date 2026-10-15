@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Trash2, Upload, Info } from 'lucide-react'
 import { api, type SessionUser } from '../../lib/api'
-import { Card, ErrorNote, Field, Th } from '../../components/ui'
+import { Card, ErrorNote, Field } from '../../components/ui'
 import { t as tr } from '../../lib/prefs'
 
 /**

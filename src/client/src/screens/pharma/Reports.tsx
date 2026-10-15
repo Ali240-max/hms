@@ -57,6 +57,14 @@ export function Reports({ me }: { me: SessionUser }) {
   const [range, setRange] = useState('Last 30 days')
   const [from, setFrom] = useState(shift(-29))
   const [to, setTo] = useState(today())
+  /*
+   * What each report's dropdowns are set to, kept per report.
+   *
+   * Per report rather than one shared bag, so narrowing the earnings to one
+   * doctor and then opening a different report does not silently carry the
+   * filter across and show somebody a report that looks empty.
+   */
+  const [picks, setPicks] = useState<Record<string, Record<string, string>>>({})
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -75,7 +83,16 @@ export function Reports({ me }: { me: SessionUser }) {
     if (!def) return
     setSaving(true); setErr(null)
     try {
-      const path = `/reports/print/${selected}/pdf?from=${from}&to=${to}`
+      /*
+       * The filters go on the printed copy as well.
+       *
+       * A screen narrowed to one doctor and a PDF listing all of them is
+       * the sort of difference nobody notices until a statement has been
+       * handed to the wrong person.
+       */
+      const extra = Object.entries(chosen)
+        .map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('')
+      const path = `/reports/print/${selected}/pdf?from=${from}&to=${to}${extra}`
       const [pathname, query] = path.split('?')
       const { ticket } = await api.documentTicket(pathname)
       const a = document.createElement('a')
@@ -96,12 +113,19 @@ export function Reports({ me }: { me: SessionUser }) {
 
   const def = catalogue.find((r) => r.id === selected)
 
+  /* Only the values that are actually set; an empty one means no filter. */
+  const chosen = useMemo(() => {
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(picks[selected] ?? {})) if (v) out[k] = v
+    return out
+  }, [picks, selected])
+
   const load = useCallback(() => {
     if (!selected) return
     setLoading(true); setErr(null)
-    api.runAnyReport(selected, { from, to })
+    api.runAnyReport(selected, { from, to, ...chosen })
       .then(setData).catch((e: any) => setErr(e.message)).finally(() => setLoading(false))
-  }, [selected, from, to])
+  }, [selected, from, to, chosen])
   useEffect(load, [load])
 
   function pickRange(label: string) {
@@ -181,6 +205,40 @@ export function Reports({ me }: { me: SessionUser }) {
                   onChange={(e) => { setTo(e.target.value); setRange('') }}
                   className="field num w-36 py-1.5 text-2xs" />
               </label>
+            </div>
+          )}
+
+          {/*
+            The report's own dropdowns, beside the dates.
+          
+            Below the date row rather than in it: the dates belong to every
+            report and these belong to one, and mixing them makes a row that
+            changes shape as you move down the list.
+          */}
+          {def?.filters?.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              {def.filters.map((f: any) => (
+                <label key={f.key} className="block">
+                  <span className="label">{tr(f.label)}</span>
+                  <select
+                    value={picks[selected]?.[f.key] ?? ''}
+                    onChange={(e) => setPicks((p) => ({
+                      ...p, [selected]: { ...(p[selected] ?? {}), [f.key]: e.target.value }
+                    }))}
+                    className="field w-56 py-1.5 text-2xs">
+                    <option value="">{tr(f.allLabel)}</option>
+                    {(f.options ?? []).map((o: any) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+              {Object.keys(chosen).length > 0 && (
+                <button onClick={() => setPicks((p) => ({ ...p, [selected]: {} }))}
+                  className="btn-ghost px-2.5 py-1.5 text-2xs">
+                  {tr('Clear')}
+                </button>
+              )}
             </div>
           )}
 

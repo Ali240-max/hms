@@ -202,15 +202,20 @@ ok('a closed sheet cannot be adjusted against again', refused)
 console.log('\n— the printed sheet —')
 {
   const { auditSheetPdf, adjustmentPdf } = await import('./src/server/services/audit-pdf')
-  const { writeFile } = await import('node:fs/promises')
-  const { execSync } = await import('node:child_process')
+  /*
+   * Samples to a scratch directory, text extraction only where the tool is
+   * installed. A fixed /mnt path and a bare `pdftotext` both fail on the
+   * hospital's own server, which is the machine most likely to run this.
+   */
+  const { savePdf, pdfText, notePdfToolMissing } = await import('./verify-pdf.mjs')
 
   const pdf = await auditSheetPdf(sheet.id)
-  await writeFile('/mnt/user-data/outputs/sample-count-sheet.pdf', pdf)
+  const sheetFile = savePdf('sample-count-sheet.pdf', pdf)
   ok('a count sheet is produced', pdf.length > 1000, `${pdf.length} bytes`)
 
-  const text = execSync('pdftotext -layout /mnt/user-data/outputs/sample-count-sheet.pdf -',
-    { encoding: 'utf8' })
+  const text = pdfText(sheetFile, 'layout')
+  if (text === null) notePdfToolMissing()
+  else {
   ok('it carries the audit number to read back', text.includes(sheet.audit_no))
   ok('and the medicines to count', text.includes('Panadol ' + stamp))
   /*
@@ -222,15 +227,20 @@ console.log('\n— the printed sheet —')
   ok('and columns headed for counting', text.includes('COUNTED'))
   ok('somewhere to sign', text.includes('Counted by'))
 
+  }
+
   const apdf = await adjustmentPdf(adj.id)
-  await writeFile('/mnt/user-data/outputs/sample-adjustment.pdf', apdf)
-  const atext = execSync('pdftotext -layout /mnt/user-data/outputs/sample-adjustment.pdf -',
-    { encoding: 'utf8' })
+  const adjFile = savePdf('sample-adjustment.pdf', apdf)
   ok('the adjustment prints too', apdf.length > 1000)
-  ok('naming who did it', atext.includes('Store Keeper'))
-  ok('the sheet it came from', atext.includes(sheet.audit_no))
-  /* Signed, because a bare 2 that might be plus or minus is worse than none. */
-  ok('and the change with its sign', /-2/.test(atext))
+
+  const atext = pdfText(adjFile, 'layout')
+  if (atext === null) notePdfToolMissing()
+  else {
+    ok('naming who did it', atext.includes('Store Keeper'))
+    ok('the sheet it came from', atext.includes(sheet.audit_no))
+    /* Signed, because a bare 2 that might be plus or minus is worse than none. */
+    ok('and the change with its sign', /-2/.test(atext))
+  }
 }
 
 console.log('\n— what the correction was worth —')

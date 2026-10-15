@@ -80,7 +80,7 @@ export async function staffForAttendance() {
 
 export async function devices() {
   const r = await db.execute<any>(sql`
-    SELECT id, name, location, last_seen_at, is_active, created_at,
+    SELECT id, name, location, kind, host, last_seen_at, is_active, created_at,
            -- The key is never sent back whole. Enough to tell two apart, not
            -- enough to use if the screen is read over somebody's shoulder.
            LEFT(api_key, 6) || '…' AS key_hint
@@ -90,17 +90,38 @@ export async function devices() {
 
 export async function saveDevice(input: {
   id?: number; name: string; location?: string | null; isActive?: boolean
+  /**
+   * Which kind of machine this is.
+   *
+   * 'reader'   a USB scanner on a PC. HMS holds the fingerprints and the
+   *            agent on that PC does the matching, so enrolment happens on
+   *            the HMS screen.
+   * 'terminal' a standalone unit on the network. It holds its own
+   *            fingerprints and does its own matching, so enrolment happens
+   *            ON THE DEVICE and HMS only needs to know whose user id is
+   *            whose.
+   *
+   * It changes nothing about how a punch is stored — both arrive at the same
+   * route and become the same row. It is recorded so the screen can tell the
+   * box on the wall from the scanner on the desk, and so the enrolment
+   * screen can say that a terminal is not enrolled from here.
+   */
+  kind?: 'reader' | 'terminal'
+  /** Where a terminal lives on the network. Documentation, not configuration. */
+  host?: string | null
 }) {
-  if (!input.name.trim()) throw new AttendanceError('The reader needs a name', 'NOT_FOUND')
+  if (!input.name.trim()) throw new AttendanceError('The device needs a name', 'NOT_FOUND')
+  const kind = input.kind === 'terminal' ? 'terminal' : 'reader'
 
   if (input.id) {
     await db.execute(sql`
       UPDATE attendance_devices
       SET name = ${input.name.trim()}, location = ${input.location ?? null},
+          kind = ${kind}, host = ${input.host?.trim() || null},
           is_active = ${input.isActive ?? true}
       WHERE id = ${input.id}`)
     return ((await db.execute<any>(sql`
-      SELECT id, name, location FROM attendance_devices
+      SELECT id, name, location, kind, host FROM attendance_devices
       WHERE id = ${input.id}`)).rows as any[])[0]
   }
 
@@ -113,9 +134,10 @@ export async function saveDevice(input: {
    */
   const apiKey = randomBytes(24).toString('hex')
   const row = ((await db.execute<any>(sql`
-    INSERT INTO attendance_devices (name, location, api_key)
-    VALUES (${input.name.trim()}, ${input.location ?? null}, ${apiKey})
-    RETURNING id, name, location`)).rows as any[])[0]
+    INSERT INTO attendance_devices (name, location, api_key, kind, host)
+    VALUES (${input.name.trim()}, ${input.location ?? null}, ${apiKey},
+            ${kind}, ${input.host?.trim() || null})
+    RETURNING id, name, location, kind, host`)).rows as any[])[0]
   return { ...row, api_key: apiKey }
 }
 
@@ -438,6 +460,36 @@ export async function deleteFingerprint(id: number) {
  * it keeps working when the LAN does not. The cost is that the templates
  * travel over the network, which is why the reader has a key.
  */
+/**
+ * Who the terminal's user ids belong to.
+ *
+ * A standalone terminal identifies the person itself and hands over a user
+ * id of its own choosing. This is the only thing the agent needs from HMS in
+ * terminal mode — no templates, because the device holds its own.
+ *
+ * `device_user_id` is sent as the mapping when it is set. When it is not,
+ * the staff id is sent as the fallback, which makes a terminal enrolled
+ * alongside HMS work with no mapping at all: user 7 on the device is staff
+ * 7 here.
+ *
+ * Exempt and inactive staff are left out for the same reason they are left
+ * out of the template list: a punch from them is refused at the other end,
+ * and sending the mapping would only turn a clear refusal into a confusing
+ * one.
+ */
+export async function rosterForAgent() {
+  const r = await db.execute<any>(sql`
+    SELECT s.id AS staff_id,
+           COALESCE(NULLIF(s.device_user_id, ''), s.id::text) AS device_user_id,
+           s.display_name,
+           /* So the agent's log can say whether a mapping was set or guessed. */
+           (s.device_user_id IS NOT NULL AND s.device_user_id <> '') AS mapped
+    FROM staff s
+    WHERE s.is_active AND s.attendance_required
+    ORDER BY s.display_name`)
+  return r.rows
+}
+
 export async function templatesForAgent() {
   const r = await db.execute<any>(sql`
     SELECT f.staff_id, f.finger_index, f.template, s.display_name

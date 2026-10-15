@@ -13,7 +13,8 @@ import { Reports } from './pharma/Reports'
 import { CounterHistory, PatientLabels } from './counter/History'
 import {
   UserPlus, Banknote, Receipt, Users, LayoutDashboard, BarChart3, Printer,
-  Stethoscope, FlaskConical, Search, AlertTriangle, History, Tags
+  Stethoscope, FlaskConical, Search, AlertTriangle, History, Tags,
+  ScanLine, Syringe, type LucideIcon
 } from 'lucide-react'
 
 type Tab = 'overview' | 'desk' | 'billing' | 'patients' | 'chits' | 'history'
@@ -64,7 +65,7 @@ export function MainCounter({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
-        title="Main counter" subtitle={me.displayName} />
+        title="Main counter" subtitle={me.displayName} brandIcon={Banknote} />
       {/*
         A keyed panel that animates in, with no exit and no AnimatePresence.
 
@@ -1325,17 +1326,17 @@ function WhatFor({ patient, onClose, onDoctor, onTests }: {
    * string handed to tr() through a variable is invisible to it and would
    * silently fall back to English with the check still passing.
    */
-  const choices: [string, string, string, () => void][] = [
-    ['D', tr('See a doctor'),
+  const choices: [LucideIcon, string, string, () => void][] = [
+    [Stethoscope, tr('See a doctor'),
       tr('Consultation fee, then the queue. The doctor can order tests afterwards.'),
       onDoctor],
-    ['L', tr('Lab test'),
+    [FlaskConical, tr('Lab test'),
       tr('Blood, urine, culture. No consultation fee — they pay and go to the laboratory.'),
       () => onTests('lab')],
-    ['X', tr('X-ray or scan'),
+    [ScanLine, tr('X-ray or scan'),
       tr('Radiology only. No consultation fee, straight to the x-ray room.'),
       () => onTests('radiology')],
-    ['P', tr('Procedure'),
+    [Syringe, tr('Procedure'),
       tr('A dressing, an injection, an ECG. Most of these need the doctor performing it named.'),
       () => onTests('procedure')]
   ]
@@ -1345,11 +1346,11 @@ function WhatFor({ patient, onClose, onDoctor, onTests }: {
       hint={`${patient.name} · ${patient.mrn}`} onClose={onClose}
       footer={<button onClick={onClose} className="btn-ghost">{tr('Decide later')}</button>}>
       <div className="grid gap-3 sm:grid-cols-2">
-        {choices.map(([glyph, title, blurb, go]) => (
+        {choices.map(([Icon, title, blurb, go]) => (
           <button key={title} onClick={go}
             className="card-tint p-4 text-left transition-transform hover:-translate-y-0.5
                        hover:shadow-md">
-            <span className="tile mb-2 inline-flex">{glyph}</span>
+            <span className="tile mb-2 inline-flex"><Icon size={17} /></span>
             <span className="block text-sm font-medium text-heading">{title}</span>
             <span className="block text-2xs text-muted">{blurb}</span>
           </button>

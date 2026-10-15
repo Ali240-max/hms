@@ -892,7 +892,8 @@ export function Lab({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as any)}
-        title={isRadiology ? 'Radiology' : 'Laboratory'} subtitle={me.displayName} />
+        title={isRadiology ? 'Radiology' : 'Laboratory'} subtitle={me.displayName}
+        brandIcon={isRadiology ? ScanLine : FlaskConical} />
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'queue' ? <LabQueue me={me} />
           : tab === 'setup' ? <TestSetupTab me={me} />

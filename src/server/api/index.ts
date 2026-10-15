@@ -37,7 +37,7 @@ import {
   recentPunches,
   deletePunch, devices, saveDevice, deviceByKey, fingerprintsFor,
   saveFingerprint,
-  deleteFingerprint, templatesForAgent
+  deleteFingerprint, templatesForAgent, rosterForAgent
 } from '../services/attendance'
 import {
   wards, saveWard, deleteWard, bedBoard, saveBed, deleteBed, setBedStatus,
@@ -50,6 +50,11 @@ import {
   adjustmentHistory, adjustmentsByCompany
 } from '../services/stock-audit'
 import { auditSheetPdf, adjustmentPdf } from '../services/audit-pdf'
+import {
+  shelf, createWriteOff, writeOffs, writeOff as writeOffOne
+} from '../services/write-off'
+import { hasPermission as hasPharmaPermission } from '../services/pharma'
+import { writeOffPdf } from '../services/write-off-pdf'
 import {
   printerConfig, savePrinterConfig, allPrinterConfigs, sendToPrinter,
   windowsPrinters, PrintError
@@ -136,7 +141,39 @@ const bearer = (c: any): string | undefined =>
 
 /* ------------------------------------------------------------------ auth */
 
-api.get('/health', (c) => c.json({ ok: true, at: new Date().toISOString() }))
+/**
+ * Health, and which build is actually running.
+ *
+ * The build matters as much as the health. Updates reach this hospital as a
+ * zip that somebody extracts over a folder on a server a long way away, and
+ * there is no way to see from the outside whether it landed. Twice now a
+ * feature has been reported missing when the real question was whether the
+ * bundle that contained it had been applied, and neither of us could answer
+ * it without a screenshot.
+ *
+ * The highest migration that has run is the honest answer, because it is
+ * read out of the database rather than off a number somebody could forget
+ * to change. Public, like the rest of this route: it says which version of
+ * an application is running and nothing about anybody's data.
+ */
+/**
+ * The bundle this build came from.
+ *
+ * Changed by hand with each update, and deliberately not read from
+ * package.json: the version there has not moved since the first commit and
+ * making it meaningful now would mean remembering two things instead of one.
+ */
+const BUILD = 'v57'
+
+api.get('/health', async (c) => {
+  let migration: string | null = null
+  try {
+    migration = ((await db.execute<any>(sql`
+      SELECT name FROM _migrations ORDER BY name DESC LIMIT 1`)).rows as any[])[0]
+      ?.name ?? null
+  } catch { /* an install that has never migrated still answers */ }
+  return c.json({ ok: true, at: new Date().toISOString(), build: BUILD, migration })
+})
 
 /**
  * Which modules this hospital is using. Readable without a session because the
@@ -201,6 +238,12 @@ api.use('*', async (c, next) => {
    */
   const DEVICE_KEY_ROUTES = [
     '/attendance/agent/templates',
+    /*
+     * Terminal mode needs the roster instead of the templates: the device
+     * holds its own fingerprints and only the id-to-staff mapping is
+     * missing. Listed by exact path like the other two.
+     */
+    '/attendance/agent/roster',
     '/attendance/agent/punch'
   ]
   if (DEVICE_KEY_ROUTES.includes(path)) return next()
@@ -429,7 +472,19 @@ api.patch('/staff/:id', adminCan('admin.staff.edit'), async (c) => {
       'store_keeper', 'lab_tech', 'radiology', 'doctor', 'ward', 'kiosk',
       'pharmacist', 'pharmacy_admin', 'reports']).optional(),
     departmentId: z.number().int().nullable().optional(),
-    phone: z.string().nullable().optional()
+    phone: z.string().nullable().optional(),
+    /*
+     * The shift, which could be set at creation and never changed.
+     *
+     * Declared here or zod strips it and the change is silently dropped —
+     * the exact failure that left purchase orders open forever two bundles
+     * ago. Null clears it, an absent key leaves it alone.
+     */
+    shiftStart: z.string().nullable().optional(),
+    shiftEnd: z.string().nullable().optional(),
+    attendanceRequired: z.boolean().optional(),
+    /* Their id on a standalone attendance terminal, where one is in use. */
+    deviceUserId: z.string().nullable().optional()
   }).parse(await c.req.json())
   return c.json(await updateStaff(id, b))
 })
@@ -1242,6 +1297,12 @@ api.post('/attendance/devices', attendanceAdmin, async (c) => {
     id: z.number().int().optional(),
     name: z.string().min(1),
     location: z.string().nullable().optional(),
+    /*
+     * Declared, or zod strips it and every device silently stays a reader.
+     * The same failure that left purchase orders open forever.
+     */
+    kind: z.enum(['reader', 'terminal']).optional(),
+    host: z.string().nullable().optional(),
     isActive: z.boolean().optional()
   }).parse(await c.req.json())
   return c.json(await saveDevice(b), b.id ? 200 : 201)
@@ -1287,6 +1348,20 @@ api.get('/attendance/agent/templates', async (c) => {
   try {
     await agentDevice(c)
     return c.json(await templatesForAgent())
+  } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 401) }
+})
+
+/**
+ * The id-to-staff mapping, for an agent running against a terminal.
+ *
+ * Separate from the templates route rather than folded into it, because the
+ * two modes want different things and a terminal has no business fetching
+ * fingerprint templates it cannot use.
+ */
+api.get('/attendance/agent/roster', async (c) => {
+  try {
+    await agentDevice(c)
+    return c.json(await rosterForAgent())
   } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 401) }
 })
 
@@ -1942,6 +2017,39 @@ api.put('/settings/hospital', adminCan('admin.settings'), async (c) => {
   return c.json(await saveHospitalInfo(b))
 })
 
+/* -------------------------------------------- discounts at the counter */
+
+/**
+ * The same two rules the pharmacy has, under their own keys.
+ *
+ * Readable by anybody who can open the till, because the screen has to know
+ * whether to draw the box at all. Writable only by an administrator holding
+ * admin.settings — a cashier who can raise their own ceiling has no ceiling.
+ */
+api.get('/settings/counter-discount', async (c) => c.json({
+  discountEnabled: ((await getSetting('counter.discountEnabled')) ?? 'true') !== 'false',
+  /* Zero means no ceiling, which is how this till behaved before the
+   * setting existed. The switch is what turns discounts off. */
+  discountMaxPct: Number((await getSetting('counter.discountMaxPct')) ?? '0')
+}))
+
+api.put('/settings/counter-discount', adminCan('admin.settings'), async (c) => {
+  const b = z.object({
+    discountEnabled: z.boolean().optional(),
+    discountMaxPct: z.number().int().min(0).max(100).optional()
+  }).parse(await c.req.json())
+  if (b.discountEnabled !== undefined) {
+    await setSetting('counter.discountEnabled', b.discountEnabled ? 'true' : 'false')
+  }
+  if (b.discountMaxPct !== undefined) {
+    await setSetting('counter.discountMaxPct', String(b.discountMaxPct))
+  }
+  return c.json({
+    discountEnabled: ((await getSetting('counter.discountEnabled')) ?? 'true') !== 'false',
+    discountMaxPct: Number((await getSetting('counter.discountMaxPct')) ?? '0')
+  })
+})
+
 api.get('/admin/backups', adminCan('admin.backup'), async (c) => c.json(await listBackups()))
 
 /* ------------------------------------------------ where backups are kept */
@@ -2268,6 +2376,92 @@ api.get('/pharma/adjustments/:id/pdf', async (c) => {
   })
 })
 
+/* ------------------------------------------ damage and expiry write-offs */
+
+/**
+ * Stock off the shelf without a sale.
+ *
+ * Under /pharma, so it is behind the same role gate as audits and
+ * adjustments: a counter hand can sell, but taking stock out of existence is
+ * the pharmacist's signature.
+ */
+
+api.get('/pharma/write-offs/shelf', async (c) => {
+  const d = c.req.query('expiringWithinDays')
+  return c.json(await shelf({
+    q: c.req.query('q') ?? undefined,
+    /*
+     * Zero is a real window — "what has already expired" — so it cannot be
+     * tested for truthiness. Written out rather than left to a `||`, which
+     * is how a zero-day window silently became no window at all.
+     */
+    expiringWithinDays: d === undefined || d === '' ? undefined : Number(d)
+  }))
+})
+
+/**
+ * Checked on the server as well as hidden in the rail.
+ *
+ * A hidden tab is a courtesy, not a control: the route is reachable by
+ * anybody who can open the pharmacy at all, and this is the one place where
+ * stock stops existing. The read routes are deliberately left open to the
+ * module, because seeing what was thrown away is not the dangerous half.
+ */
+async function canWriteOff(c: any, kind: string) {
+  const u = me(c)
+  if (u.role === 'admin') return true
+  return hasPharmaPermission(u.id,
+    kind === 'damage' ? 'stock.damage' : 'stock.expiry')
+}
+
+api.post('/pharma/write-offs', async (c) => {
+  const b = z.object({
+    kind: z.enum(['damage', 'expiry']),
+    note: z.string().nullable().optional(),
+    lines: z.array(z.object({
+      productId: z.number().int(),
+      batchId: z.number().int().nullable().optional(),
+      qty: z.number().int().min(1),
+      reason: z.string().nullable().optional()
+    })).min(1)
+  }).parse(await c.req.json())
+  if (!(await canWriteOff(c, b.kind))) {
+    return c.json({
+      error: b.kind === 'damage'
+        ? 'You are not set up to write off damaged stock'
+        : 'You are not set up to write off expired stock',
+      code: 'NOT_ALLOWED'
+    }, 403)
+  }
+  try {
+    return c.json(await createWriteOff({ ...b, by: me(c).displayName }), 201)
+  } catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 400) }
+})
+
+api.get('/pharma/write-offs', async (c) => c.json(await writeOffs({
+  kind: c.req.query('kind') as any,
+  q: c.req.query('q'), from: c.req.query('from'), to: c.req.query('to')
+})))
+
+api.get('/pharma/write-offs/:id', async (c) => {
+  try { return c.json(await writeOffOne(Number(c.req.param('id')))) }
+  catch (e: any) { return c.json({ error: e.message, code: e.code ?? 'ERROR' }, 404) }
+})
+
+api.get('/pharma/write-offs/:id/pdf', async (c) => {
+  const id = Number(c.req.param('id'))
+  const w: any = await writeOffOne(id)
+  const pdf = await writeOffPdf(id, me(c).displayName)
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition':
+        `${c.req.query('download') === '1' ? 'attachment' : 'inline'}; ` +
+        `filename="${w.kind === 'damage' ? 'Damage' : 'Expiry'} ${w.write_off_no}.pdf"`
+    }
+  })
+})
+
 api.get('/pharmacy/prescriptions', allow('admin', 'pharmacist', 'pharmacy_admin'), async (c) =>
   c.json(await pendingPrescriptions(c.req.query('q') ?? undefined)))
 
@@ -2326,7 +2520,17 @@ api.get('/admin/demo-status', adminOnly, async (c) => c.json({ hasData: await ha
 api.post('/admin/demo-data', adminCan('admin.demo'), async (c) => {
   const b = z.object({
     reset: z.boolean().default(false),
-    days: z.number().int().min(1).max(180).default(45)
+    days: z.number().int().min(1).max(180).default(45),
+    /*
+     * The pharmacy's trading, on by default.
+     *
+     * It was never loaded from here at all. The only way to get it was
+     * `npm run seed:pharmacy` at a terminal, which nobody has on a machine
+     * installed from the offline bundle — so a trial install loaded its demo
+     * from this screen and got a pharmacy full of medicines with no bills
+     * behind them.
+     */
+    pharmacy: z.boolean().default(true)
   }).parse(await c.req.json().catch(() => ({})))
 
   if (!b.reset && await hasAnyData()) {
@@ -2337,7 +2541,8 @@ api.post('/admin/demo-data', adminCan('admin.demo'), async (c) => {
       code: 'HAS_DATA'
     }, 409)
   }
-  return c.json(await loadDemoData({ reset: b.reset, days: b.days }), 201)
+  return c.json(await loadDemoData(
+    { reset: b.reset, days: b.days, pharmacy: b.pharmacy }), 201)
 })
 
 /* ------------------------------------------------------------ admin home */

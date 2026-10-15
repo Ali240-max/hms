@@ -2,7 +2,11 @@ import { motion } from 'framer-motion'
 import { DUR, EASE } from '../lib/motion'
 import { useEffect, useState } from 'react'
 import { Sidebar, type NavItem } from '../components/Sidebar'
-import { Settings2 } from 'lucide-react'
+import {
+  Settings2, Calculator, FileText, Undo2, Pill, ClipboardList, PackagePlus,
+  Boxes, ClipboardCheck, PackageX, CalendarX, PackageOpen, LayoutDashboard,
+  ReceiptText, BookOpen, BarChart3, ShieldCheck, Printer, Cross
+} from 'lucide-react'
 import { api, type SessionUser } from '../lib/api'
 import { useT } from '../lib/prefs'
 import { Billing } from './pharmacy/Billing'
@@ -11,6 +15,7 @@ import { Medicines } from './pharmacy/Medicines'
 import { Receive } from './pharmacy/Receive'
 import { StockScreen } from './pharmacy/Stock'
 import { Audits } from './pharmacy/Audits'
+import { WriteOff } from './pharmacy/WriteOff'
 import { Ordering } from './pharmacy/Ordering'
 import { Opening } from './pharmacy/Opening'
 import { Bills } from './pharmacy/Bills'
@@ -24,7 +29,7 @@ import { Returns } from './pharma/Returns'
 
 type Tab = 'billing' | 'prescriptions' | 'medicines' | 'receive' | 'stock' | 'bills'
   | 'returns' | 'overview' | 'reports' | 'ledgers' | 'access' | 'setup' | 'printing'
-  | 'audits' | 'ordering' | 'opening'
+  | 'audits' | 'ordering' | 'opening' | 'damage' | 'expiry'
 
 /**
  * The rail, grouped by what a person is doing rather than alphabetically.
@@ -34,32 +39,41 @@ type Tab = 'billing' | 'prescriptions' | 'medicines' | 'receive' | 'stock' | 'bi
  * nobody found. Down the side they all fit and stay readable.
  */
 const NAV: (NavItem & { id: Tab })[] = [
-  { id: 'billing', label: 'Billing', glyph: 'B', section: 'Counter' },
-  { id: 'prescriptions', label: 'Prescriptions', glyph: 'Rx' },
-  { id: 'returns', label: 'Returns', glyph: 'R' },
+  { id: 'billing', label: 'Billing', glyph: 'B', icon: Calculator, section: 'Counter' },
+  { id: 'prescriptions', label: 'Prescriptions', glyph: 'Rx', icon: FileText },
+  { id: 'returns', label: 'Returns', glyph: 'R', icon: Undo2 },
 
-  { id: 'medicines', label: 'Medicines', glyph: 'M', section: 'Stock' },
-  { id: 'ordering', label: 'Order', glyph: 'PO' },
-  { id: 'receive', label: 'Receive', glyph: 'in' },
-  { id: 'stock', label: 'Stock', glyph: 'S' },
-  { id: 'audits', label: 'Audits', glyph: 'Au' },
+  { id: 'medicines', label: 'Medicines', glyph: 'M', icon: Pill, section: 'Stock' },
+  { id: 'ordering', label: 'Order', glyph: 'PO', icon: ClipboardList },
+  { id: 'receive', label: 'Receive', glyph: 'in', icon: PackagePlus },
+  { id: 'stock', label: 'Stock', glyph: 'S', icon: Boxes },
+  { id: 'audits', label: 'Audits', glyph: 'Au', icon: ClipboardCheck },
+  /*
+   * Breakage and expiry, next to the count sheets.
+   *
+   * All three answer the same question - why the shelf and the system
+   * disagree - and somebody who has just found an out-of-date box is one
+   * click from the screen that takes it off.
+   */
+  { id: 'damage', label: 'Damage', glyph: 'Dm', icon: PackageX },
+  { id: 'expiry', label: 'Expiry', glyph: 'Ex', icon: CalendarX },
   /*
    * Last in the Stock group, and invisible without its own permission.
    *
    * It belongs to the first morning of a changeover and nowhere else, so it
    * sits below the tabs somebody uses every day rather than above them.
    */
-  { id: 'opening', label: 'Opening stock', glyph: 'Op' },
+  { id: 'opening', label: 'Opening stock', glyph: 'Op', icon: PackageOpen },
 
-  { id: 'overview', label: 'Overview', glyph: 'O', section: 'Money' },
-  { id: 'bills', label: 'Bills', glyph: 'Bl' },
-  { id: 'ledgers', label: 'Ledgers', glyph: 'L' },
-  { id: 'reports', label: 'Reports', glyph: 'Rp' },
+  { id: 'overview', label: 'Overview', glyph: 'O', icon: LayoutDashboard, section: 'Money' },
+  { id: 'bills', label: 'Bills', glyph: 'Bl', icon: ReceiptText },
+  { id: 'ledgers', label: 'Ledgers', glyph: 'L', icon: BookOpen },
+  { id: 'reports', label: 'Reports', glyph: 'Rp', icon: BarChart3 },
 
   { id: 'setup', label: 'Suppliers & formulas', glyph: 'Su', icon: Settings2,
     section: 'Setup' },
-  { id: 'access', label: 'Access', glyph: 'A' },
-  { id: 'printing', label: 'Printing', glyph: 'P' }
+  { id: 'access', label: 'Access', glyph: 'A', icon: ShieldCheck },
+  { id: 'printing', label: 'Printing', glyph: 'P', icon: Printer }
 ]
 
 export type PendingFill = {
@@ -94,6 +108,21 @@ const TAB_PERMISSION: Partial<Record<Tab, string>> = {
    */
   prescriptions: 'prescriptions.see',
   audits: 'stock.view',
+  /*
+   * Visible to anybody who can see stock. The SAVE is what is gated.
+   *
+   * These were hidden behind their own write permissions, which are off for
+   * counter staff by default — so an owner who went looking for the damage
+   * screen found no tab and no explanation, which is exactly how the
+   * discount box went missing. Seeing what came off the shelf and taking
+   * something off it are different questions, and only the second is
+   * dangerous; the same reasoning the Returns tab already runs on.
+   *
+   * The button on the screen is disabled without the tick, it says which
+   * tick is missing, and the server refuses regardless.
+   */
+  damage: 'stock.view',
+  expiry: 'stock.view',
   receive: 'purchase.receive',
   /*
    * Returns is deliberately NOT in this map.
@@ -153,7 +182,7 @@ export function Pharmacy({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={items} active={tab} onSelect={(id) => setTab(id as Tab)}
-        title="Pharmacy" subtitle={me.displayName} />
+        title="Pharmacy" subtitle={me.displayName} brandIcon={Cross} />
 
       {/*
         A keyed panel that animates in, with no exit and no AnimatePresence.
@@ -182,6 +211,8 @@ export function Pharmacy({ me }: { me: SessionUser }) {
         {tab === 'returns' && <Returns me={me} />}
         {tab === 'stock' && <StockScreen />}
         {tab === 'audits' && <Audits me={me} />}
+        {tab === 'damage' && <WriteOff kind="damage" me={me} />}
+        {tab === 'expiry' && <WriteOff kind="expiry" me={me} />}
         {tab === 'ordering' && <Ordering me={me} />}
         {tab === 'opening' && <Opening me={me} />}
         {tab === 'bills' && <Bills />}

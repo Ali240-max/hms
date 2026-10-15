@@ -507,10 +507,16 @@ export const api = {
 
   documentTicket: (path: string) =>
     req<{ ticket: string }>('/tickets', { method: 'POST', body: JSON.stringify({ path }) }),
+  /** Which build the server is running, and the last migration it applied. */
+  health: () => req<{ ok: boolean; build?: string; migration?: string }>('/health'),
   modules: () => req<Record<string, boolean>>('/modules'),
   saveModules: (b: Record<string, boolean>) =>
     req<Record<string, boolean>>('/modules', { method: 'PUT', body: JSON.stringify(b) }),
   hospital: () => req<any>('/settings/hospital'),
+  /** Whether the counter may discount a bill, and by how much. */
+  counterDiscount: () => req<any>('/settings/counter-discount'),
+  saveCounterDiscount: (b: any) =>
+    req<any>('/settings/counter-discount', { method: 'PUT', body: JSON.stringify(b) }),
   saveHospital: (b: any) => req<any>('/settings/hospital', { method: 'PUT', body: JSON.stringify(b) }),
   backupLocation: () => req<any>('/admin/backup-location'),
   saveBackupLocation: (extraDir: string | null) =>
@@ -557,6 +563,21 @@ export const api = {
   adjustmentsByCompany: (from: string, to: string) =>
     req<any[]>(`/pharma/adjustments/by-company?from=${from}&to=${to}`),
 
+  /* --------------------------------------- damage and expiry write-offs */
+  /*
+   * `days` is sent whenever it is a number, zero included. Zero means "only
+   * what has already expired", which is the whole point of the expiry
+   * screen's first filter, and a truthiness check would drop it.
+   */
+  writeOffShelf: (q = '', days?: number) =>
+    req<any[]>(`/pharma/write-offs/shelf?q=${encodeURIComponent(q)}`
+      + (days === undefined ? '' : `&expiringWithinDays=${days}`)),
+  createWriteOff: (b: any) =>
+    req<any>('/pharma/write-offs', { method: 'POST', body: JSON.stringify(b) }),
+  writeOffs: (kind: string, q = '') =>
+    req<any[]>(`/pharma/write-offs?kind=${kind}&q=${encodeURIComponent(q)}`),
+  writeOff: (id: number) => req<any>(`/pharma/write-offs/${id}`),
+
   productSearch: (q: string) => req<SearchHit[]>(`/products/search?q=${encodeURIComponent(q)}`),
 
   myEarnings: (from: string, to: string, doctorId?: number) =>
@@ -564,8 +585,9 @@ export const api = {
   allEarnings: (from: string, to: string) => req<any[]>(`/earnings/all?from=${from}&to=${to}`),
   statsToday: () => req<any>('/stats/today'),
   demoStatus: () => req<{ hasData: boolean }>('/admin/demo-status'),
-  loadDemoData: (reset: boolean, days = 45) =>
-    req<any>('/admin/demo-data', { method: 'POST', body: JSON.stringify({ reset, days }) })
+  loadDemoData: (reset: boolean, days = 45, pharmacy = true) =>
+    req<any>('/admin/demo-data',
+      { method: 'POST', body: JSON.stringify({ reset, days, pharmacy }) })
 }
 
 /**

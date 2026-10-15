@@ -66,5 +66,32 @@ await q('/modules','admin',{method:'PUT',body:JSON.stringify({
   doctor:true, opdCounter:true, pharmacy:true, laboratory:true,
   radiology:true, emergency:true, stores:true })})
 
+
+/* ------------------------------------- which build is actually running --- */
+
+/**
+ * The version stamp, so "did the update land" stops being a guess.
+ *
+ * Updates reach the hospital as a zip extracted over a folder on a server
+ * in another city. Twice a feature has been reported missing when the real
+ * question was whether the bundle carrying it had been applied, and there
+ * was no way to answer it from inside the application.
+ *
+ * Public, like the rest of /health, so somebody can read it before signing
+ * in. The migration name comes out of the database rather than off a
+ * constant, which makes it the one figure that cannot be wrong.
+ */
+console.log('\n— the build says what it is —')
+{
+  const h = await q('/health', null)
+  ok('health answers without a session', h.status === 200 && h.body.ok === true,
+    `${h.status}`)
+  ok('and names the build', typeof h.body.build === 'string' && /^v\d+$/.test(h.body.build),
+    String(h.body.build))
+  ok('and the last migration that actually ran',
+    typeof h.body.migration === 'string' && /^\d{4}_/.test(h.body.migration),
+    String(h.body.migration))
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail?1:0)

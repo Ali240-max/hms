@@ -52,8 +52,8 @@ const supplier = ((await db.execute<any>(sql`
 const mk = async (name: string, mfrId: number, packSize: number) =>
   ((await db.execute<any>(sql`
     INSERT INTO products (name, manufacturer_id, pack_size, is_active, pack_label,
-                          purchase_paisa, retail_paisa)
-    VALUES (${name}, ${mfrId}, ${packSize}, true, ${packSize + 's'}, 5000, 8000)
+                          purchase_paisa, retail_paisa, tax_rate_bp)
+    VALUES (${name}, ${mfrId}, ${packSize}, true, ${packSize + 's'}, 5000, 8000, 1750)
     RETURNING id, name, pack_size`)).rows as any[])[0]
 
 const alpha = await mk('Alpha ' + stamp, mine.id, 10)
@@ -299,6 +299,29 @@ ok('the line stores both figures',
   Number(order.items[0].order_packs) === 24 &&
   Number(order.items[0].order_units) === 240,
   `${order.items[0].order_packs} packs / ${order.items[0].order_units} units`)
+
+
+/*
+ * The three rates the receive screen prefills from.
+ *
+ * Receiving fills purchase rate, sales tax and retail rate from the
+ * medicine's own setup. A delivery raised against an ORDER was filling them
+ * from the order's lines, which carry none of the three - so the boxes came
+ * up empty on exactly the deliveries with the most lines in them.
+ *
+ * Checked here rather than on the screen because the screen can only show
+ * what this function hands it.
+ */
+const forReceiving = await orderDetail(order.id)
+ok('an order line carries the medicine\'s purchase rate, for the receive screen',
+  Number((forReceiving.items[0] as any).purchase_paisa) === 5000,
+  String((forReceiving.items[0] as any).purchase_paisa))
+ok('and its retail rate',
+  Number((forReceiving.items[0] as any).retail_paisa) === 8000,
+  String((forReceiving.items[0] as any).retail_paisa))
+ok('and the sales tax set against it, so 17.5% survives the trip',
+  Number((forReceiving.items[0] as any).tax_rate_bp) === 1750,
+  String((forReceiving.items[0] as any).tax_rate_bp))
 
 const pdf = await purchaseOrderPdf(await orderDetail(order.id), 'Store Keeper')
 ok('it prints', pdf.length > 900 && pdf.slice(0, 5).toString() === '%PDF-',

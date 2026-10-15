@@ -58,11 +58,47 @@ function window_(c: any) {
   return { from: c.req.query('from') || today, to: c.req.query('to') || today }
 }
 
-reports.get('/', async (c) =>
-  c.json((await visible(c)).map((r) => ({
-    id: r.id, group: r.group, module: r.module, title: r.title, blurb: r.blurb,
-    dated: r.dated, columns: r.columns, chart: r.chart, totalKeys: r.totalKeys
-  }))))
+reports.get('/', async (c) => {
+  /*
+   * The dropdown choices are resolved here, not in the screen.
+   *
+   * They are rows in the database — the doctors a hospital employs — and
+   * the screen has no business knowing which table they live in. Resolved
+   * for the whole catalogue in one request so opening a report does not
+   * cost a second round trip before its filter can be drawn.
+   *
+   * A filter whose options cannot be read is dropped rather than shown
+   * empty: a dropdown with nothing in it reads as a report with no data.
+   */
+  const defs = await visible(c)
+  /*
+   * Typed loosely on purpose. Hono infers the response type from the shape
+   * returned here, and a catalogue of sixty-odd definitions with nested
+   * column and filter arrays sends the inference past its depth limit.
+   * The shape is fixed just below, where it can be read.
+   */
+  const out: any[] = []
+  for (const r of defs) {
+    let filters
+    if (r.filters?.length) {
+      filters = []
+      for (const f of r.filters) {
+        try {
+          filters.push({
+            key: f.key, label: f.label, allLabel: f.allLabel,
+            options: await f.options()
+          })
+        } catch { /* leave it out rather than draw an empty menu */ }
+      }
+    }
+    out.push({
+      id: r.id, group: r.group, module: r.module, title: r.title, blurb: r.blurb,
+      dated: r.dated, columns: r.columns, chart: r.chart, totalKeys: r.totalKeys,
+      groupBy: r.groupBy, groupLabel: r.groupLabel, filters
+    })
+  }
+  return c.json(out)
+})
 
 /* ------------------------------------------- who may see which report */
 

@@ -19,17 +19,32 @@ import { t as tr } from '../lib/prefs'
 export type NavItem = {
   id: string
   label: string
-  /** Drawn when given; the glyph is the fallback. */
-  icon?: ComponentType<{ size?: number | string; className?: string }>
-  /** One or two characters, used where no icon is supplied. */
-  glyph: string
+  /**
+   * The icon drawn in the rail. Every item has one.
+   *
+   * It used to be optional, with a one or two letter `glyph` behind it, and
+   * two whole modules were running on the letters: a column of B, Rx, R, M,
+   * PO, in, S, Au reads as a list of abbreviations to decode rather than a
+   * menu to scan, and it is worse in Urdu where the letters are not even in
+   * the right script.
+   */
+  icon: ComponentType<{ size?: number | string; className?: string }>
+  /**
+   * The letters, kept only as a last resort if an icon fails to load.
+   *
+   * Optional now. Nothing in the system omits the icon, and a check in
+   * verify-tabs refuses a rail item that does.
+   */
+  glyph?: string
   /** Optional count shown on the right, for work waiting. */
   badge?: number
   /** Puts a labelled divider above this item. */
   section?: string
 }
 
-export function Sidebar({ items, active, onSelect, title, subtitle, footer, railId }: {
+export function Sidebar({
+  items, active, onSelect, title, subtitle, footer, railId, brandIcon: Brand
+}: {
   items: NavItem[]
   active: string
   onSelect: (id: string) => void
@@ -38,6 +53,14 @@ export function Sidebar({ items, active, onSelect, title, subtitle, footer, rail
   footer?: ReactNode
   /** Namespaces the sliding marker. Defaults to the rail's own title. */
   railId?: string
+  /**
+   * The mark in the corner, standing for the module.
+   *
+   * It was the first letter of the title, which put a bare "P" above a rail
+   * of other bare letters and made the whole corner read as a placeholder
+   * somebody had not finished. Every module passes one.
+   */
+  brandIcon?: ComponentType<{ size?: number | string; className?: string }>
 }) {
   const [open, setOpen] = useState(true)
   const rail = railId ?? title.toLowerCase().replace(/\s+/g, '-')
@@ -66,7 +89,7 @@ export function Sidebar({ items, active, onSelect, title, subtitle, footer, rail
             backgroundImage:
               'linear-gradient(135deg, rgb(var(--c-primary)) 0%, rgb(var(--c-accent)) 100%)'
           }}>
-          {title.slice(0, 1)}
+          {Brand ? <Brand size={17} /> : title.slice(0, 1)}
         </span>
         {open && (
           <span className="anim-fade min-w-0">

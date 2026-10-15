@@ -6,6 +6,7 @@ import * as s from '../db/schema'
 import { createSale, StockError, ComplianceError } from '../services/sales'
 import { receiveGoods, ReceiptError } from '../services/purchase'
 import type { SessionUser } from '../services/auth'
+import { hasPermission as hasPharmaPermission } from '../services/pharma'
 
 /**
  * The pharmacy, carried over from the standalone till.
@@ -361,6 +362,29 @@ pharmacy.post('/sales', async (c) => {
   }).parse(await c.req.json())
 
   const u = me(c)
+
+  /*
+   * Who may give a discount at all.
+   *
+   * `sale.discount` has been in the permission list since the pharmacy was
+   * rebuilt and nothing ever checked it. The shop-wide switch and ceiling
+   * were enforced in the sale itself, which answers "how much" but not "by
+   * whom" — so a cashier with the tick deliberately taken away could still
+   * knock money off a bill.
+   *
+   * Checked here rather than in createSale because it is a fact about the
+   * person, and createSale is also reached by the returns code and the
+   * suites, which have no session.
+   */
+  if ((b.lines ?? []).some((l) => (l.discountPaisa ?? 0) > 0)
+      && u.role !== 'admin'
+      && !(await hasPharmaPermission(u.id, 'sale.discount'))) {
+    return c.json({
+      error: 'You are not set up to give a discount on a bill',
+      code: 'NOT_ALLOWED'
+    }, 403)
+  }
+
   // The cashier comes from the session, never the request body.
   const result = await createSale(db, {
     ...b, cashier: u.displayName, cashierStaffId: u.id

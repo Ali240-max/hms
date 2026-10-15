@@ -406,7 +406,7 @@ export function OpdCounter({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id: string) => setTab(id as 'work' | 'reports')}
-        title="OPD counter" subtitle={me.displayName} />
+        title="OPD counter" subtitle={me.displayName} brandIcon={ListChecks} />
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'work' ? <OpdCounterWork me={me} /> : <Reports me={me} />}
       </div>

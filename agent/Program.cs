@@ -69,8 +69,24 @@ namespace HmsAttendance
             Log("--------------------------------------------------");
             Log("HMS attendance agent starting");
             Log("server   " + _cfg.Server);
-            Log("reader   " + _cfg.DeviceName);
+            Log("mode     " + _cfg.Mode);
+            Log("device   " + _cfg.DeviceName);
             Log("process  " + (IntPtr.Size == 4 ? "32-bit" : "64-bit"));
+
+            /*
+             * TERMINAL MODE TAKES A COMPLETELY DIFFERENT PATH.
+             *
+             * It needs no SDK, loads no DLL, holds no templates and matches
+             * nobody: the device on the wall has already done all of that.
+             * So it branches here, before the SDK is bound — a machine with
+             * a K50 and no reader has no ZKFinger DLL to bind, and asking
+             * for one would stop the agent for a thing it does not use.
+             */
+            if (_cfg.Mode == "terminal")
+            {
+                Log("terminal " + _cfg.DeviceIp + ":" + _cfg.DevicePort);
+                return RunTerminal(args);
+            }
 
             /*
              * Said out loud, because it is the first thing that goes wrong.
@@ -654,6 +670,589 @@ namespace HmsAttendance
                     SleepUpTo(10);
                 }
             }
+        }
+
+
+        /* =================================================== terminal mode */
+
+        /*
+         * Device user id -> HMS staff id, from the server.
+         *
+         * The terminal identifies people itself and hands over an id of its
+         * own choosing. This is the only thing it cannot tell us.
+         */
+        private static Dictionary<string, int> _map =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, string> _mapNames =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        /** Device ids that are only a guess from the staff id, not a mapping. */
+        private static readonly HashSet<string> _guessed =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /*
+         * The newest record already sent, kept on disk.
+         *
+         * THE DEVICE LOG IS NEVER CLEARED, so without a mark the agent would
+         * repost the whole log on every start. The server's five-minute
+         * repeat rule would reject most of it, which means the first thing a
+         * restart does is fire thousands of requests to be refused — and the
+         * ones older than five minutes would NOT be refused and would land
+         * twice.
+         *
+         * A timestamp alone is not enough: several people punch in the same
+         * second at shift change, and ">" would drop all but the first while
+         * ">=" would resend them forever. So the mark is the timestamp plus
+         * the ids already seen at exactly that moment.
+         */
+        private static DateTime _mark = DateTime.MinValue;
+        private static readonly HashSet<string> _markIds =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        private static string MarkPath()
+        {
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                "last-punch.txt");
+        }
+
+        private static void LoadMark()
+        {
+            try
+            {
+                string path = MarkPath();
+                if (!File.Exists(path)) return;
+                string[] lines = File.ReadAllLines(path);
+                if (lines.Length > 0)
+                {
+                    DateTime t;
+                    if (DateTime.TryParse(lines[0], CultureInfo.InvariantCulture,
+                            DateTimeStyles.None, out t)) _mark = t;
+                }
+                for (int i = 1; i < lines.Length; i++)
+                {
+                    string id = lines[i].Trim();
+                    if (id.Length > 0) _markIds.Add(id);
+                }
+                Log("resuming after " + _mark.ToString("yyyy-MM-dd HH:mm:ss") +
+                    " (" + _markIds.Count + " already sent at that second)");
+            }
+            catch (Exception e) { Log("could not read the last-punch mark: " + Short(e)); }
+        }
+
+        private static void SaveMark()
+        {
+            try
+            {
+                List<string> lines = new List<string>();
+                lines.Add(_mark.ToString("yyyy-MM-ddTHH:mm:ss",
+                    CultureInfo.InvariantCulture));
+                foreach (string id in _markIds) lines.Add(id);
+                File.WriteAllLines(MarkPath(), lines.ToArray());
+            }
+            catch (Exception e) { Log("could not save the last-punch mark: " + Short(e)); }
+        }
+
+        /// <summary>
+        /// The roster, which in terminal mode replaces the template list.
+        /// </summary>
+        private static void LoadRoster()
+        {
+            string body;
+            try
+            {
+                body = Http.Get(_cfg.Server + "/api/attendance/agent/roster",
+                    _cfg.DeviceKey);
+            }
+            catch (Exception e)
+            {
+                Log("could not fetch the roster (" + Short(e) + ") — keeping the " +
+                    _map.Count + " already loaded");
+                return;
+            }
+
+            object parsed;
+            try { parsed = new JavaScriptSerializer().DeserializeObject(body); }
+            catch (Exception e) { Log("roster came back unreadable: " + Short(e)); return; }
+
+            object[] rows = parsed as object[];
+            if (rows == null) { Log("roster came back in an unexpected shape"); return; }
+
+            Dictionary<string, int> fresh =
+                new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            lock (_mapNames)
+            {
+                _mapNames.Clear();
+                _guessed.Clear();
+                int real = 0, guess = 0;
+                foreach (object row in rows)
+                {
+                    Dictionary<string, object> r = row as Dictionary<string, object>;
+                    if (r == null) continue;
+                    int staffId = Json.Int(r, "staff_id");
+                    string devId = Json.Str(r, "device_user_id");
+                    string name = Json.Str(r, "display_name");
+                    if (staffId <= 0 || devId.Length == 0) continue;
+
+                    /*
+                     * A mapping somebody set, or the staff id standing in
+                     * for one. The server says which, and the difference
+                     * decides whether a punch may be posted at all.
+                     */
+                    bool isReal = Json.Bool(r, "mapped");
+                    if (isReal) real++;
+                    else { guess++; _guessed.Add(devId); }
+
+                    if (isReal || _cfg.TrustDeviceIds) fresh[devId] = staffId;
+                    _mapNames[devId] = name;
+                }
+                _map = fresh;
+
+                Log("roster: " + real + " mapped" +
+                    (guess > 0 ? ", " + guess + " unmapped" : ""));
+
+                /*
+                 * Said every time the roster is read, not once at startup.
+                 *
+                 * TrustDeviceIds turns every unmapped id into a guess, and a
+                 * wrong guess files one person's attendance under another's
+                 * name. Nobody finds that later. If it is on, it is going to
+                 * be in the log beside the punches it produced.
+                 */
+                if (guess > 0 && _cfg.TrustDeviceIds)
+                {
+                    Log("WARNING: TrustDeviceIds is on, so " + guess + " device " +
+                        "id(s) with no mapping will be read as staff ids. Run " +
+                        "--probe and check the two name columns match before " +
+                        "trusting any of it.");
+                }
+                else if (guess > 0)
+                {
+                    Log(guess + " staff member(s) have no terminal id set, so " +
+                        "punches from an unknown id will be dropped rather than " +
+                        "guessed. Set them under Administration > Staff > Edit.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Terminal mode: poll the device, forward what is new.
+        /// </summary>
+        private static int RunTerminal(string[] args)
+        {
+            bool probe = false;
+            bool setTime = false;
+            bool trace = false;
+            foreach (string a in args)
+            {
+                string f = a.Trim().ToLowerInvariant();
+                if (f == "--probe" || f == "/probe") probe = true;
+                if (f == "--set-time" || f == "/set-time") setTime = true;
+                /*
+                 * Every packet as hex, both ways.
+                 *
+                 * Added after a day lost to one wrong byte in the header. A
+                 * device answers a malformed packet by closing the socket
+                 * and saying nothing, so "forcibly closed by the remote
+                 * host" is the whole of the evidence — and from that you
+                 * cannot tell a bad magic number from a bad checksum from a
+                 * firmware that wanted UDP. With the bytes on screen it is
+                 * thirty seconds.
+                 */
+                if (f == "--trace" || f == "/trace") trace = true;
+            }
+
+            if (probe) return Probe(setTime, trace);
+
+            Console.CancelKeyPress += delegate (object s2, ConsoleCancelEventArgs e)
+            {
+                e.Cancel = true;
+                _running = false;
+            };
+
+            Queue.Init(_cfg);
+            LoadMark();
+            new Thread(SenderLoop) { IsBackground = true, Name = "sender" }.Start();
+
+            LoadRoster();
+            DateTime rosterAt = DateTime.UtcNow;
+
+            Log("ready — polling " + _cfg.DeviceIp + " every " +
+                _cfg.PollSeconds + "s");
+
+            bool first = _mark == DateTime.MinValue;
+            int quietPolls = 0;
+
+            while (_running)
+            {
+                if ((DateTime.UtcNow - rosterAt).TotalSeconds >= _cfg.ReloadSeconds)
+                {
+                    LoadRoster();
+                    rosterAt = DateTime.UtcNow;
+                }
+
+                try
+                {
+                    int sent = PollOnce(ref first);
+                    if (sent > 0)
+                    {
+                        Log("sent " + sent + " punch(es)");
+                        quietPolls = 0;
+                    }
+                    else
+                    {
+                        /*
+                         * A quiet corridor is normal and must not fill the
+                         * log. Said once every thirty polls — ten minutes at
+                         * the default — so there is still evidence in the
+                         * file that the agent was alive and talking to the
+                         * device at 3am.
+                         */
+                        if (++quietPolls % 30 == 0)
+                            Log("still polling; nothing new (" + quietPolls + " quiet checks)");
+                    }
+                }
+                catch (TerminalError te)
+                {
+                    Log("terminal: " + te.Message);
+                }
+                catch (Exception e)
+                {
+                    Log("terminal: " + Short(e));
+                }
+
+                SleepUpTo(_cfg.PollSeconds);
+            }
+
+            Log("stopping");
+            SaveMark();
+            return 0;
+        }
+
+        /// <summary>
+        /// One poll: connect, read, queue what is new, disconnect.
+        ///
+        /// A fresh connection each time rather than one held open. The
+        /// devices drop an idle socket without saying so, and a held
+        /// connection that has quietly died looks identical to a quiet
+        /// corridor — the agent would report everything normal for a week.
+        /// Connecting costs a few hundred milliseconds every twenty seconds.
+        /// </summary>
+        private static int PollOnce(ref bool first)
+        {
+            int queued = 0;
+
+            using (Terminal t = new Terminal(_cfg.DeviceIp, _cfg.DevicePort,
+                                             _cfg.DevicePassword, 8))
+            {
+                t.Connect();
+
+                /*
+                 * The device's clock, checked against this PC's.
+                 *
+                 * Every record it hands over is stamped from its own clock.
+                 * If that clock is wrong, the attendance is wrong, and
+                 * nothing downstream can tell. A battery that died and came
+                 * back gives a device sitting in the year 2000 and a day of
+                 * punches filed under a date nobody will ever look at.
+                 */
+                try
+                {
+                    DateTime dev = t.GetTime();
+                    double off = Math.Abs((dev - DateTime.Now).TotalMinutes);
+                    if (off > 2)
+                    {
+                        Log("WARNING: the terminal's clock says " +
+                            dev.ToString("yyyy-MM-dd HH:mm") + " and this PC says " +
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm") + " — " +
+                            Math.Round(off) + " minutes apart. Every punch is " +
+                            "stamped by the TERMINAL, so fix its clock " +
+                            "(run the agent once with --probe --set-time).");
+                    }
+                }
+                catch (Exception e) { Log("could not read the terminal clock: " + Short(e)); }
+
+                List<TerminalUser> users = null;
+                /*
+                 * The user list is only needed to turn an internal uid into
+                 * a user id, which the 40-byte record already carries. Read
+                 * anyway on the first poll so the log can name anybody whose
+                 * mapping is missing, and skipped afterwards because it is
+                 * the slow part of the read.
+                 */
+                if (first)
+                {
+                    try { users = t.GetUsers(); }
+                    catch (Exception e) { Log("could not read the user list: " + Short(e)); }
+                    if (users != null) Log("the terminal has " + users.Count + " users enrolled");
+                }
+
+                List<TerminalPunch> punches = t.GetAttendance(users);
+
+                DateTime floor = DateTime.MinValue;
+                if (first && _cfg.BackfillDays > 0)
+                {
+                    floor = DateTime.Now.Date.AddDays(-_cfg.BackfillDays);
+                    Log("first run: ignoring anything before " +
+                        floor.ToString("yyyy-MM-dd") + " (BackfillDays=" +
+                        _cfg.BackfillDays + ")");
+                }
+
+                int skippedOld = 0, unmapped = 0;
+                List<string> unknownIds = new List<string>();
+
+                foreach (TerminalPunch p in punches)
+                {
+                    if (p.At < floor) { skippedOld++; continue; }
+
+                    /* Already sent: older than the mark, or seen at it. */
+                    if (p.At < _mark) continue;
+                    if (p.At == _mark && _markIds.Contains(p.UserId)) continue;
+
+                    int staffId;
+                    if (!_map.TryGetValue(p.UserId, out staffId))
+                    {
+                        /*
+                         * No mapping. The punch is NOT guessed into a staff
+                         * id: a wrong guess files somebody else's attendance
+                         * under this person's name, which is worse than a
+                         * gap somebody can see and fix.
+                         */
+                        unmapped++;
+                        if (!unknownIds.Contains(p.UserId)) unknownIds.Add(p.UserId);
+                        continue;
+                    }
+
+                    Queue.Add(new Punch(staffId, p.At,
+                        "terminal " + _cfg.DeviceIp + " user " + p.UserId +
+                        " status " + p.Status + " punch " + p.Punch));
+                    queued++;
+
+                    if (p.At > _mark) { _mark = p.At; _markIds.Clear(); }
+                    _markIds.Add(p.UserId);
+                }
+
+                if (skippedOld > 0)
+                    Log("skipped " + skippedOld + " record(s) older than the backfill window");
+                if (unmapped > 0)
+                {
+                    Log("WARNING: " + unmapped + " punch(es) DROPPED, from device user " +
+                        "id(s) " + string.Join(", ", unknownIds.ToArray()) +
+                        " which no HMS staff member claims. They are counted here and " +
+                        "nowhere else, and they are never guessed at. Set each id " +
+                        "against the person in HMS: Administration > Staff > Edit > " +
+                        "\"Id on the attendance terminal\", then they will be picked " +
+                        "up on the next poll - the device keeps its log, so nothing " +
+                        "is lost.");
+                }
+
+                if (queued > 0) SaveMark();
+            }
+
+            first = false;
+            return queued;
+        }
+
+        /// <summary>
+        /// One-shot diagnosis. The first thing to run, and the only thing
+        /// that answers "is this going to work" without changing anything.
+        ///
+        /// It connects, reads the clock, counts what is on the device, lists
+        /// the users and shows the most recent punches with whether each one
+        /// maps to somebody in HMS. Posts nothing.
+        /// </summary>
+        private static int Probe(bool setTime, bool trace)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  Probing " + _cfg.DeviceIp + ":" + _cfg.DevicePort);
+            Console.WriteLine();
+
+            try { LoadRoster(); }
+            catch (Exception e) { Console.WriteLine("  roster: " + Short(e)); }
+
+            try
+            {
+                using (Terminal t = new Terminal(_cfg.DeviceIp, _cfg.DevicePort,
+                                                 _cfg.DevicePassword, 10))
+                {
+                    if (trace) t.TraceOn();
+                    t.Connect();
+                    Console.WriteLine("  connected");
+
+                    try
+                    {
+                        DateTime dev = t.GetTime();
+                        double off = (dev - DateTime.Now).TotalMinutes;
+                        Console.WriteLine("  device clock  " +
+                            dev.ToString("yyyy-MM-dd HH:mm:ss") +
+                            "   (this PC is " + Math.Round(-off) + " min different)");
+                        if (setTime)
+                        {
+                            t.SetTime(DateTime.Now);
+                            Console.WriteLine("  device clock set to this PC's time");
+                        }
+                    }
+                    catch (Exception e) { Console.WriteLine("  clock: " + Short(e)); }
+
+                    try
+                    {
+                        Sizes s = t.ReadSizes();
+                        Console.WriteLine("  users " + s.Users + ", fingers " + s.Fingers +
+                            ", records " + s.Records + " of " + s.RecordCapacity);
+                    }
+                    catch (Exception e) { Console.WriteLine("  counters: " + Short(e)); }
+
+                    List<TerminalUser> users = new List<TerminalUser>();
+                    try
+                    {
+                        users = t.GetUsers();
+                        Console.WriteLine();
+                        Console.WriteLine("  ON THE DEVICE                 IN HMS");
+                        Console.WriteLine("  " + new string('-', 62));
+
+                        int unmapped = 0, suspect = 0;
+                        foreach (TerminalUser u in users)
+                        {
+                            int staffId;
+                            bool have = _map.TryGetValue(u.UserId, out staffId);
+                            string hmsName = _mapNames.ContainsKey(u.UserId)
+                                ? _mapNames[u.UserId] : "";
+                            bool guess = _guessed.Contains(u.UserId);
+
+                            string right;
+                            if (!have && !guess) { right = "-- NOBODY --"; unmapped++; }
+                            else if (!have)
+                            {
+                                /* A guess the agent is not allowed to use. */
+                                right = "not mapped (would be staff " + hmsName + ")";
+                                unmapped++;
+                            }
+                            else if (guess)
+                            {
+                                /*
+                                 * A guess the agent IS allowed to use. Flag it
+                                 * when the two names do not look like the same
+                                 * person, because that is the whole failure in
+                                 * one line and it is readable at a glance.
+                                 */
+                                bool looksRight = Sameish(u.Name, hmsName);
+                                right = "staff " + staffId + "  " + hmsName +
+                                    (looksRight ? "   (guessed)" : "   <<< DIFFERENT PERSON");
+                                if (!looksRight) suspect++;
+                            }
+                            else
+                            {
+                                right = "staff " + staffId + "  " + hmsName;
+                            }
+
+                            Console.WriteLine("  id " + Pad(u.UserId, 6) +
+                                Pad(u.Name, 20) + right);
+                        }
+
+                        Console.WriteLine();
+                        if (suspect > 0)
+                        {
+                            Console.WriteLine("  ** " + suspect + " of these pair two DIFFERENT " +
+                                "names. TrustDeviceIds is on, so those");
+                            Console.WriteLine("  ** punches would be filed against the wrong " +
+                                "person. Set TrustDeviceIds=false");
+                            Console.WriteLine("  ** in agent.ini and map people properly: " +
+                                "Administration > Staff > Edit.");
+                            Console.WriteLine();
+                        }
+                        if (unmapped > 0)
+                        {
+                            Console.WriteLine("  " + unmapped + " device user(s) are not mapped. " +
+                                "Their punches are counted, named in");
+                            Console.WriteLine("  the log and DROPPED - never guessed at. " +
+                                "Set each person's device id");
+                            Console.WriteLine("  under Administration > Staff > Edit, " +
+                                "\"Id on the attendance terminal\".");
+                            Console.WriteLine();
+                        }
+                    }
+                    catch (Exception e) { Console.WriteLine("  users: " + Short(e)); }
+
+                    try
+                    {
+                        List<TerminalPunch> p = t.GetAttendance(users);
+                        Console.WriteLine();
+                        Console.WriteLine("  " + p.Count + " punch(es) on the device" +
+                            (p.Count > 0 ? ", last 10:" : ""));
+                        int from = Math.Max(0, p.Count - 10);
+                        for (int i = from; i < p.Count; i++)
+                        {
+                            int staffId;
+                            Console.WriteLine("    " +
+                                p[i].At.ToString("yyyy-MM-dd HH:mm:ss") +
+                                "  id " + Pad(p[i].UserId, 8) +
+                                (_map.TryGetValue(p[i].UserId, out staffId)
+                                    ? "-> staff " + staffId
+                                    : "-> NOT MAPPED") +
+                                "   (" + p[i].Layout + "-byte record)");
+                        }
+                    }
+                    catch (Exception e) { Console.WriteLine("  attendance: " + Short(e)); }
+                }
+
+                Console.WriteLine();
+                Console.WriteLine("  Nothing was posted and nothing on the device was changed.");
+                Console.WriteLine();
+                return 0;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine();
+                Console.WriteLine("  FAILED: " + e.Message);
+                Console.WriteLine();
+                Console.WriteLine("  Things to check, in order:");
+                Console.WriteLine("    1. ping " + _cfg.DeviceIp);
+                Console.WriteLine("    2. the device is on the same subnet as this PC");
+                Console.WriteLine("    3. Menu > Comm > Ethernet on the device shows that address");
+                Console.WriteLine("    4. ZKBio Time or any other software is CLOSED — some");
+                Console.WriteLine("       firmware allows only one connection at a time");
+                Console.WriteLine("    5. DevicePassword matches Comm > Security > Comm Key");
+                Console.WriteLine();
+                if (!trace)
+                {
+                    Console.WriteLine("  To see the actual packets, run:");
+                    Console.WriteLine("    hms-attendance-agent.exe --probe --trace");
+                    Console.WriteLine();
+                }
+                return 5;
+            }
+        }
+
+        /// <summary>
+        /// Do these two names plausibly belong to the same person?
+        ///
+        /// Deliberately loose. A device holds "Yasir" where HMS holds
+        /// "Dr Yasir Habib", and those are the same man; it holds "Yasir"
+        /// where HMS holds "Administrator", and those are not. So: letters
+        /// only, lower case, and does either contain the other.
+        ///
+        /// It only decides whether to print a warning. Nothing is accepted
+        /// or rejected on the strength of a name.
+        /// </summary>
+        private static bool Sameish(string a, string b)
+        {
+            string x = Letters(a), y = Letters(b);
+            if (x.Length == 0 || y.Length == 0) return false;
+            return x.IndexOf(y, StringComparison.Ordinal) >= 0
+                || y.IndexOf(x, StringComparison.Ordinal) >= 0;
+        }
+
+        private static string Letters(string s)
+        {
+            if (s == null) return "";
+            StringBuilder sb = new StringBuilder();
+            foreach (char c in s) if (char.IsLetter(c)) sb.Append(char.ToLowerInvariant(c));
+            return sb.ToString();
+        }
+
+        private static string Pad(string s, int n)
+        {
+            if (s == null) s = "";
+            if (s.Length >= n) return s.Substring(0, n - 1) + " ";
+            return s + new string(' ', n - s.Length);
         }
 
         /* ----------------------------------------------------------- helpers */

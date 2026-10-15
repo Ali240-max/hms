@@ -186,26 +186,56 @@ export function drawLetterhead(doc: any, width: number, hospital: any, opts: {
   const showLogo = hospital.logoDataUri && opts.logoPosition !== 'none'
   const logoOnLeft = opts.logoPosition === 'left'
 
-  /* The default box, scaled by the setting. 86 x 42 at 100%. */
+  /* The box the logo is fitted into. 86 x 42 at 100%, scaled by the setting. */
   const k = opts.logoScale ?? 1
-  const logoW = 86 * k
-  const logoH = 42 * k
+  const boxW = 86 * k
+  const boxH = 42 * k
 
+  /*
+   * How wide the logo actually prints, which is not how wide its box is.
+   *
+   * `fit` keeps the image's proportions, so a tall emblem in an 86 x 42 box
+   * touches the top and bottom and leaves most of the width empty. Reserving
+   * the whole box pushed the hospital name across that empty space and left
+   * the gap you are looking at — on a square logo, 44 points of nothing.
+   *
+   * So measure the image and work out the width it will really occupy. If the
+   * logo cannot be read, fall back to the box: a name printed too far right is
+   * ugly, a name printed through a logo is unreadable.
+   */
+  let drawnW = boxW
+  let drawnH = boxH
+  let logoBuf: Buffer | null = null
   if (showLogo) {
     try {
       const b64 = String(hospital.logoDataUri).split(',').pop() ?? ''
-      doc.image(Buffer.from(b64, 'base64'),
-        logoOnLeft ? MARGIN : MARGIN + width - logoW - 4, top,
-        { fit: [logoW, logoH] })
+      logoBuf = Buffer.from(b64, 'base64')
+      const img = doc.openImage(logoBuf)
+      const scale = Math.min(boxW / img.width, boxH / img.height)
+      drawnW = img.width * scale
+      drawnH = img.height * scale
+    } catch { logoBuf = null }
+  }
+
+  if (showLogo && logoBuf) {
+    try {
+      /*
+       * Right-hand logos are placed from their real width, so the mark sits
+       * against the margin rather than floating in off it.
+       */
+      doc.image(logoBuf,
+        logoOnLeft ? MARGIN : MARGIN + width - drawnW - 4, top,
+        { fit: [boxW, boxH] })
     } catch { /* a bad logo must never stop a report printing */ }
   }
 
   /*
-   * The hospital name starts after the logo, whatever size it has been set
-   * to. Fixed at 100 points, a logo scaled up printed straight through the
-   * name.
+   * The hospital name starts just past where the logo actually ends.
+   *
+   * Six points, which is about one character — close enough to read as one
+   * masthead, far enough that the letters are not touching the mark.
    */
-  const textLeft = showLogo && logoOnLeft ? MARGIN + logoW + 14 : MARGIN
+  const textLeft = showLogo && logoOnLeft ? MARGIN + drawnW + 6 : MARGIN
   doc.font('Helvetica-Bold').fontSize(15).fillColor(INK)
      .text(hospital.name || 'Hospital', textLeft, top + 2,
        { width: width * 0.56 - (textLeft - MARGIN), lineBreak: false })
@@ -213,14 +243,14 @@ export function drawLetterhead(doc: any, width: number, hospital: any, opts: {
   if (hospital.address) doc.text(hospital.address, textLeft, doc.y + 2, { width: width * 0.54 })
   if (hospital.phone) doc.text(hospital.phone, textLeft, doc.y, { width: width * 0.54 })
   /* The header has to clear a scaled-up logo, not just the text. */
-  let headerBottom = Math.max(doc.y, top + 46, showLogo ? top + logoH + 4 : 0)
+  let headerBottom = Math.max(doc.y, top + 46, showLogo ? top + drawnH + 4 : 0)
 
   /*
    * The patient block starts clear of a right-hand logo however big it is.
    * At 0.52 of the width a logo scaled past about 150% printed over it.
    */
   const rx = showLogo && !logoOnLeft
-    ? Math.min(MARGIN + width * 0.52, MARGIN + width - logoW - 150)
+    ? Math.min(MARGIN + width * 0.52, MARGIN + width - drawnW - 150)
     : MARGIN + width * 0.60
   let ry = top
   for (const [label, value, bold] of opts.lines) {

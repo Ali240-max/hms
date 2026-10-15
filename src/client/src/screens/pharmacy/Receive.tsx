@@ -85,7 +85,7 @@ export function Receive() {
         productId: Number(i.product_id),
         name: String(i.product_name),
         packSize,
-        unitLabel: 'pack',
+        unitLabel: String(i.unit_label ?? 'pack'),
         batchNo: '', expiryDate: '',
         /*
          * Straight across, no conversion.
@@ -97,9 +97,18 @@ export function Receive() {
          */
         qty: String(Math.max(1, packs)),
         bonusQty: '0',
-        cost: '',
-        retailPaisa: 0,
-        tax: '0',
+        /*
+         * The same three defaults a hand-typed line gets.
+         *
+         * Batch and expiry stay empty because they come off the delivery
+         * note and nothing else can know them. The rates are different:
+         * they are set on the medicine, they are what the shop expects to
+         * pay and charge, and leaving them blank on a forty-line order made
+         * somebody type forty numbers they had already entered once.
+         */
+        cost: i.purchase_paisa ? (Number(i.purchase_paisa) / 100).toFixed(2) : '',
+        retailPaisa: Number(i.retail_paisa ?? 0),
+        tax: i.tax_rate_bp ? String(Number(i.tax_rate_bp) / 100) : '0',
         orderedPacks: packs
       } as Line
     }))
@@ -264,11 +273,21 @@ export function Receive() {
           <div className="mt-3 overflow-x-auto">
             <table className="w-full">
               <thead className="thead-strip">
+                {/*
+                  Nine columns of data and nine headings.
+
+                  There were eight headings over nine columns, so from "Cost"
+                  rightwards every title sat over the wrong box: "Sells at"
+                  labelled the tax field and "Line" labelled the sale price.
+                  That is most of why this table read as confusing.
+                */}
                 <tr>
                   <Th>{tr('Medicine')}</Th><Th w="w-28">{tr('Batch')}</Th><Th w="w-32">{tr('Expiry')}</Th>
                   <Th w="w-20" right>{tr('Packs')}</Th><Th w="w-20" right>{tr('Bonus')}</Th>
-                  <Th w="w-24" right>{tr('Cost')}</Th><Th w="w-28" right>{tr('Sells at')}</Th>
-                  <Th w="w-24" right>{tr('Line')}</Th><Th w="w-8" />
+                  <Th w="w-24" right>{tr('Purchase rate')}</Th>
+                  <Th w="w-20" right>{tr('Sales tax %')}</Th>
+                  <Th w="w-24" right>{tr('Retail rate')}</Th>
+                  <Th w="w-44" right>{tr('Total')}</Th><Th w="w-8" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-divide rows-striped anim-rows">
@@ -316,21 +335,30 @@ export function Receive() {
                     </td>
                     <td className="px-2 py-2 text-right">
                       {/*
-                        Read-only. The sale price belongs to the medicine, set
-                        once when it is added, not decided again on every
-                        delivery — that is how the same tablet ends up with
-                        three prices on three shelves and the counter has to be
-                        told which one to use.
+                        Read-only, and filled from the medicine. The sale price
+                        belongs to the medicine, set once when it is added, not
+                        decided again on every delivery — that is how the same
+                        tablet ends up with three prices on three shelves and
+                        the counter has to be told which one to use.
                       */}
                       <span className="num text-2xs text-muted">{rs(l.retailPaisa ?? 0)}</span>
                     </td>
-                    <td className="px-2 py-2 text-right num text-2xs text-primary">
-                      {rs(lineNet(l) + lineTax(l))}
-                      {lineTax(l) > 0 && (
-                        <span className="block num text-[0.6rem] text-muted">
-                          +{rs(lineTax(l))} {tr('tax')}
-                        </span>
-                      )}
+                    <td className="px-2 py-2 text-right">
+                      {/*
+                        Goods plus tax, with the arithmetic shown.
+
+                        "1,015.00" on its own invites the question of where the
+                        fifteen came from, and the answer is the one thing
+                        anybody checks a delivery note for. Writing it out
+                        means the figure can be read straight off the screen
+                        against the paper without anybody doing a subtraction
+                        to work out what the tax was.
+                      */}
+                      <span className="num whitespace-nowrap text-2xs text-primary">
+                        {lineTax(l) > 0
+                          ? `${rs(lineNet(l))} + ${rs(lineTax(l))} : ${rs(lineNet(l) + lineTax(l))}`
+                          : rs(lineNet(l))}
+                      </span>
                     </td>
                     <td className="pr-2 text-right">
                       <button onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}

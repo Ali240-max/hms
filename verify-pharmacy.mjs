@@ -295,6 +295,51 @@ console.log('\n— discounts at the counter —')
     ok('but a bill with no discount still sells', r.status === 201,
       `${r.status} ${r.body?.code ?? ''}`)
 
+    /*
+     * The per-person tick, which nothing had ever checked.
+     *
+     * `sale.discount` has been in the permission list since the pharmacy was
+     * rebuilt and no code read it: the shop-wide switch and the ceiling
+     * answered "how much" and nothing answered "by whom", so a cashier with
+     * the tick deliberately removed could still knock money off a bill.
+     */
+    await set({ discountEnabled: true, discountMaxPct: 0 })
+
+    const staff = (await asAdmin('/pharma/staff')).body ?? []
+    const cashier = (staff ?? []).find((x) => x.username === 'pharmacy')
+    ok('the cashier account is there to take the tick off', !!cashier,
+      `${staff.length} staff`)
+
+    if (cashier) {
+      const held = (await asAdmin(`/pharma/permissions/${cashier.id}`)).body
+      ok('a counter assistant may give a discount by default',
+        (held.allowed ?? []).includes('sale.discount'),
+        'the box would be hidden on a shop that has discounts switched on')
+
+      /* Take it away and the SERVER must refuse, not just hide the box. */
+      await asAdmin(`/pharma/permissions/${cashier.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          allowed: (held.allowed ?? []).filter((k) => k !== 'sale.discount')
+        })
+      })
+      r = await sell(Math.round(gross * 0.05))
+      ok('without the tick the discount is refused by the server',
+        r.status === 403 && r.body?.code === 'NOT_ALLOWED',
+        `${r.status} ${r.body?.code ?? ''}`)
+      r = await sell(0)
+      ok('and a bill with no discount on it still goes through',
+        r.status === 201, `${r.status} ${r.body?.code ?? ''}`)
+
+      /* Put it back, or every later run of this suite starts refused. */
+      await asAdmin(`/pharma/permissions/${cashier.id}`, {
+        method: 'PUT', body: JSON.stringify({ allowed: held.allowed ?? [] })
+      })
+      r = await sell(Math.round(gross * 0.05))
+      ok('and it works again once the tick is back', r.status === 201,
+        `${r.status} ${r.body?.code ?? ''}`)
+    }
+
     /* A cashier who can raise their own ceiling has no ceiling. */
     r = await q('/pharma/settings', { method: 'PUT',
       body: JSON.stringify({ discountMaxPct: 100 }) })
@@ -305,6 +350,172 @@ console.log('\n— discounts at the counter —')
     ok('the settings are left as they were found',
       back.discountEnabled === true && Number(back.discountMaxPct) === 0,
       JSON.stringify(back))
+  }
+}
+
+
+/* ------------------------------ damage and expiry, through the routes ---- */
+
+/**
+ * The ROUTES, not the service underneath them.
+ *
+ * The service has its own suite and it passes. That is not the same thing:
+ * last round a receive route silently dropped the purchase order id because
+ * its schema never declared the field, the service worked perfectly, and the
+ * suite tested the service. This is the screen's actual path - sign in, read
+ * the shelf, post a write-off, read it back, fetch the slip.
+ */
+console.log('\n— damage and expiry, over the wire —')
+{
+  /* The pharmacist is not granted either tick by default, so they must be
+   * refused before anything else is tested. */
+  r = await q('/pharma/write-offs/shelf?q=')
+  ok('the shelf can be read by anybody in the module',
+    r.status === 200 && Array.isArray(r.body), `${r.status}`)
+
+  const withStock = (r.body ?? []).find((x) => Number(x.qty_on_hand) > 2)
+  ok('and it offers a batch with stock on it', !!withStock,
+    `${(r.body ?? []).length} rows`)
+
+  /*
+   * Zero is a real window, so it must not be dropped as falsy on the way
+   * through the query string. Everything it returns has to be expired.
+   */
+  r = await q('/pharma/write-offs/shelf?expiringWithinDays=0')
+  /*
+   * Everything in the zero-day window is out of date OR goes out today.
+   *
+   * This asserted `expired === true` on every row and real data broke it: the
+   * window is `expiry_date <= CURRENT_DATE` and the flag is
+   * `expiry_date < CURRENT_DATE`, so a batch dated today is in the list and
+   * is not expired. That is correct behaviour — it is the batch most urgently
+   * needing to come off the shelf — and the assertion was measuring
+   * something nobody decided. What was genuinely wrong was the label on the
+   * dropdown, which said "Already expired" over a list including stock still
+   * technically in date.
+   */
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const stale = (r.body ?? []).filter((x) =>
+    x.expired !== true && String(x.expiry_date).slice(0, 10) !== todayStr)
+  ok('a zero-day window is honoured rather than read as "no window"',
+    r.status === 200 && stale.length === 0,
+    `${(r.body ?? []).length} rows, ${stale.length} neither expired nor expiring today`)
+  ok('and it is strictly out of date or out of date today',
+    (r.body ?? []).every((x) =>
+      x.expired === true || String(x.expiry_date).slice(0, 10) === todayStr))
+
+  const everything = (await q('/pharma/write-offs/shelf')).body ?? []
+  ok('and it is narrower than no window at all',
+    (r.body ?? []).length <= everything.length,
+    `${(r.body ?? []).length} vs ${everything.length}`)
+
+  if (withStock) {
+    const body = JSON.stringify({
+      kind: 'damage', note: 'route check',
+      lines: [{ productId: Number(withStock.product_id),
+                batchId: Number(withStock.batch_id), qty: 1,
+                reason: 'dropped at the counter' }]
+    })
+
+    r = await q('/pharma/write-offs', { method: 'POST', body })
+    ok('a pharmacist without the tick is refused by the SERVER, not just the rail',
+      r.status === 403 && r.body.code === 'NOT_ALLOWED',
+      `${r.status} ${JSON.stringify(r.body).slice(0, 100)}`)
+
+    /* Now as the administrator, who holds everything. */
+    const keep = token
+    const admin = await q('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'admin', password: 'admin-demo-1' })
+    })
+    token = admin.body.token
+
+    const before = Number(withStock.qty_on_hand)
+    r = await q('/pharma/write-offs', { method: 'POST', body })
+    const made = r.body
+    ok('an administrator can post one', r.status === 201 && made.id > 0,
+      `${r.status} ${JSON.stringify(made).slice(0, 140)}`)
+    ok('and it comes back with its tracking number',
+      /^DMG-\d{6}-\d{2,}$/.test(made.write_off_no ?? ''), made.write_off_no)
+    ok('the quantity and the value are on the response',
+      Number(made.units) === 1
+      && Number(made.value_paisa) === Number(withStock.cost_paisa),
+      `${made.units} units, ${made.value_paisa} paisa, ` +
+      `batch cost ${withStock.cost_paisa}`)
+
+    /*
+     * The REASON, checked through the route.
+     *
+     * It is the one field on this form that nothing else would notice going
+     * missing: the quantity shows up as wrong stock, but a dropped reason
+     * just leaves a blank column on a report somebody reads next year.
+     */
+    ok('and the reason survived the trip',
+      (made.items ?? [])[0]?.reason === 'dropped at the counter',
+      JSON.stringify((made.items ?? [])[0]?.reason))
+
+    /* The shelf is one lighter. */
+    const after = ((await q('/pharma/write-offs/shelf')).body ?? [])
+      .find((x) => Number(x.batch_id) === Number(withStock.batch_id))
+    ok('the batch lost exactly one unit',
+      Number(after?.qty_on_hand ?? -1) === before - 1,
+      `${before} then ${after?.qty_on_hand}`)
+
+    r = await q(`/pharma/write-offs/${made.id}`)
+    ok('reading it back brings its lines',
+      r.status === 200 && (r.body.items ?? []).length === 1, `${r.status}`)
+
+    r = await q('/pharma/write-offs?kind=damage&q=route check')
+    ok('the register finds it by a word in the note',
+      r.status === 200 && (r.body ?? []).some((x) => Number(x.id) === made.id),
+      `${(r.body ?? []).length} rows`)
+
+    r = await q('/pharma/write-offs?kind=expiry&q=route check')
+    ok('and the expiry register does not show a damage report',
+      !(r.body ?? []).some((x) => Number(x.id) === made.id))
+
+    /* The slip, through a document ticket, exactly as the button does it. */
+    const ticket = await q('/tickets', {
+      method: 'POST',
+      body: JSON.stringify({ path: `/pharma/write-offs/${made.id}/pdf` })
+    })
+    ok('a document ticket is issued for the slip',
+      ticket.status === 200 && !!ticket.body.ticket,
+      `${ticket.status} ${JSON.stringify(ticket.body).slice(0, 120)}`)
+
+    if (ticket.body?.ticket) {
+      const pdf = await fetch(
+        `${B}/pharma/write-offs/${made.id}/pdf?ticket=` +
+        encodeURIComponent(ticket.body.ticket))
+      const buf = Buffer.from(await pdf.arrayBuffer())
+      ok('and the slip downloads as a PDF',
+        pdf.status === 200 && buf.subarray(0, 5).toString() === '%PDF-',
+        `${pdf.status}, ${buf.length} bytes`)
+      ok('named after the report rather than something generic',
+        /DMG-\d{6}/.test(pdf.headers.get('content-disposition') ?? ''),
+        pdf.headers.get('content-disposition') ?? '')
+    }
+
+    /* Over-asking is refused by the route too, with nothing moved. */
+    r = await q('/pharma/write-offs', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'expiry',
+        lines: [{ productId: Number(withStock.product_id),
+                  batchId: Number(withStock.batch_id), qty: 99999 }]
+      })
+    })
+    ok('more than the batch holds is refused over the wire',
+      r.status === 400 && r.body.code === 'NOT_ENOUGH',
+      `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`)
+
+    const still = ((await q('/pharma/write-offs/shelf')).body ?? [])
+      .find((x) => Number(x.batch_id) === Number(withStock.batch_id))
+    ok('and the batch is untouched by the refusal',
+      Number(still?.qty_on_hand ?? -1) === before - 1,
+      `${still?.qty_on_hand}`)
+
+    token = keep
   }
 }
 

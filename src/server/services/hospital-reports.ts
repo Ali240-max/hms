@@ -266,6 +266,13 @@ export async function counterRegister(w: Window, q: Record<string, string>) {
 
   const r = await db.execute<any>(sql`
     SELECT cb.bill_no, cb.created_at, cb.kind, cb.pay_method, cb.cashier_name,
+           cb.subtotal_paisa,
+           /*
+            * Blank rather than 0.00 on a bill with no discount, so the
+            * column can be read down for the ones that had one. A column of
+            * zeroes reads as real figures and hides the row that matters.
+            */
+           NULLIF(cb.discount_paisa, 0) AS discount_paisa,
            cb.total_paisa, cb.tendered_paisa, cb.change_paisa,
            p.mrn, p.name AS patient_name,
            COALESCE(st.display_name, '—') AS doctor_name
@@ -324,7 +331,8 @@ export async function unpaidChits(w: Window) {
 }
 
 /** What each doctor earned, and from what. */
-export async function doctorEarnings(w: Window) {
+export async function doctorEarnings(w: Window, q?: Record<string, string>) {
+  const only = Number(q?.doctor) || 0
   const r = await db.execute<any>(sql`
     SELECT st.display_name AS label,
            COUNT(*) FILTER (WHERE de.source = 'consultation')::int AS consultations,
@@ -338,8 +346,145 @@ export async function doctorEarnings(w: Window) {
     JOIN doctors d ON d.id = de.doctor_id
     JOIN staff st ON st.id = d.staff_id
     WHERE ${between('de.earned_at', w)}
+      ${only ? sql`AND d.id = ${only}` : sql``}
     GROUP BY 1 ORDER BY total_paisa DESC LIMIT 200`)
   return r.rows
+}
+
+/**
+ * The doctors a hospital has, for the dropdown on the earnings reports.
+ *
+ * Everyone who has ever earned, not just the active list: a report for last
+ * March has to be able to name a doctor who left in June, or the figures are
+ * there and nobody can select them.
+ */
+export async function doctorChoices() {
+  const r = await db.execute<any>(sql`
+    SELECT d.id::text AS value, st.display_name AS label
+    FROM doctors d JOIN staff st ON st.id = d.staff_id
+    ORDER BY st.display_name`)
+  return r.rows as { value: string; label: string }[]
+}
+
+/**
+ * The cashiers who have actually taken money in, for the register's filter.
+ *
+ * Read off the BILLS, not off the staff list. The counter register matches on
+ * `cashier_name`, which is the name copied onto the bill at the time — so a
+ * cashier who has since left, or whose display name has been corrected
+ * since, still has to appear or their bills become unreachable. Offering the
+ * current staff list instead would show names that match nothing and hide
+ * names that do.
+ *
+ * Distinct over the whole table rather than the window on screen: a filter
+ * whose options change as you move the dates is a filter that forgets what
+ * you picked.
+ */
+export async function cashierChoices() {
+  const r = await db.execute<any>(sql`
+    SELECT DISTINCT cashier_name AS value, cashier_name AS label
+    FROM counter_bills
+    WHERE cashier_name IS NOT NULL AND cashier_name <> ''
+    ORDER BY cashier_name`)
+  return r.rows as { value: string; label: string }[]
+}
+
+/**
+ * How a bill was paid.
+ *
+ * A fixed list, because these are the values the column is allowed to hold
+ * and a hospital that has never taken a card payment should still be able to
+ * ask for them — a list read from the data would offer only what has already
+ * happened, so the one method somebody is checking for would be the one
+ * missing from the dropdown.
+ *
+ * Labelled rather than printed raw: "easypaisa" is the value in the column
+ * and "EasyPaisa" is the name of the thing.
+ */
+export async function payMethodChoices() {
+  return [
+    { value: 'cash', label: 'Cash' },
+    { value: 'card', label: 'Card' },
+    { value: 'easypaisa', label: 'EasyPaisa' },
+    { value: 'jazzcash', label: 'JazzCash' },
+    { value: 'credit', label: 'Credit' }
+  ]
+}
+
+/**
+ * Every line behind a doctor's total.
+ *
+ * The summary answers "what did Dr Yasir earn"; this answers the question
+ * that always follows, which is "from whom, and for what". One row per
+ * earning: the patient, what was done, what it was billed at, the share
+ * agreed, and what that came to.
+ *
+ * THE SHARE IS THE ONE THAT WAS AGREED AT THE TIME, read off the earning
+ * rather than off the doctor's current percentage. A hospital that renegotiates
+ * a doctor's cut in July must not find that June's statements have quietly
+ * changed.
+ *
+ * Grouped by doctor when no particular one is chosen, so a bundle of
+ * statements can be printed in one go on the first of the month.
+ */
+export async function doctorEarningDetail(w: Window, q?: Record<string, string>) {
+  const only = Number(q?.doctor) || 0
+  const r = await db.execute<any>(sql`
+    SELECT st.display_name AS doctor,
+           to_char(de.earned_at, 'DD Mon YY HH24:MI') AS when,
+           p.name AS patient_name,
+           p.mrn,
+           CASE de.source WHEN 'consultation' THEN 'Consultation' ELSE 'Test or procedure' END
+             AS kind,
+           de.description,
+           de.gross_paisa,
+           (de.share_bp / 100.0) AS share_pct,
+           de.amount_paisa
+    FROM doctor_earnings de
+    JOIN doctors d ON d.id = de.doctor_id
+    JOIN staff st ON st.id = d.staff_id
+    LEFT JOIN visits v ON v.id = de.visit_id
+    LEFT JOIN patients p ON p.id = v.patient_id
+    WHERE ${between('de.earned_at', w)}
+      ${only ? sql`AND d.id = ${only}` : sql``}
+    ORDER BY st.display_name, de.earned_at DESC, de.id DESC
+    LIMIT 5000`)
+
+  return (r.rows as any[]).map((x) => ({
+    ...x,
+    /* A visit that has been cleared leaves the earning with no patient on
+     * it. Saying so beats an empty cell somebody reads as a bug. */
+    patient_name: x.patient_name ?? '(patient removed)',
+    mrn: x.mrn ?? '',
+    share_pct: Number(x.share_pct).toFixed(1)
+  }))
+}
+
+/** The figures above a doctor's statement. */
+export async function doctorEarningSummary(w: Window, q?: Record<string, string>) {
+  const only = Number(q?.doctor) || 0
+  const r = ((await db.execute<any>(sql`
+    SELECT COUNT(DISTINCT de.doctor_id)::int AS doctors,
+           COUNT(DISTINCT v.patient_id)::int  AS patients,
+           COALESCE(SUM(de.gross_paisa), 0)::bigint  AS billed,
+           COALESCE(SUM(de.amount_paisa), 0)::bigint AS earned
+    FROM doctor_earnings de
+    LEFT JOIN visits v ON v.id = de.visit_id
+    WHERE ${between('de.earned_at', w)}
+      ${only ? sql`AND de.doctor_id = ${only}` : sql``}`)).rows as any[])[0]
+
+  const money = (p: any) => (Number(p) / 100).toLocaleString('en-PK',
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const billed = Number(r.billed), earned = Number(r.earned)
+
+  return {
+    notes: [
+      `Patients seen         ${r.patients}`,
+      `Billed to patients    Rs ${money(billed)}`,
+      `Doctor's share        Rs ${money(earned)}`,
+      `Kept by the hospital  Rs ${money(billed - earned)}`
+    ]
+  }
 }
 
 /* ------------------------------------------------- the whole hospital */

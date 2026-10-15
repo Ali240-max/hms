@@ -348,11 +348,26 @@ export async function orderDetail(id: number, conn: any = db) {
    * the right thing on a printed sheet. Someone opening the order today to
    * receive against it wants to know what is there now.
    */
+  /*
+   * The medicine's own rates ride along with each line.
+   *
+   * Receiving fills purchase rate, sales tax and retail rate from the
+   * medicine's setup, and a delivery raised against an order has to fill them
+   * the same way a delivery typed in by hand does. Without these the three
+   * boxes came up empty on exactly the deliveries that have the most lines in
+   * them, which is the worst place to make somebody type.
+   *
+   * Read live rather than frozen onto the order: these are defaults for a box
+   * somebody is about to correct against the paper in front of them, not a
+   * record of anything.
+   */
   const items = (await conn.execute(sql`
     SELECT i.*,
            COALESCE((SELECT SUM(b.qty_on_hand)::int FROM batches b
-                      WHERE b.product_id = i.product_id), 0) AS stock_now
+                      WHERE b.product_id = i.product_id), 0) AS stock_now,
+           p.purchase_paisa, p.retail_paisa, p.tax_rate_bp, p.unit_label
     FROM purchase_order_items i
+    JOIN products p ON p.id = i.product_id
     WHERE i.order_id = ${id}
     ORDER BY i.display_order, i.id`)).rows as any[]
 

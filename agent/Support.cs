@@ -17,6 +17,85 @@ namespace HmsAttendance
         public int LocalPort = 5577;
         public int ReloadSeconds = 300;
 
+        /*
+         * WHICH KIND OF DEVICE, which is the one setting that changes
+         * everything else.
+         *
+         *   reader    a ZKTeco Live20R / SLK20R / ZK9500 on this PC's USB.
+         *             No brain of its own: HMS holds the fingerprints, this
+         *             agent does the matching, and enrolment happens through
+         *             HMS. Needs the ZKFinger SDK and a 32-bit build.
+         *
+         *   terminal  a ZKTeco K50 or similar on the network. A complete
+         *             computer: people are enrolled ON IT, it matches them
+         *             itself, and it keeps its own log. This agent reads that
+         *             log and forwards it. Needs no SDK and no DLL, so it
+         *             runs on any Windows and on a 64-bit build.
+         *
+         * Defaults to reader, because that is what is already installed and
+         * an existing agent.ini with no mode line has to keep working.
+         */
+        public string Mode = "reader";
+
+        /* ------------------------------------------ terminal mode only */
+        public string DeviceIp = "";
+        public int DevicePort = 4370;
+        /*
+         * The device's comm key, not a password anybody types.
+         *
+         * Set on the terminal under Comm > Security > Comm Key. Zero means
+         * none, which is how they ship.
+         */
+        public string DevicePassword = "0";
+        /*
+         * How often to ask the terminal for new records.
+         *
+         * Twenty seconds by default. The device holds its own log, so the
+         * only cost of a longer gap is how late a punch appears on the board
+         * by the door; nothing is lost. Shorter than about ten seconds is
+         * pointless — each poll disables the device's keypad for a moment
+         * while it reads, and doing that constantly is felt by whoever is
+         * standing at it.
+         */
+        public int PollSeconds = 20;
+        /*
+         * Refuse records older than this many days on a first run.
+         *
+         * A terminal that has been in service for a year hands over a year
+         * of attendance the first time it is read, and posting all of it
+         * would fill HMS with history nobody asked for and corrupt the
+         * absentee reports for every one of those days. Fourteen days is
+         * enough to catch a weekend of real punches made before the agent
+         * was set up. Zero means no limit, for a deliberate back-fill.
+         */
+        public int BackfillDays = 14;
+        /*
+         * WHETHER AN UNMAPPED DEVICE ID MAY BE READ AS A STAFF ID.
+         *
+         * OFF, and it took a real device to show why.
+         *
+         * The idea was that a terminal enrolled alongside HMS would need no
+         * setup: give somebody user id 7 on the device and staff 7 gets the
+         * punch. That is true and it is convenient and it is only safe when
+         * the two numberings are the same thing.
+         *
+         * On a terminal that was already in service — which is most of them,
+         * because that is why anybody has one lying around — the numbers
+         * mean something else entirely. The first probe against a real K50
+         * paired device user 1 "Yasir" with HMS staff 1 "Administrator", and
+         * eighteen more like it, every one wrong and every one looking
+         * perfectly plausible in the output.
+         *
+         * The two failures are not equally bad. An id nobody claims is a GAP
+         * — visible, counted, named in the log, fixable in a minute. A wrong
+         * guess is one person's attendance filed under another person's name,
+         * which nobody will ever find. So the gap is the default.
+         *
+         * Turn this on only when you know the device was numbered to match
+         * HMS, and run --probe first to look at the names side by side.
+         */
+        public bool TrustDeviceIds = false;
+
         public static Config Load()
         {
             string dir = AppDomain.CurrentDomain.BaseDirectory;
@@ -50,6 +129,14 @@ namespace HmsAttendance
                 else if (key == "deviceindex") c.DeviceIndex = ToInt(val, 0);
                 else if (key == "localport") c.LocalPort = ToInt(val, 5577);
                 else if (key == "reloadseconds") c.ReloadSeconds = ToInt(val, 300);
+                else if (key == "mode") c.Mode = val.Trim().ToLowerInvariant();
+                else if (key == "deviceip") c.DeviceIp = val;
+                else if (key == "deviceport") c.DevicePort = ToInt(val, 4370);
+                else if (key == "devicepassword") c.DevicePassword = val;
+                else if (key == "pollseconds") c.PollSeconds = ToInt(val, 20);
+                else if (key == "backfilldays") c.BackfillDays = ToInt(val, 14);
+                else if (key == "trustdeviceids")
+                    c.TrustDeviceIds = val.Trim().ToLowerInvariant() == "true";
             }
 
             if (c.DeviceKey.Length < 8)
@@ -65,6 +152,33 @@ namespace HmsAttendance
              * templates change when somebody is enrolled, which is rare.
              */
             if (c.ReloadSeconds < 60) c.ReloadSeconds = 60;
+
+            if (c.Mode != "reader" && c.Mode != "terminal")
+            {
+                throw new Exception(
+                    "Mode in agent.ini is \"" + c.Mode + "\". It has to be one of:\n" +
+                    "  reader    a ZKTeco Live20R / SLK20R on this PC's USB\n" +
+                    "  terminal  a ZKTeco K50 or similar on the network");
+            }
+
+            if (c.Mode == "terminal")
+            {
+                if (c.DeviceIp.Length == 0)
+                {
+                    throw new Exception(
+                        "Mode=terminal needs DeviceIp in agent.ini — the address " +
+                        "shown on the device under Menu > Comm > Ethernet.");
+                }
+                /*
+                 * Each poll briefly puts the terminal into its "working"
+                 * state while it reads, which somebody standing at it can
+                 * see. Polling faster than every ten seconds makes the
+                 * device feel broken for no gain: it holds its own log, so
+                 * nothing is lost by waiting.
+                 */
+                if (c.PollSeconds < 10) c.PollSeconds = 10;
+                if (c.BackfillDays < 0) c.BackfillDays = 0;
+            }
 
             return c;
         }
@@ -103,7 +217,88 @@ namespace HmsAttendance
                 Environment.NewLine +
                 "# How often to re-read the enrolled fingers, in seconds." +
                 Environment.NewLine +
-                "ReloadSeconds=300" + Environment.NewLine);
+                "ReloadSeconds=300" + Environment.NewLine +
+                Environment.NewLine +
+                "# =====================================================" +
+                Environment.NewLine +
+                "# WHICH KIND OF DEVICE" + Environment.NewLine +
+                "# =====================================================" +
+                Environment.NewLine +
+                "#" + Environment.NewLine +
+                "#   reader    a ZKTeco Live20R / SLK20R / ZK9500 plugged" +
+                Environment.NewLine +
+                "#             into THIS PC. HMS holds the fingerprints," +
+                Environment.NewLine +
+                "#             this agent does the matching, and staff are" +
+                Environment.NewLine +
+                "#             enrolled from the HMS screen." +
+                Environment.NewLine +
+                "#             Needs the ZKFinger SDK DLL beside the exe." +
+                Environment.NewLine +
+                "#" + Environment.NewLine +
+                "#   terminal  a ZKTeco K50 or similar ON THE NETWORK. The" +
+                Environment.NewLine +
+                "#             device holds its own fingerprints and does" +
+                Environment.NewLine +
+                "#             its own matching; staff are enrolled ON THE" +
+                Environment.NewLine +
+                "#             DEVICE. This agent reads its log and sends" +
+                Environment.NewLine +
+                "#             it to HMS. No SDK and no DLL needed." +
+                Environment.NewLine +
+                "#" + Environment.NewLine +
+                "Mode=reader" + Environment.NewLine +
+                Environment.NewLine +
+                "# --- terminal mode only, ignored otherwise ---" +
+                Environment.NewLine +
+                "#" + Environment.NewLine +
+                "# The address on the device: Menu > Comm > Ethernet." +
+                Environment.NewLine +
+                "DeviceIp=" + Environment.NewLine +
+                "DevicePort=4370" + Environment.NewLine +
+                Environment.NewLine +
+                "# The device's comm key: Menu > Comm > Security > Comm Key." +
+                Environment.NewLine +
+                "# 0 means none, which is how they ship." +
+                Environment.NewLine +
+                "DevicePassword=0" + Environment.NewLine +
+                Environment.NewLine +
+                "# How often to ask the terminal for new punches, in seconds." +
+                Environment.NewLine +
+                "PollSeconds=20" + Environment.NewLine +
+                Environment.NewLine +
+                "# On the FIRST run, ignore anything older than this many" +
+                Environment.NewLine +
+                "# days. A terminal already in service holds months of" +
+                Environment.NewLine +
+                "# history and posting all of it would rewrite every" +
+                Environment.NewLine +
+                "# absentee report for those days. 0 means no limit." +
+                Environment.NewLine +
+                "BackfillDays=14" + Environment.NewLine +
+                Environment.NewLine +
+                "# May a device user id be read as an HMS staff id when no" +
+                Environment.NewLine +
+                "# mapping has been set for it?" + Environment.NewLine +
+                "#" + Environment.NewLine +
+                "# false  an unmapped id is counted, named in the log and" +
+                Environment.NewLine +
+                "#        DROPPED. You get a visible gap you can fix." +
+                Environment.NewLine +
+                "# true   device user 7 is taken to be HMS staff 7." +
+                Environment.NewLine +
+                "#" + Environment.NewLine +
+                "# Leave it false unless you enrolled the device to match" +
+                Environment.NewLine +
+                "# HMS on purpose. On a device that was already in service" +
+                Environment.NewLine +
+                "# the numbers mean something else, and true would file one" +
+                Environment.NewLine +
+                "# person's attendance under another person's name." +
+                Environment.NewLine +
+                "# Run --probe and read the two name columns first." +
+                Environment.NewLine +
+                "TrustDeviceIds=false" + Environment.NewLine);
         }
     }
 
@@ -313,6 +508,26 @@ namespace HmsAttendance
                 else sb.Append(c);
             }
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// A boolean out of parsed JSON.
+        ///
+        /// Postgres can hand a boolean back as true, as "true" or as "t"
+        /// depending on the driver and the query, and this reads all three.
+        /// Anything it cannot read is FALSE, which is the safe direction: a
+        /// mapping that cannot be confirmed as real must not be trusted as
+        /// one.
+        /// </summary>
+        public static bool Bool(Dictionary<string, object> d, string key)
+        {
+            object v;
+            if (d == null || !d.TryGetValue(key, out v) || v == null) return false;
+            if (v is bool) return (bool)v;
+            string t = Convert.ToString(v, CultureInfo.InvariantCulture);
+            if (t == null) return false;
+            t = t.Trim().ToLowerInvariant();
+            return t == "true" || t == "t" || t == "1" || t == "yes";
         }
 
         public static int Int(Dictionary<string, object> d, string key)

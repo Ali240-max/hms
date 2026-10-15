@@ -4,6 +4,12 @@
  *   npm run dev:server && node verify-lab.mjs
  */
 import { writeFileSync } from 'fs'
+/*
+ * Samples go to a scratch directory and the text extraction is optional,
+ * because /tmp and pdftotext are both Linux-only and this suite is meant to
+ * be runnable on the hospital's own Windows server.
+ */
+import { savePdf, pdfText, notePdfToolMissing } from './verify-pdf.mjs'
 import { execSync } from 'child_process'
 const B = process.env.API_BASE ?? 'http://127.0.0.1:4000/api'
 const tok = {}
@@ -134,7 +140,7 @@ ok('it is served as a PDF', (pdfRes.headers.get('content-type')||'').includes('a
   pdfRes.headers.get('content-type'))
 const buf = Buffer.from(await pdfRes.arrayBuffer())
 ok('it is a real PDF file', buf.slice(0,5).toString()==='%PDF-', buf.slice(0,8).toString())
-writeFileSync('/tmp/lab-report.pdf', buf)
+savePdf('lab-report.pdf', buf)
 ok('it has some substance to it', buf.length > 1500, `${buf.length} bytes`)
 /*
  * The filename is the patient and their MRN, not the report number.
@@ -240,7 +246,7 @@ r = await q('/lab/footer','lab')
 ok('the lab reads it back', r.body.inCharge==='Dr Imran Shah')
 const pdf2 = Buffer.from(await (await fetch(B+`/lab/orders/${lo.id}/pdf`,
   { headers:{authorization:'Bearer '+tok.lab} })).arrayBuffer())
-writeFileSync('/tmp/lab-report-2.pdf', pdf2)
+const reportFile = savePdf('lab-report-2.pdf', pdf2)
 ok('the PDF regenerates with it', pdf2.slice(0,5).toString()==='%PDF-')
 
 /**
@@ -250,7 +256,9 @@ ok('the PDF regenerates with it', pdf2.slice(0,5).toString()==='%PDF-')
  * the patient's name, the values and the configured footer are actually on
  * the page — a report with the wrong name on it is worse than no report.
  */
-const text = execSync('pdftotext -layout /tmp/lab-report-2.pdf -').toString()
+const text = pdfText(reportFile, 'layout')
+if (text === null) notePdfToolMissing()
+else {
 ok('the report names the patient', text.includes(target.patient_name), text.slice(0,80))
 ok('it carries the MRN', text.includes(target.mrn))
 ok('it carries the report number', text.includes(lo.report_no))
@@ -295,6 +303,7 @@ ok('the configured lab name is printed',
   }
 }
 ok('the hospital heading is printed', /Hospital|Al-Shifa/i.test(text))
+}
 r = await q('/lab/footer','lab',{method:'PUT',body:JSON.stringify({labName:'Nope'})})
 ok('the lab cannot change the footer', r.status===403, `got ${r.status}`)
 

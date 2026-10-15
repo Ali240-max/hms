@@ -15,12 +15,51 @@ import { ReportsDesk } from './screens/reports/ReportsDesk'
 import { AppearanceToggle, useT } from './lib/prefs'
 import { ModulesProvider, useModules } from './lib/modules'
 import { t as tr } from './lib/prefs'
+import {
+  Building2, Banknote, ListChecks, Siren, BedDouble, Fingerprint, Warehouse,
+  FlaskConical, ScanLine, Stethoscope, Cross, BarChart3, Hospital,
+  type LucideIcon
+} from 'lucide-react'
 
 const HOME: Record<string, string> = {
   admin: 'Administration', main_counter: 'Main counter', receptionist: 'OPD counter',
   ipd_counter: 'Emergency', ward: 'Ward', kiosk: 'Attendance board', store_keeper: 'Stores', lab_tech: 'Laboratory',
   radiology: 'Radiology',
   doctor: 'Consultation', pharmacist: 'Pharmacy', reports: 'Reports'
+}
+
+/**
+ * The mark beside the module name in the top bar.
+ *
+ * It was the letter H, on every screen, for every role. One letter standing
+ * for "hospital" told a cashier nothing they did not know and matched the
+ * rail below it, which was also letters. Now the bar says what you are
+ * looking at twice over: the icon and the name.
+ *
+ * Falls back to a hospital mark rather than breaking, because a role added
+ * later should put a sensible thing in the corner before anybody gets round
+ * to choosing its icon.
+ */
+const HOME_ICON: Record<string, LucideIcon> = {
+  admin: Building2, main_counter: Banknote, receptionist: ListChecks,
+  ipd_counter: Siren, ward: BedDouble, kiosk: Fingerprint,
+  store_keeper: Warehouse, lab_tech: FlaskConical, radiology: ScanLine,
+  doctor: Stethoscope, pharmacist: Cross, reports: BarChart3
+}
+
+/** The running build and the last migration that applied, quietly. */
+function BuildStamp() {
+  const [v, setV] = useState<{ build?: string; migration?: string } | null>(null)
+  useEffect(() => {
+    api.health().then(setV).catch(() => {})
+  }, [])
+  if (!v?.build) return null
+  return (
+    <span className="hidden num text-[0.6rem] leading-tight text-muted lg:block"
+      title={v.migration ? `Last migration: ${v.migration}` : undefined}>
+      {v.build}
+    </span>
+  )
 }
 
 export default function App() {
@@ -42,13 +81,26 @@ export default function App() {
       */}
       <header className="no-print flex shrink-0 items-center gap-4 border-b-2 border-line bg-card px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="tile shrink-0">H</span>
+          <span className="tile shrink-0">
+            {(() => { const I = HOME_ICON[me.role] ?? Hospital; return <I size={17} /> })()}
+          </span>
           <span className="hidden truncate text-sm font-semibold text-heading sm:block">
             {tr(HOME[me.role])}
           </span>
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-3">
+          {/*
+            Which build is running, read from the server.
+          
+            Updates reach this hospital as a zip extracted over a folder on a
+            server in another city, and there has been no way to tell from
+            inside the application whether one landed. Twice a feature has
+            been reported missing when the real question was whether the
+            bundle carrying it had been applied. Now anybody can read it off
+            the top bar and say so down the phone.
+          */}
+          <BuildStamp />
           <span className="hidden text-right sm:block">
             <span className="block text-2xs font-medium leading-tight text-heading">
               {me.displayName}

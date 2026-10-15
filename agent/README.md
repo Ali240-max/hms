@@ -1,12 +1,206 @@
 # HMS attendance agent
 
-Runs on the PC with the ZKTeco fingerprint reader plugged into it. Matches a
-finger against the templates HMS holds and posts the result to the server.
+One executable, two kinds of device. Which one is set by `Mode` in
+`agent.ini`.
 
-Tested against **SLK20R / Live20R**. The same SDK covers ZK9500, ZK6500 and
-ZK8500R, so those should work unchanged.
+| | `Mode=reader` | `Mode=terminal` |
+|---|---|---|
+| The device | ZKTeco **Live20R / SLK20R / ZK9500** on this PC's USB | ZKTeco **K50** and family, on the network |
+| Who holds the fingerprints | HMS | the device |
+| Who does the matching | this agent | the device |
+| Where staff are enrolled | the HMS screen | **on the device** |
+| Needs the ZKFinger SDK | yes | **no** |
+| Needs a DLL beside the exe | yes | **no** |
+| How HMS knows who punched | it matched them | the device's user id, mapped |
+
+The two are not the same thing in different shapes. A reader is a piece of
+glass with no brain: this PC does the thinking. A terminal is a complete
+computer on the wall that has already decided who the person is by the time
+it tells anybody. So terminal mode does not match anybody and does not want
+your templates — it reads the log of decisions the device already made and
+forwards them.
+
+Everything downstream is shared: the same queue, the same retry, the same
+route into HMS, the same rows in the attendance table. A hospital can run a
+reader at one door and a terminal at another and the reports will not know
+the difference.
 
 ---
+
+## Terminal mode (a K50 on the network)
+
+Start here if you have a terminal rather than a USB reader. There is less to
+do, because the device already knows everybody.
+
+### 1. Build it
+
+```
+build.bat
+```
+
+No SDK, no driver, no DLL. The protocol is spoken over a socket.
+
+### 2. Add the device in HMS
+
+Administration → Attendance → Devices → **Add a device**, and choose
+**Terminal on the network**. Copy the key it shows you once.
+
+### 3. Fill in agent.ini
+
+```
+Server=http://192.168.1.84:4000
+DeviceKey=<the key HMS showed you>
+Mode=terminal
+DeviceIp=192.168.1.201
+DevicePassword=0
+```
+
+`DeviceIp` is the address on the device under **Menu → Comm → Ethernet**.
+`DevicePassword` is its comm key, under **Menu → Comm → Security → Comm
+Key** — `0` means none, which is how they ship.
+
+### 4. Check it before trusting it
+
+```
+hms-attendance-agent.exe --probe
+```
+
+This connects, reads the clock, counts what is on the device, lists everybody
+enrolled with who they map to in HMS, and shows the last ten punches. **It
+posts nothing and changes nothing on the device.** Run this first, every
+time, on a new install.
+
+A clean probe looks like this:
+
+```
+  connected
+  device clock  2026-10-10 12:31:04   (this PC is 0 min different)
+  users 14, fingers 21, records 3180 of 100000
+
+  ON THE DEVICE            MAPS TO IN HMS
+  id 1       Imran Bhatti    staff 1  Imran Bhatti
+  id 7       Saleem Akhtar   -- NOBODY --
+
+  3180 punch(es) on the device, last 10:
+    2026-10-10 09:14:33  id 1       -> staff 1      (40-byte record)
+```
+
+`-- NOBODY --` is the thing to fix: that person's punches will be counted and
+refused, not guessed at. See **Mapping** below.
+
+### 5. Map the people
+
+**An unmapped device id is dropped, not guessed at.** Put each person's
+device id against them in HMS: **Administration → Staff → Edit → "Id on the
+attendance terminal"**. The probe output above is the list to work from — it
+prints the device's own name beside the HMS name so you can see at a glance
+whether a pairing is right.
+
+A punch from an unmapped id is counted, named in the log, and discarded.
+Nothing is lost by it: the device keeps its own log, so the moment you set the
+id the punch is picked up on the next poll.
+
+**Why it is not guessed.** The obvious shortcut is to read device user 7 as
+HMS staff 7, and that is right *only* when the device was numbered to match
+HMS. On a terminal that was already in service the numbers mean something
+else, and the first probe against a real K50 made that vivid:
+
+```
+  id 1       Yasir               staff 1  Administrator
+  id 2       Farhan              staff 2  Sana Tariq
+  id 3       Sana                staff 3  Hina Butt
+```
+
+Nineteen pairings, every one wrong, every one looking perfectly ordinary. The
+two failures are not equally bad: an unmapped id is a **gap** — visible,
+counted, fixable in a minute — while a wrong guess is one person's attendance
+filed under another's name, which nobody ever finds.
+
+If you *did* enrol the device to match HMS, `TrustDeviceIds=true` in
+`agent.ini` turns the shortcut back on. Run `--probe` first and read the two
+name columns; the probe marks any pairing of two different names with
+`<<< DIFFERENT PERSON`.
+
+### 6. Run it
+
+```
+hms-attendance-agent.exe
+```
+
+It polls every twenty seconds. The device holds its own log, so nothing is
+lost if this PC is off, the network drops, or HMS is down — it catches up on
+the next poll.
+
+### What it will not do
+
+**It never clears the device log.** The protocol has a command for it and
+this agent does not send it. Clearing is the easy way to avoid reading the
+same record twice and it is the wrong way: the moment HMS is unreachable, or
+the mapping is wrong, the only copy of a day's attendance would be gone. A
+high-water mark in `last-punch.txt` beside the exe does that job instead.
+
+**It does not push fingerprints to the device.** Enrol on the device. HMS
+enrolment is for readers.
+
+### The device's clock is the one that matters
+
+Every record a terminal hands over is stamped by **its own clock**, not the
+server's. A device whose battery died and came back at midnight on the first
+of January will hand over a month of attendance dated in the year 2000, and
+HMS will store it exactly as given, because there is no way to tell from the
+outside.
+
+The agent warns on every poll when the two clocks are more than two minutes
+apart. To fix it:
+
+```
+hms-attendance-agent.exe --probe --set-time
+```
+
+### First run on a device with history
+
+A terminal that has been in service for a year hands over a year of
+attendance the first time it is read. `BackfillDays=14` in `agent.ini` is
+what stops all of it being posted and rewriting every absentee report for
+those months. Set it to `0` for a deliberate back-fill.
+
+### If the probe fails
+
+In this order:
+
+1. `ping 192.168.1.201`
+2. the device and this PC are on the same subnet
+3. **Menu → Comm → Ethernet** on the device shows that address
+4. **ZKBio Time, or any other software, is closed** — some firmware allows
+   only one connection at a time, and this is the most common cause
+5. `DevicePassword` matches **Comm → Security → Comm Key**
+
+### Checking the protocol itself
+
+```
+test-protocol.bat
+```
+
+Touches no real device. It checks the arithmetic against values from the
+reference implementation, pins the connect packet byte for byte, and then
+stands up a **fake terminal on loopback** and holds a whole conversation with
+it — connect, authorise, clock, counters, user list, attendance log, twice
+over.
+
+That last part exists because of a real fault. A chunked read is answered with
+three packets and the agent read two; the leftover became the next command's
+answer, and from then on every reply belonged to the command before it. The
+user list still worked, because it came first. The attendance read got the
+previous command's empty acknowledgement and reported that the device had
+refused — which was false in every particular, and the symptom was two
+commands away from the cause.
+
+No amount of arithmetic testing finds that. It needs something on the other
+end of a socket.
+
+---
+
+## Reader mode
 
 ## What you need on that PC
 

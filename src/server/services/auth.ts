@@ -1,27 +1,44 @@
-import { randomBytes, scrypt, timingSafeEqual } from 'crypto'
-import { promisify } from 'util'
-import { sql, eq } from 'drizzle-orm'
-import { db } from '../db/client'
-import * as s from '../db/schema'
+import { randomBytes, scrypt, timingSafeEqual } from "crypto";
+import { promisify } from "util";
+import { sql, eq } from "drizzle-orm";
+import { db } from "../db/client";
+import * as s from "../db/schema";
 
-const scryptAsync = promisify(scrypt) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>
+const scryptAsync = promisify(scrypt) as (
+  pw: string,
+  salt: Buffer,
+  len: number
+) => Promise<Buffer>;
 
 /**
  * `main_counter` is the cash window; `receptionist` is the OPD desk.
  * The value name is kept for the OPD desk so existing staff rows stay valid.
  */
-export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'ward' | 'kiosk' | 'pharmacist' | 'pharmacy_admin' | 'reports'
+export type Role =
+  | "admin"
+  | "main_counter"
+  | "receptionist"
+  | "ipd_counter"
+  | "store_keeper"
+  | "lab_tech"
+  | "radiology"
+  | "doctor"
+  | "ward"
+  | "kiosk"
+  | "pharmacist"
+  | "pharmacy_admin"
+  | "reports";
 
 export type SessionUser = {
-  id: number
-  username: string
-  displayName: string
-  role: Role
-  departmentId: number | null
-  departmentName?: string | null
+  id: number;
+  username: string;
+  displayName: string;
+  role: Role;
+  departmentId: number | null;
+  departmentName?: string | null;
   /** Set only for doctors, so their screens can find their own queue. */
-  doctorId?: number | null
-}
+  doctorId?: number | null;
+};
 
 /**
  * Unlike the standalone pharmacy till, this runs on a server that browsers
@@ -33,7 +50,7 @@ export type SessionUser = {
  * There is no default account. On first run the system has no staff and
  * demands that an admin be created.
  */
-const SESSION_HOURS = 12
+const SESSION_HOURS = 12;
 
 /**
  * Sessions live in the database, not in this process.
@@ -46,7 +63,7 @@ const SESSION_HOURS = 12
  * The in-memory copy stays as a cache so the common case is not a query per
  * request; the database is the truth, and a cache miss falls back to it.
  */
-const cache = new Map<string, { user: SessionUser; expires: number }>()
+const cache = new Map<string, { user: SessionUser; expires: number }>();
 
 /**
  * Whether the sessions table is usable on this database.
@@ -62,52 +79,65 @@ const cache = new Map<string, { user: SessionUser; expires: number }>()
  * persisted. Everyone stays signed in until the server restarts, and the
  * console says exactly what to run to fix it properly.
  */
-let sessionsUsable = true
+let sessionsUsable = true;
 
 function sessionTableUnusable(e: any) {
-  const msg = String(e?.message ?? e)
-  if (!/permission denied|does not exist/i.test(msg)) return false
+  const msg = String(e?.message ?? e);
+  if (!/permission denied|does not exist/i.test(msg)) return false;
   if (sessionsUsable) {
-    sessionsUsable = false
+    sessionsUsable = false;
     console.error(
-      '\n  The sessions table cannot be used: ' + msg +
-      '\n  Signing in still works, but everyone is signed out when the server restarts.' +
-      '\n' +
-      '\n  It is almost always a table owned by a different PostgreSQL role than' +
-      '\n  the one in DATABASE_URL. Fix it by running, as the owner or a superuser:' +
-      '\n' +
-      '\n    GRANT ALL ON ALL TABLES IN SCHEMA public TO <the role in DATABASE_URL>;' +
-      '\n    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO <the role in DATABASE_URL>;' +
-      '\n')
+      "\n  The sessions table cannot be used: " +
+        msg +
+        "\n  Signing in still works, but everyone is signed out when the server restarts." +
+        "\n" +
+        "\n  It is almost always a table owned by a different PostgreSQL role than" +
+        "\n  the one in DATABASE_URL. Fix it by running, as the owner or a superuser:" +
+        "\n" +
+        "\n    GRANT ALL ON ALL TABLES IN SCHEMA public TO <the role in DATABASE_URL>;" +
+        "\n    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO <the role in DATABASE_URL>;" +
+        "\n"
+    );
   }
-  return true
+  return true;
 }
 
 export async function hashPassword(pw: string) {
-  const salt = randomBytes(16)
-  return `scrypt$${salt.toString('hex')}$${(await scryptAsync(pw, salt, 64)).toString('hex')}`
+  const salt = randomBytes(16);
+  return `scrypt$${salt.toString("hex")}$${(
+    await scryptAsync(pw, salt, 64)
+  ).toString("hex")}`;
 }
 
 export async function verifyPassword(pw: string, stored: string) {
-  const [scheme, saltHex, hashHex] = stored.split('$')
-  if (scheme !== 'scrypt' || !saltHex || !hashHex) return false
-  const want = Buffer.from(hashHex, 'hex')
-  const got = await scryptAsync(pw, Buffer.from(saltHex, 'hex'), want.length)
+  const [scheme, saltHex, hashHex] = stored.split("$");
+  if (scheme !== "scrypt" || !saltHex || !hashHex) return false;
+  const want = Buffer.from(hashHex, "hex");
+  const got = await scryptAsync(pw, Buffer.from(saltHex, "hex"), want.length);
   // Constant-time: a plain === leaks how much of the hash matched via timing.
-  return want.length === got.length && timingSafeEqual(want, got)
+  return want.length === got.length && timingSafeEqual(want, got);
 }
 
 export class AuthError extends Error {
   constructor(
     msg: string,
-    public code: 'BAD_CREDENTIALS' | 'WEAK_PASSWORD' | 'DUPLICATE' | 'SETUP_DONE' | 'LAST_ADMIN' | 'HAS_HISTORY'
-  ) { super(msg) }
+    public code:
+      | "BAD_CREDENTIALS"
+      | "WEAK_PASSWORD"
+      | "DUPLICATE"
+      | "SETUP_DONE"
+      | "LAST_ADMIN"
+      | "HAS_HISTORY"
+  ) {
+    super(msg);
+  }
 }
 
 export async function needsSetup(): Promise<boolean> {
   const r = await db.execute<{ n: number }>(
-    sql`SELECT count(*)::int AS n FROM staff WHERE is_active AND role = 'admin'`)
-  return Number((r.rows as any[])[0].n) === 0
+    sql`SELECT count(*)::int AS n FROM staff WHERE is_active AND role = 'admin'`
+  );
+  return Number((r.rows as any[])[0].n) === 0;
 }
 
 function validate(pw: string, role: Role) {
@@ -115,26 +145,37 @@ function validate(pw: string, role: Role) {
   // pharmacist types theirs dozens of times a shift on a shared machine, so a
   // shorter one is a deliberate trade: the risk there is a mis-attributed
   // record, not a remote attacker.
-  const min = role === 'admin' ? 8 : 4
+  const min = role === "admin" ? 8 : 4;
   if (pw.length < min) {
-    throw new AuthError(`An ${role} password must be at least ${min} characters`, 'WEAK_PASSWORD')
+    throw new AuthError(
+      `An ${role} password must be at least ${min} characters`,
+      "WEAK_PASSWORD"
+    );
   }
 }
 
 export async function createFirstAdmin(input: {
-  username: string; displayName: string; password: string
+  username: string;
+  displayName: string;
+  password: string;
 }) {
   if (!(await needsSetup())) {
-    throw new AuthError('This hospital already has an admin account', 'SETUP_DONE')
+    throw new AuthError(
+      "This hospital already has an admin account",
+      "SETUP_DONE"
+    );
   }
-  validate(input.password, 'admin')
-  const [row] = await db.insert(s.staff).values({
-    username: input.username.trim(),
-    displayName: input.displayName.trim() || input.username.trim(),
-    passwordHash: await hashPassword(input.password),
-    role: 'admin'
-  }).returning()
-  return row
+  validate(input.password, "admin");
+  const [row] = await db
+    .insert(s.staff)
+    .values({
+      username: input.username.trim(),
+      displayName: input.displayName.trim() || input.username.trim(),
+      passwordHash: await hashPassword(input.password),
+      role: "admin",
+    })
+    .returning();
+  return row;
 }
 
 export async function login(username: string, password: string) {
@@ -143,16 +184,21 @@ export async function login(username: string, password: string) {
     FROM staff st
     LEFT JOIN departments d ON d.id = st.department_id
     LEFT JOIN doctors doc ON doc.staff_id = st.id AND doc.is_active
-    WHERE lower(st.username) = lower(${username.trim()}) AND st.is_active`)
-  const row = (r.rows as any[])[0]
+    WHERE lower(st.username) = lower(${username.trim()}) AND st.is_active`);
+  const row = (r.rows as any[])[0];
 
   // Identical error and comparable timing whether the account is missing or
   // the password is wrong, so this cannot be used to discover usernames.
-  const fail = new AuthError('Wrong username or password', 'BAD_CREDENTIALS')
-  if (!row) { await scryptAsync(password, randomBytes(16), 64); throw fail }
-  if (!(await verifyPassword(password, row.password_hash))) throw fail
+  const fail = new AuthError("Wrong username or password", "BAD_CREDENTIALS");
+  if (!row) {
+    await scryptAsync(password, randomBytes(16), 64);
+    throw fail;
+  }
+  if (!(await verifyPassword(password, row.password_hash))) throw fail;
 
-  await db.execute(sql`UPDATE staff SET last_login_at = now() WHERE id = ${row.id}`)
+  await db.execute(
+    sql`UPDATE staff SET last_login_at = now() WHERE id = ${row.id}`
+  );
 
   const user: SessionUser = {
     id: Number(row.id),
@@ -161,37 +207,37 @@ export async function login(username: string, password: string) {
     role: row.role,
     departmentId: row.department_id ?? null,
     departmentName: row.department_name ?? null,
-    doctorId: row.doctor_id ? Number(row.doctor_id) : null
-  }
-  const token = randomBytes(32).toString('hex')
-  const expires = Date.now() + SESSION_HOURS * 3600_000
+    doctorId: row.doctor_id ? Number(row.doctor_id) : null,
+  };
+  const token = randomBytes(32).toString("hex");
+  const expires = Date.now() + SESSION_HOURS * 3600_000;
 
   // The cache is written first, so a signed-in session works even if the
   // table below cannot be reached.
-  cache.set(token, { user, expires })
+  cache.set(token, { user, expires });
 
   if (sessionsUsable) {
     try {
       await db.execute(sql`
         INSERT INTO sessions (token, staff_id, expires_at)
-        VALUES (${token}, ${user.id}, ${new Date(expires).toISOString()})`)
+        VALUES (${token}, ${user.id}, ${new Date(expires).toISOString()})`);
       // Old rows are cleared on the way past rather than by a scheduled job.
-      await db.execute(sql`DELETE FROM sessions WHERE expires_at < now()`)
+      await db.execute(sql`DELETE FROM sessions WHERE expires_at < now()`);
     } catch (e) {
-      if (!sessionTableUnusable(e)) throw e
+      if (!sessionTableUnusable(e)) throw e;
     }
   }
 
-  return { token, user }
+  return { token, user };
 }
 
 export async function logout(token: string) {
-  cache.delete(token)
-  if (!sessionsUsable) return
+  cache.delete(token);
+  if (!sessionsUsable) return;
   try {
-    await db.execute(sql`DELETE FROM sessions WHERE token = ${token}`)
+    await db.execute(sql`DELETE FROM sessions WHERE token = ${token}`);
   } catch (e) {
-    if (!sessionTableUnusable(e)) throw e
+    if (!sessionTableUnusable(e)) throw e;
   }
 }
 
@@ -203,31 +249,35 @@ export async function logout(token: string) {
  * empty cache, finds the row, and carries on.
  */
 export async function sessionFor(token?: string): Promise<SessionUser | null> {
-  if (!token) return null
+  if (!token) return null;
 
-  const hit = cache.get(token)
+  const hit = cache.get(token);
   if (hit) {
-    if (hit.expires >= Date.now()) return hit.user
-    cache.delete(token)
+    if (hit.expires >= Date.now()) return hit.user;
+    cache.delete(token);
   }
 
-  if (!sessionsUsable) return null
+  if (!sessionsUsable) return null;
 
-  let row: any
+  let row: any;
   try {
-    row = ((await db.execute<any>(sql`
+    row = (
+      (
+        await db.execute<any>(sql`
       SELECT s.expires_at, st.id, st.username, st.display_name, st.role, st.department_id,
              d.name AS department_name,
              (SELECT doc.id FROM doctors doc WHERE doc.staff_id = st.id) AS doctor_id
       FROM sessions s
       JOIN staff st ON st.id = s.staff_id AND st.is_active
       LEFT JOIN departments d ON d.id = st.department_id
-      WHERE s.token = ${token} AND s.expires_at > now()`)).rows as any[])[0]
+      WHERE s.token = ${token} AND s.expires_at > now()`)
+      ).rows as any[]
+    )[0];
   } catch (e) {
-    if (sessionTableUnusable(e)) return null
-    throw e
+    if (sessionTableUnusable(e)) return null;
+    throw e;
   }
-  if (!row) return null
+  if (!row) return null;
 
   const user: SessionUser = {
     id: Number(row.id),
@@ -236,10 +286,10 @@ export async function sessionFor(token?: string): Promise<SessionUser | null> {
     role: row.role,
     departmentId: row.department_id ?? null,
     departmentName: row.department_name ?? null,
-    doctorId: row.doctor_id ? Number(row.doctor_id) : null
-  }
-  cache.set(token, { user, expires: new Date(row.expires_at).getTime() })
-  return user
+    doctorId: row.doctor_id ? Number(row.doctor_id) : null,
+  };
+  cache.set(token, { user, expires: new Date(row.expires_at).getTime() });
+  return user;
 }
 
 /**
@@ -249,21 +299,27 @@ export async function sessionFor(token?: string): Promise<SessionUser | null> {
  * turns that back into the same permissions they signed in with. Returns null
  * once they sign out, so a ticket cannot outlive the session it came from.
  */
-export async function sessionForUser(staffId: number): Promise<SessionUser | null> {
+export async function sessionForUser(
+  staffId: number
+): Promise<SessionUser | null> {
   // The cache first, so this keeps working when the table cannot be read.
   for (const sess of cache.values()) {
-    if (sess.user.id === staffId && sess.expires > Date.now()) return sess.user
+    if (sess.user.id === staffId && sess.expires > Date.now()) return sess.user;
   }
-  if (!sessionsUsable) return null
+  if (!sessionsUsable) return null;
   try {
-    const row = ((await db.execute<any>(sql`
+    const row = (
+      (
+        await db.execute<any>(sql`
       SELECT token FROM sessions
       WHERE staff_id = ${staffId} AND expires_at > now()
-      ORDER BY last_seen_at DESC LIMIT 1`)).rows as any[])[0]
-    return row ? sessionFor(row.token) : null
+      ORDER BY last_seen_at DESC LIMIT 1`)
+      ).rows as any[]
+    )[0];
+    return row ? sessionFor(row.token) : null;
   } catch (e) {
-    if (sessionTableUnusable(e)) return null
-    throw e
+    if (sessionTableUnusable(e)) return null;
+    throw e;
   }
 }
 
@@ -275,52 +331,75 @@ export async function sessionForUser(staffId: number): Promise<SessionUser | nul
  * were deliberately taken away.
  */
 async function dropSessionsFor(staffId: number) {
-  for (const [token, sess] of cache) if (sess.user.id === staffId) cache.delete(token)
-  if (!sessionsUsable) return
+  for (const [token, sess] of cache)
+    if (sess.user.id === staffId) cache.delete(token);
+  if (!sessionsUsable) return;
   try {
-    await db.execute(sql`DELETE FROM sessions WHERE staff_id = ${staffId}`)
+    await db.execute(sql`DELETE FROM sessions WHERE staff_id = ${staffId}`);
   } catch (e) {
-    if (!sessionTableUnusable(e)) throw e
+    if (!sessionTableUnusable(e)) throw e;
   }
 }
 
 export async function listStaff() {
   const r = await db.execute<any>(sql`
+    /*
+     * Everything the edit form needs to open filled in.
+     *
+     * Qualification, the shift and whether attendance is expected were all
+     * missing, which is most of why the edit dialog only offered four
+     * fields: a form cannot show what the list never fetched. Adding a
+     * column here is free — this query runs once per visit to the Staff
+     * tab.
+     */
     SELECT st.id, st.username, st.display_name, st.role, st.phone, st.is_active,
            st.last_login_at, d.name AS department_name, st.department_id,
-           doc.id AS doctor_id, doc.specialisation, doc.room,
+           st.shift_start, st.shift_end, st.attendance_required,
+           st.device_user_id,
+           doc.id AS doctor_id, doc.specialisation, doc.qualification, doc.room,
            doc.consultation_fee_paisa, doc.consultation_share_bp, doc.default_service_share_bp
     FROM staff st
     LEFT JOIN departments d ON d.id = st.department_id
     LEFT JOIN doctors doc ON doc.staff_id = st.id
-    ORDER BY st.is_active DESC, st.role, st.display_name`)
-  return r.rows
+    ORDER BY st.is_active DESC, st.role, st.display_name`);
+  return r.rows;
 }
 
 export async function createStaff(input: {
-  username: string; displayName: string; password: string; role: Role
-  departmentId?: number | null; phone?: string | null
+  username: string;
+  displayName: string;
+  password: string;
+  role: Role;
+  departmentId?: number | null;
+  phone?: string | null;
   /** When they are expected, and whether they are expected at all. */
-  shiftStart?: string | null
-  shiftEnd?: string | null
-  attendanceRequired?: boolean
+  shiftStart?: string | null;
+  shiftEnd?: string | null;
+  attendanceRequired?: boolean;
   doctor?: {
-    specialisation?: string | null; qualification?: string | null; room?: string | null
-    consultationFeePaisa?: number; consultationShareBp?: number; defaultServiceShareBp?: number
-  }
+    specialisation?: string | null;
+    qualification?: string | null;
+    room?: string | null;
+    consultationFeePaisa?: number;
+    consultationShareBp?: number;
+    defaultServiceShareBp?: number;
+  };
 }) {
-  validate(input.password, input.role)
+  validate(input.password, input.role);
   return db.transaction(async (tx) => {
-    let row
+    let row;
     try {
-      ;[row] = await tx.insert(s.staff).values({
-        username: input.username.trim(),
-        displayName: input.displayName.trim() || input.username.trim(),
-        passwordHash: await hashPassword(input.password),
-        role: input.role,
-        departmentId: input.departmentId ?? null,
-        phone: input.phone ?? null
-      }).returning()
+      [row] = await tx
+        .insert(s.staff)
+        .values({
+          username: input.username.trim(),
+          displayName: input.displayName.trim() || input.username.trim(),
+          passwordHash: await hashPassword(input.password),
+          role: input.role,
+          departmentId: input.departmentId ?? null,
+          phone: input.phone ?? null,
+        })
+        .returning();
 
       /*
        * The shift is written straight after, not through the schema object.
@@ -334,17 +413,20 @@ export async function createStaff(input: {
           shift_start = ${input.shiftStart || null},
           shift_end = ${input.shiftEnd || null},
           attendance_required = ${input.attendanceRequired ?? true}
-        WHERE id = ${row.id}`)
+        WHERE id = ${row.id}`);
     } catch (e: any) {
-      if (String(e?.message ?? '').includes('staff_username_uq')) {
-        throw new AuthError(`The username "${input.username}" is already taken`, 'DUPLICATE')
+      if (String(e?.message ?? "").includes("staff_username_uq")) {
+        throw new AuthError(
+          `The username "${input.username}" is already taken`,
+          "DUPLICATE"
+        );
       }
-      throw e
+      throw e;
     }
 
     // A doctor needs their clinical row created in the same transaction,
     // otherwise a half-made doctor cannot be rostered or paid.
-    if (input.role === 'doctor') {
+    if (input.role === "doctor") {
       await tx.insert(s.doctors).values({
         staffId: row.id,
         specialisation: input.doctor?.specialisation ?? null,
@@ -352,57 +434,85 @@ export async function createStaff(input: {
         room: input.doctor?.room ?? null,
         consultationFeePaisa: input.doctor?.consultationFeePaisa ?? 0,
         consultationShareBp: input.doctor?.consultationShareBp ?? 10000,
-        defaultServiceShareBp: input.doctor?.defaultServiceShareBp ?? 0
-      })
+        defaultServiceShareBp: input.doctor?.defaultServiceShareBp ?? 0,
+      });
     }
-    return row
-  })
+    return row;
+  });
 }
 
-export async function updateDoctor(doctorId: number, patch: {
-  specialisation?: string | null; qualification?: string | null; room?: string | null
-  consultationFeePaisa?: number; consultationShareBp?: number; defaultServiceShareBp?: number
-  isActive?: boolean
-}) {
-  const [row] = await db.update(s.doctors).set(patch).where(eq(s.doctors.id, doctorId)).returning()
-  return row
+export async function updateDoctor(
+  doctorId: number,
+  patch: {
+    specialisation?: string | null;
+    qualification?: string | null;
+    room?: string | null;
+    consultationFeePaisa?: number;
+    consultationShareBp?: number;
+    defaultServiceShareBp?: number;
+    isActive?: boolean;
+  }
+) {
+  const [row] = await db
+    .update(s.doctors)
+    .set(patch)
+    .where(eq(s.doctors.id, doctorId))
+    .returning();
+  return row;
 }
 
 export async function setStaffPassword(staffId: number, password: string) {
-  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
-  if (!row) throw new AuthError('No such user', 'BAD_CREDENTIALS')
-  validate(password, row.role as Role)
-  await db.update(s.staff).set({ passwordHash: await hashPassword(password) })
-    .where(eq(s.staff.id, staffId))
+  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId));
+  if (!row) throw new AuthError("No such user", "BAD_CREDENTIALS");
+  validate(password, row.role as Role);
+  await db
+    .update(s.staff)
+    .set({ passwordHash: await hashPassword(password) })
+    .where(eq(s.staff.id, staffId));
   // A password change ends any session opened with the old one.
-  await dropSessionsFor(staffId)
+  await dropSessionsFor(staffId);
 }
 
 /** Archive, never delete: visits and prescriptions reference staff. */
 export async function archiveStaff(staffId: number) {
-  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
-  if (!row) throw new AuthError('No such user', 'BAD_CREDENTIALS')
+  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId));
+  if (!row) throw new AuthError("No such user", "BAD_CREDENTIALS");
 
-  if (row.role === 'admin') {
+  if (row.role === "admin") {
     const r = await db.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM staff WHERE is_active AND role='admin' AND id <> ${staffId}`)
+      SELECT count(*)::int AS n FROM staff WHERE is_active AND role='admin' AND id <> ${staffId}`);
     if (Number((r.rows as any[])[0].n) === 0) {
-      throw new AuthError('This is the only admin account. Create another one first.', 'LAST_ADMIN')
+      throw new AuthError(
+        "This is the only admin account. Create another one first.",
+        "LAST_ADMIN"
+      );
     }
   }
 
   await db.transaction(async (tx) => {
-    await tx.update(s.staff).set({ isActive: false }).where(eq(s.staff.id, staffId))
-    await tx.update(s.doctors).set({ isActive: false }).where(eq(s.doctors.staffId, staffId))
-  })
-  await dropSessionsFor(staffId)
+    await tx
+      .update(s.staff)
+      .set({ isActive: false })
+      .where(eq(s.staff.id, staffId));
+    await tx
+      .update(s.doctors)
+      .set({ isActive: false })
+      .where(eq(s.doctors.staffId, staffId));
+  });
+  await dropSessionsFor(staffId);
 }
 
 export async function restoreStaff(staffId: number) {
   await db.transaction(async (tx) => {
-    await tx.update(s.staff).set({ isActive: true }).where(eq(s.staff.id, staffId))
-    await tx.update(s.doctors).set({ isActive: true }).where(eq(s.doctors.staffId, staffId))
-  })
+    await tx
+      .update(s.staff)
+      .set({ isActive: true })
+      .where(eq(s.staff.id, staffId));
+    await tx
+      .update(s.doctors)
+      .set({ isActive: true })
+      .where(eq(s.doctors.staffId, staffId));
+  });
 }
 
 /**
@@ -417,26 +527,51 @@ export async function restoreStaff(staffId: number) {
  * in the stock ledger as plain text, and changing it would leave those
  * records pointing at a name that no longer exists.
  */
-export async function updateStaff(staffId: number, input: {
-  displayName?: string
-  role?: string
-  departmentId?: number | null
-  phone?: string | null
-}) {
-  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
-  if (!row) throw new AuthError('No such user', 'BAD_CREDENTIALS')
+export async function updateStaff(
+  staffId: number,
+  input: {
+    displayName?: string;
+    role?: string;
+    departmentId?: number | null;
+    phone?: string | null;
+    /*
+     * The shift, editable now.
+     *
+     * It could be set when the account was created and never changed again,
+     * so a cashier moving from mornings to evenings meant deleting the
+     * account and making a new one — which takes their name off every slip
+     * they have ever printed. `undefined` leaves the column alone and null
+     * clears it, the same as the two fields above.
+     */
+    shiftStart?: string | null;
+    shiftEnd?: string | null;
+    attendanceRequired?: boolean;
+    /**
+     * Their id on a standalone attendance terminal.
+     *
+     * Only needed when the terminal was already in service with its own
+     * numbering. Left unset, the agent treats the device's user id as the
+     * staff id, which is right for a terminal enrolled alongside HMS.
+     */
+    deviceUserId?: string | null;
+  }
+) {
+  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId));
+  if (!row) throw new AuthError("No such user", "BAD_CREDENTIALS");
 
   /*
    * Moving the last administrator to another role locks everybody out just as
    * surely as deleting it, so it is refused the same way.
    */
-  if (row.role === 'admin' && input.role && input.role !== 'admin') {
+  if (row.role === "admin" && input.role && input.role !== "admin") {
     const r = await db.execute<{ n: number }>(sql`
       SELECT count(*)::int AS n FROM staff
-      WHERE is_active AND role = 'admin' AND id <> ${staffId}`)
+      WHERE is_active AND role = 'admin' AND id <> ${staffId}`);
     if (Number((r.rows as any[])[0].n) === 0) {
       throw new AuthError(
-        'This is the only administrator. Make somebody else one first.', 'LAST_ADMIN')
+        "This is the only administrator. Make somebody else one first.",
+        "LAST_ADMIN"
+      );
     }
   }
 
@@ -444,17 +579,37 @@ export async function updateStaff(staffId: number, input: {
     UPDATE staff SET
       display_name  = COALESCE(${input.displayName ?? null}, display_name),
       role          = COALESCE(${input.role ?? null}::staff_role, role),
-      department_id = ${input.departmentId === undefined
-                          ? sql`department_id` : input.departmentId},
-      phone         = ${input.phone === undefined ? sql`phone` : input.phone}
-    WHERE id = ${staffId}`)
+      department_id = ${
+        input.departmentId === undefined
+          ? sql`department_id`
+          : input.departmentId
+      },
+      phone         = ${input.phone === undefined ? sql`phone` : input.phone},
+      shift_start   = ${
+        input.shiftStart === undefined ? sql`shift_start` : input.shiftStart
+      },
+      shift_end     = ${
+        input.shiftEnd === undefined ? sql`shift_end` : input.shiftEnd
+      },
+      attendance_required = COALESCE(${input.attendanceRequired ?? null},
+                                     attendance_required),
+      /* Empty is stored as NULL so the unique index ignores it. */
+      device_user_id = ${
+        input.deviceUserId === undefined
+          ? sql`device_user_id`
+          : input.deviceUserId?.trim() || null
+      }
+    WHERE id = ${staffId}`);
 
   // A changed role means different permissions, so any open session for them
   // has to be re-read rather than left holding the old one.
-  if (input.role && input.role !== row.role) await dropSessionsFor(staffId)
+  if (input.role && input.role !== row.role) await dropSessionsFor(staffId);
 
-  const [updated] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
-  return updated
+  const [updated] = await db
+    .select()
+    .from(s.staff)
+    .where(eq(s.staff.id, staffId));
+  return updated;
 }
 
 /**
@@ -467,39 +622,46 @@ export async function updateStaff(staffId: number, input: {
  * error says.
  */
 export async function deleteStaff(staffId: number) {
-  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId))
-  if (!row) throw new AuthError('No such user', 'BAD_CREDENTIALS')
+  const [row] = await db.select().from(s.staff).where(eq(s.staff.id, staffId));
+  if (!row) throw new AuthError("No such user", "BAD_CREDENTIALS");
 
-  if (row.role === 'admin') {
+  if (row.role === "admin") {
     const r = await db.execute<{ n: number }>(sql`
       SELECT count(*)::int AS n FROM staff
-      WHERE is_active AND role = 'admin' AND id <> ${staffId}`)
+      WHERE is_active AND role = 'admin' AND id <> ${staffId}`);
     if (Number((r.rows as any[])[0].n) === 0) {
       throw new AuthError(
-        'This is the only administrator. Create another one first.', 'LAST_ADMIN')
+        "This is the only administrator. Create another one first.",
+        "LAST_ADMIN"
+      );
     }
   }
 
-  const used = (await db.execute<any>(sql`
+  const used = (
+    await db.execute<any>(sql`
     SELECT
       (SELECT COUNT(*)::int FROM counter_bills WHERE cashier_name = ${row.displayName}) AS bills,
       (SELECT COUNT(*)::int FROM visits WHERE registered_by = ${staffId})               AS visits,
       (SELECT COUNT(*)::int FROM lab_orders
         WHERE resulted_by = ${row.displayName} OR collected_by = ${row.displayName})    AS lab,
       (SELECT COUNT(*)::int FROM doctors WHERE staff_id = ${staffId})                   AS doctor
-  `)).rows[0] as any
+  `)
+  ).rows[0] as any;
 
-  const total = Number(used.bills) + Number(used.visits) + Number(used.lab)
+  const total = Number(used.bills) + Number(used.visits) + Number(used.lab);
   if (total > 0 || Number(used.doctor) > 0) {
     throw new AuthError(
       Number(used.doctor) > 0
-        ? 'This is a doctor with patient records. Archive the account instead of deleting it.'
+        ? "This is a doctor with patient records. Archive the account instead of deleting it."
         : `This account has ${total} records against it. Archive it instead of deleting it.`,
-      'HAS_HISTORY')
+      "HAS_HISTORY"
+    );
   }
 
-  await dropSessionsFor(staffId)
-  await db.execute(sql`DELETE FROM staff_permissions WHERE staff_id = ${staffId}`)
-  await db.execute(sql`DELETE FROM staff WHERE id = ${staffId}`)
-  return { deleted: true }
+  await dropSessionsFor(staffId);
+  await db.execute(
+    sql`DELETE FROM staff_permissions WHERE staff_id = ${staffId}`
+  );
+  await db.execute(sql`DELETE FROM staff WHERE id = ${staffId}`);
+  return { deleted: true };
 }

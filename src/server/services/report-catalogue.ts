@@ -8,12 +8,17 @@ import {
   adjustmentsByCompany as rawAdjustmentsByCompany
 } from './stock-audit'
 import { purchaseDetail, purchaseRegister } from './pharma-reports'
+import {
+  writeOffRegister, writeOffItems, writeOffsByProduct, writeOffSummary
+} from './write-off'
 import { reportReturns as rawReturns } from './returns'
 import { listOrders as rawOrders } from './ordering'
 import {
   labRegister, labBy, labSummary, labOutstanding, labTurnaround, labAbnormal,
   counterSummary, counterBy, counterRegister, patientRegister, unpaidChits,
-  doctorEarnings, hospitalIncome, hospitalDaily,
+  doctorEarnings, doctorEarningDetail, doctorEarningSummary, doctorChoices,
+  cashierChoices, payMethodChoices,
+  hospitalIncome, hospitalDaily,
   goodsReceivedDetail, goodsReceivedSummary,
   salesByDepartment, patientsByDepartment
 } from './hospital-reports'
@@ -64,6 +69,25 @@ export type ReportDef = {
   subGroupLabel?: string
   /** Needs a date window. Stock reports are a snapshot and do not. */
   dated: boolean
+  /**
+   * Dropdowns the screen shows above the table, beside the dates.
+   *
+   * The chosen value arrives in `q` under `key`, so a report reads it the
+   * same way whether it was run on screen or printed. `options` is a
+   * function rather than a list because the choices are rows in the
+   * database — the doctors a hospital employs change, and a list baked into
+   * the catalogue would go stale the first time somebody is hired.
+   *
+   * An empty value always means "no filter", and `allLabel` is what that
+   * choice is called. Spelling it per report matters: "All doctors" and
+   * "Every company" are the same option and read as different questions.
+   */
+  filters?: {
+    key: string
+    label: string
+    allLabel: string
+    options: () => Promise<{ value: string; label: string }[]>
+  }[]
   landscape?: boolean
   run: (w: Window, q: Record<string, string>) => Promise<any[]>
   /** Optional headline figures shown above the table. */
@@ -149,6 +173,71 @@ export const REPORTS: ReportDef[] = [
     chart: { label: 'manufacturer', value: 'removed', kind: 'bar' },
     totalKeys: ['products', 'lines', 'added', 'removed', 'net'],
     run: (w) => adjustmentsByCompany(w)
+  },
+
+  /* ------------------------------------------- damage and expiry losses */
+
+  /*
+   * Three reports, because three different people ask about this.
+   *
+   * The owner wants the money. The storekeeper wants the batch and the slip
+   * number. Whoever places the orders wants to know which medicine keeps
+   * going in the bin, which is the only one of the three that changes a
+   * decision rather than just recording one.
+   *
+   * Damage and expiry are listed together rather than split into six
+   * reports. Running one and reading the Kind column is less work than
+   * remembering which of two reports to open, and the total loss for a month
+   * is a question somebody asks without caring how it happened.
+   */
+  {
+    id: 'write-offs-list', group: 'Stock', module: 'pharmacy',
+    title: 'Damage and Expiry Register',
+    blurb: 'Every write-off in the period, with its tracking number and what it cost.',
+    /*
+     * Landscape, and only just. A 17-wide reference, a clock, a name and the
+     * note come to 124 character cells; portrait holds 105. Squeezing it
+     * would come out of the note, which is the column that says whether a
+     * month of losses was one flood or thirty separate mistakes.
+     */
+    permission: 'report.stock', dated: true, landscape: true,
+    columns: [text('write_off_no', 'Reference', 17), text('kind_label', 'Kind', 8),
+      text('when', 'When', 17), text('created_by', 'By', 16),
+      num('lines', 'Lines', 7), num('units', 'Units', 8),
+      money('value_paisa', 'Value'), text('note', 'Note', 30)],
+    totalKeys: ['lines', 'units', 'value_paisa'],
+    run: (w) => writeOffRegister(w), stats: (w) => writeOffSummary(w)
+  },
+  {
+    id: 'write-offs-detail', group: 'Stock', module: 'pharmacy',
+    title: 'Damage and Expiry Detail',
+    blurb: 'One row per batch written off, with the expiry date and the reason given.',
+    /*
+     * Landscape. Two names, a batch number, a clock, a date, three figures
+     * and a reason do not fit the 105 character cells a portrait page holds,
+     * and what falls off the right-hand edge is the reason column, which is
+     * the one thing on here that is not recoverable from somewhere else.
+     */
+    permission: 'report.stock', dated: true, landscape: true,
+    columns: [text('product_name', 'Medicine', 22), text('manufacturer', 'Company', 13),
+      text('kind_label', 'Kind', 7), text('write_off_no', 'Reference', 17),
+      text('batch_no', 'Batch', 12), text('expiry_date', 'Expiry', 11),
+      num('qty', 'Units', 7), money('unit_cost_paisa', 'Rate', 11),
+      money('value_paisa', 'Value', 12), text('reason', 'Reason', 18)],
+    totalKeys: ['qty', 'value_paisa'],
+    run: (w) => writeOffItems(w), stats: (w) => writeOffSummary(w)
+  },
+  {
+    id: 'write-offs-product', group: 'Stock', module: 'pharmacy',
+    title: 'What Keeps Going in the Bin',
+    blurb: 'By medicine, worst first. A medicine that expires three times a year is being over-ordered.',
+    permission: 'report.stock', dated: true,
+    columns: [text('product_name', 'Medicine', 28), text('manufacturer', 'Company', 18),
+      num('times', 'Times', 8), num('units', 'Units', 9),
+      money('value_paisa', 'Value Lost')],
+    chart: { label: 'product_name', value: 'value_paisa', kind: 'bar' },
+    totalKeys: ['times', 'units', 'value_paisa'],
+    run: (w) => writeOffsByProduct(w), stats: (w) => writeOffSummary(w)
   },
   {
     id: 'sales-daily', group: 'Sales', module: 'pharmacy', title: 'Daily Sales Summary',
@@ -696,10 +785,31 @@ const COUNTER: ReportDef[] = [
     blurb: 'Bill by bill, the counter day book.',
     permission: 'report.counter', dated: true, landscape: true,
     columns: [text('bill_no', 'Bill No', 17), text('created_at', 'When', 15),
-      text('patient_name', 'Patient', 22), text('mrn', 'MRN', 17),
-      text('kind', 'For', 12), text('pay_method', 'Method', 10),
-      text('cashier_name', 'Cashier', 14), money('total_paisa', 'Amount')],
-    totalKeys: ['total_paisa'],
+      text('patient_name', 'Patient', 20), text('mrn', 'MRN', 17),
+      text('kind', 'For', 10), text('pay_method', 'Method', 9),
+      text('cashier_name', 'Cashier', 12),
+      /*
+       * What was taken off, so the day book shows it.
+       *
+       * The counter could discount a bill long before anything controlled
+       * how much, and the figure was on the bill and on no report. Somebody
+       * reconciling a drawer could see the total was short and had nothing
+       * to tell them which bill it came off.
+       */
+      money('discount_paisa', 'Discount', 11),
+      money('total_paisa', 'Amount', 12)],
+    totalKeys: ['discount_paisa', 'total_paisa'],
+    /*
+     * Both of these were already read from the query string and nothing
+     * ever sent one, so the report could be narrowed and there was no way
+     * to do it from the screen.
+     */
+    filters: [
+      { key: 'cashier', label: 'Cashier', allLabel: 'Every cashier',
+        options: cashierChoices },
+      { key: 'method', label: 'Paid by', allLabel: 'Any method',
+        options: payMethodChoices }
+    ],
     run: (w, q) => counterRegister(w, q), stats: (w) => counterSummary(w)
   },
   {
@@ -737,7 +847,54 @@ const COUNTER: ReportDef[] = [
       money('service_paisa', 'From tests'), money('total_paisa', 'Total')],
     chart: { label: 'label', value: 'total_paisa', kind: 'bar' },
     totalKeys: ['consultations', 'services', 'consultation_paisa', 'service_paisa', 'total_paisa'],
-    run: (w) => doctorEarnings(w)
+    /*
+     * One doctor, or all of them. The same dropdown as the detail below, so
+     * somebody can narrow the summary and then open the detail on the same
+     * person without setting the filter twice.
+     */
+    filters: [{
+      key: 'doctor', label: 'Doctor', allLabel: 'All doctors',
+      options: doctorChoices
+    }],
+    run: (w, q) => doctorEarnings(w, q)
+  },
+  {
+    id: 'counter-doctor-detail', group: 'Counter', module: 'counter',
+    title: 'Doctor Earnings Detail',
+    blurb: 'Every line behind the total: which patient, what was done, and the share of it.',
+    /*
+     * Landscape. A doctor's name, a clock, a patient's name, an MRN, what
+     * was done and three figures do not fit the 105 character cells a
+     * portrait page holds, and the column that falls off the edge is the
+     * amount.
+     */
+    permission: 'report.counter', dated: true, landscape: true,
+    /*
+     * No "Kind" column. It said "Consultation" next to a What for that also
+     * said "Consultation", and "Test or procedure" next to the name of the
+     * test — a column that is either a duplicate or a category nobody asked
+     * for. The width went to the MRN, which was exactly as wide as an MRN
+     * and so printed with no gap after it, and to What for, where a long
+     * test name was being cut.
+     */
+    columns: [text('when', 'When', 17),
+      text('patient_name', 'Patient', 22), text('mrn', 'MRN', 18),
+      text('description', 'What for', 26),
+      money('gross_paisa', 'Billed', 13), num('share_pct', 'Share %', 8),
+      money('amount_paisa', 'Earned', 13)],
+    /*
+     * Grouped by doctor, so "all doctors" prints as a stack of statements
+     * with a subtotal under each rather than one list somebody has to sort.
+     * Picking one doctor leaves a single group, which is the statement.
+     */
+    groupBy: 'doctor', groupLabel: 'Doctor',
+    totalKeys: ['gross_paisa', 'amount_paisa'],
+    filters: [{
+      key: 'doctor', label: 'Doctor', allLabel: 'All doctors',
+      options: doctorChoices
+    }],
+    run: (w, q) => doctorEarningDetail(w, q),
+    stats: (w, q) => doctorEarningSummary(w, q)
   }
 ]
 

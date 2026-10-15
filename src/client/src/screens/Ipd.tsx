@@ -41,7 +41,7 @@ export function Ipd({ me }: { me: SessionUser }) {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar items={NAV} active={tab} onSelect={(id) => setTab(id as Tab)}
-        title="Ward" subtitle={me.displayName} />
+        title="Ward" subtitle={me.displayName} brandIcon={BedDouble} />
       <motion.div key={tab}
         initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
         transition={{ duration: DUR.page, ease: EASE }}

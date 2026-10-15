@@ -14,6 +14,15 @@ import {
 import { labReportPdf } from './src/server/services/lab-pdf'
 import { writeFile, readFile } from 'node:fs/promises'
 import { execSync } from 'node:child_process'
+/*
+ * Samples go to a scratch directory and the text extraction is optional.
+ *
+ * Both used to be fixed to the machine these checks were written on: a
+ * directory that exists nowhere else, and a `pdftotext` that is not on a
+ * Windows server. The hospital running `npm run verify` on its own box got a
+ * failure about a missing path rather than anything about the system.
+ */
+import { savePdf, pdfText, hasPdfToText, notePdfToolMissing } from './verify-pdf.mjs'
 
 let pass = 0, fail = 0
 const ok = (n: string, c: boolean, x = '') => {
@@ -73,12 +82,11 @@ if (!order) {
   for (const layout of ['standard', 'qualitative', 'ranges'] as const) {
     await saveReportLayout(svc.id, layout)
     const pdf = await labReportPdf({ visitId: order.visit_id })
-    await writeFile(`/mnt/user-data/outputs/sample-lab-${layout}.pdf`, pdf)
+    const file = savePdf(`sample-lab-${layout}.pdf`, pdf)
     ok(`the ${layout} layout produces a PDF`, pdf.length > 1000, `${pdf.length} bytes`)
 
-    const text = execSync(
-      `pdftotext -layout /mnt/user-data/outputs/sample-lab-${layout}.pdf -`,
-      { encoding: 'utf8' })
+    if (!hasPdfToText()) { notePdfToolMissing(); continue }
+    const text = pdfText(file, 'layout')!
 
     /*
      * "Normal Values", not "Reference Ranges". The latter is laboratory
@@ -109,9 +117,7 @@ if (!order) {
      * -bbox gives the x of every word, and a heading and the values beneath
      * it must share one.
      */
-    const bbox = execSync(
-      `pdftotext -bbox /mnt/user-data/outputs/sample-lab-${layout}.pdf -`,
-      { encoding: 'utf8' })
+    const bbox = pdfText(file, 'bbox')!
     const words = [...bbox.matchAll(
       /<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="[\d.]+" yMax="[\d.]+">([^<]*)<\/word>/g)]
       .map((m) => ({ x: Number(m[1]), y: Number(m[2]), t: m[3] }))
@@ -245,12 +251,13 @@ console.log('\n— a normal value that differs by sex —')
     } as any)
 
     const pdf = await labReportPdf({ visitId: order.visit_id })
-    await writeFile('/mnt/user-data/outputs/sample-lab-sexranges.pdf', pdf)
-    const text = execSync(
-      'pdftotext -layout /mnt/user-data/outputs/sample-lab-sexranges.pdf -',
-      { encoding: 'utf8' })
-    ok('the male range prints, labelled', /M: 13\.0 - 17\.5/.test(text))
-    ok('the female range prints under it, labelled', /F: 11\.5 - 15\.0/.test(text))
+    const sexFile = savePdf('sample-lab-sexranges.pdf', pdf)
+    const text = pdfText(sexFile, 'layout')
+    if (text === null) notePdfToolMissing()
+    else {
+      ok('the male range prints, labelled', /M: 13\.0 - 17\.5/.test(text))
+      ok('the female range prints under it, labelled', /F: 11\.5 - 15\.0/.test(text))
+    }
     /*
      * The plain low-and-high row is checked by the numbers layout above and
      * by `display_range` below, both against the database rather than against
@@ -415,14 +422,14 @@ console.log('\n— the footer keeps clear of the signatures —')
     console.log('  skip  no finished report in this database')
   } else {
     const pdf = await labReportPdf({ labOrderId: Number(tall.id) })
-    await writeFile('/mnt/user-data/outputs/sample-lab-signatures.pdf', pdf)
-    const bbox = execSync(
-      'pdftotext -bbox /mnt/user-data/outputs/sample-lab-signatures.pdf -',
-      { encoding: 'utf8' })
-    const words = [...bbox.matchAll(
+    const sigFile = savePdf('sample-lab-signatures.pdf', pdf)
+    const bbox = pdfText(sigFile, 'bbox')
+    if (bbox === null) notePdfToolMissing()
+    const words = bbox === null ? [] : [...bbox.matchAll(
       /<word xMin="[\d.]+" yMin="([\d.]+)" xMax="[\d.]+" yMax="([\d.]+)">([^<]*)<\/word>/g)]
       .map((m) => ({ top: Number(m[1]), bottom: Number(m[2]), t: m[3] }))
 
+    if (bbox === null) { /* nothing further is measurable */ } else {
     ok('the signatories are on the page',
       words.some((w) => w.t === 'Pathologist'), 'no designation text found')
 
@@ -457,10 +464,88 @@ console.log('\n— the footer keeps clear of the signatures —')
     ok('and clear of it, not just touching',
       ruleY - lowestSig > 8,
       `only ${(ruleY - lowestSig).toFixed(1)} points between them`)
+    }
   }
 
   /* Put the laboratory's own signatories back. */
   await saveSignatories(before.length ? (before as any) : [])
+}
+
+
+/* ------------------------------- the logo and the hospital name ---------- */
+
+/**
+ * How far the hospital name starts from the logo.
+ *
+ * The name was placed from the WIDTH OF THE LOGO'S BOX rather than the width
+ * of the logo. `fit` keeps an image's proportions, so a square emblem in an
+ * 86 x 42 box prints 42 wide and leaves 44 points of the box empty - and the
+ * name started after all of it, plus a 14 point gap. Fifty-eight points of
+ * white between a mark and the name beside it, which is what the pharmacy
+ * reported as a huge gap.
+ *
+ * A SQUARE logo on purpose. A wide banner fills its box, so the old
+ * arithmetic and the new one agree on it and this check would pass on the
+ * broken code.
+ */
+console.log('\n- the logo sits beside the hospital name -')
+{
+  const { setSetting, getSetting, getHospitalInfo } =
+    await import('./src/server/services/settings')
+
+  const keptLogo = await getSetting('hospital.logoDataUri')
+  const keptPos = await getSetting('lab.logoPosition')
+  const keptScale = await getSetting('lab.logoScale')
+
+  /* 64 x 64. At 100% it fits by its height: 42 wide, 42 tall. */
+  const SQUARE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEtiJoMZ2gi+hcEKLNXzWgQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQELgtnbaDiRwHMMAAAAABJRU5ErkJggg=='
+
+  await setSetting('hospital.logoDataUri', SQUARE)
+  await setSetting('lab.logoPosition', 'left')
+  await setSetting('lab.logoScale', '100')
+
+  const withLogo = ((await db.execute<any>(sql`
+    SELECT lo.id FROM lab_orders lo
+    WHERE lo.status = 'resulted' ORDER BY lo.id DESC LIMIT 1`)).rows as any[])[0]
+
+  if (!withLogo) {
+    console.log('  skip  no finished report in this database')
+  } else {
+    const pdf = await labReportPdf({ labOrderId: Number(withLogo.id) })
+    const logoFile = savePdf('sample-lab-logo.pdf', pdf)
+    const bbox = pdfText(logoFile, 'bbox')
+    if (bbox === null) notePdfToolMissing()
+    const words = bbox === null ? [] : [...bbox.matchAll(
+      /<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)<\/word>/g)]
+      .map((m) => ({ x: Number(m[1]), top: Number(m[2]), t: m[5] }))
+
+    const hospital = await getHospitalInfo()
+    const first = String((hospital as any).name ?? 'Hospital').split(/\s+/)[0]
+    if (bbox === null) { /* nothing to measure without the text */ } else {
+    const hit = words.filter((w) => w.t === first)
+      .sort((a, b) => a.top - b.top)[0]
+
+    ok('the hospital name is on the page', !!hit, `looking for "${first}"`)
+
+    if (hit) {
+      /*
+       * MARGIN is 40 and a square logo draws 42 wide, so the mark ends at 82.
+       * Anything past about 92 means the empty part of the box is being
+       * reserved again. Before the fix this read 140.
+       */
+      const LOGO_RIGHT = 40 + 42
+      ok('it starts right beside the logo, not past the empty part of its box',
+        hit.x - LOGO_RIGHT <= 10,
+        `${(hit.x - LOGO_RIGHT).toFixed(0)} points of gap, name at x=${hit.x.toFixed(0)}`)
+      ok('and not on top of it either', hit.x >= LOGO_RIGHT,
+        `name at x=${hit.x.toFixed(0)}, logo ends at ${LOGO_RIGHT}`)
+    }
+    }
+  }
+
+  await setSetting('hospital.logoDataUri', keptLogo ?? '')
+  await setSetting('lab.logoPosition', keptPos ?? 'right')
+  await setSetting('lab.logoScale', keptScale ?? '100')
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`)

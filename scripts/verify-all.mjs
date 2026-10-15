@@ -20,6 +20,8 @@ const OFFLINE = [
   ['attendance', 'npm run verify:attendance'],
   ['audit', 'npm run verify:audit'],
   ['ordering', 'npm run verify:ordering'],
+  ['writeoff', 'npm run verify:writeoff'],
+  ['demo', 'npm run verify:demo'],
   ['roles', 'npm run verify:roles'],
   ['lan', 'npm run verify:lan']
 ]

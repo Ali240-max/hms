@@ -41,10 +41,34 @@ const ADVICE = ['Plenty of fluids and rest. Return if the fever does not settle 
 export type SeedResult = {
   departments: number; staff: number; services: number
   products: number; patients: number; visits: number; earningsPaisa: number
+  /**
+   * The pharmacy's own trading, when it was loaded.
+   *
+   * Absent rather than zeroed when it was skipped, so the screen can tell
+   * "not asked for" from "asked for and nothing happened".
+   */
+  pharmacy?: { products: number; batches: number; invoices: number; returns: number }
 }
 
 export async function loadDemoData(
-  opts: { reset?: boolean; days?: number; futureDays?: number } = {}
+  opts: {
+    reset?: boolean; days?: number; futureDays?: number
+    /**
+     * Whether to load the pharmacy's trading as well.
+     *
+     * On by default. It was not loaded at all from here — the only way to
+     * get it was `npm run seed:pharmacy` at a terminal, which is a thing
+     * nobody has on a machine installed from the offline bundle. So a trial
+     * install loaded its demo data from the settings screen, got a hospital
+     * full of patients and a pharmacy with medicines and NOT ONE BILL, and
+     * the pharmacy module looked broken on the one install where it most
+     * needed to look finished.
+     *
+     * It is the slow half — a couple of minutes against a few seconds — so
+     * it can be turned off for somebody who only wants the hospital side.
+     */
+    pharmacy?: boolean
+  } = {}
 ): Promise<SeedResult> {
   const days = opts.days ?? 45
   /**
@@ -78,13 +102,51 @@ export async function loadDemoData(
      * Nothing reaches them by CASCADE from the rest of the list, because the
      * parents reference neither patients nor products; only their item
      * tables do.
+     *
+     * Damage and expiry write-offs are the fourth, added the same day they
+     * were written rather than after a reset had already broken. Anything
+     * that takes a number from the counters table belongs on this list, or a
+     * reset leaves DMG-261010-01 behind with the counter back at zero and the
+     * next write-off fails on a unique key.
+     */
+    /*
+     * EVERY table that takes a number from `counters` is named here, even
+     * the ones TRUNCATE would reach by CASCADE anyway.
+     *
+     * This list has been wrong four times, each time the same way: a table
+     * holding a document number was left off, the counters restarted, and
+     * the next load collided on a unique index. The last one was `payments`,
+     * found by pressing the button rather than by reading the list — the
+     * load died halfway with "duplicate key value violates unique
+     * constraint payments_voucher_uq", which from the outside looks exactly
+     * like a pharmacy that will not load its bills.
+     *
+     * Naming them all costs nothing. TRUNCATE does not care about order and
+     * does not mind being told about a table it would have taken anyway, and
+     * the list now matches a rule somebody can check: every table with a
+     * unique document number is on it.
+     *
+     * payments and ledger_entries are the two that reach nothing by cascade.
+     * Their party_ref is a plain integer rather than a foreign key, because a
+     * party can be a customer or a supplier and one column cannot point at
+     * two tables. So nothing takes them along, and they are why this comment
+     * exists.
      */
     await db.execute(sql`
       TRUNCATE doctor_earnings, service_orders, prescription_items, prescriptions,
                visits, patients, doctor_service_shares, doctors, staff,
                departments, sale_items, sales, stock_ledger, purchase_items, purchases,
                batches, products, suppliers,
-               stock_audits, stock_adjustments, purchase_orders,
+               stock_audits, stock_adjustments, purchase_orders, write_offs,
+               write_off_items,
+               /* reached by cascade, named so the rule above is checkable */
+               admissions, admission_charges, admission_payments, bed_stays,
+               chits, counter_bills, counter_bill_items, cross_matches,
+               lab_orders, lab_values,
+               purchase_returns, purchase_return_items,
+               sale_returns, sale_return_items,
+               -- payments and ledger_entries reach nothing by cascade: see above
+               payments, ledger_entries, parties, price_history,
                counters RESTART IDENTITY CASCADE`)
   }
 
@@ -692,10 +754,29 @@ export async function loadDemoData(
    * report of the day collided with a demo one on the unique index.
    */
 
-  return {
+  const out: SeedResult = {
     departments: r.d, staff: r.st, services: r.sv, products: r.pr,
     patients: r.p, visits: r.v, earningsPaisa: Number(r.e)
   }
+
+  /*
+   * The pharmacy, last.
+   *
+   * After the hospital rather than before, because its sales are the slow
+   * part and a failure here should leave a usable hospital demo behind
+   * rather than nothing. Imported where it is used so the hospital-only
+   * path does not pay for loading it.
+   */
+  if (opts.pharmacy !== false) {
+    const { loadPharmacyDemo } = await import('./pharma-demo')
+    const ph = await loadPharmacyDemo({ days, futureDays })
+    out.pharmacy = {
+      products: ph.products, batches: ph.batches,
+      invoices: ph.invoices, returns: ph.returns
+    }
+  }
+
+  return out
 }
 
 export async function hasAnyData(): Promise<boolean> {

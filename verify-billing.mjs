@@ -11,6 +11,7 @@ async function q(path, as, opts={}) {
   const t = await r.text(); let b; try{b=JSON.parse(t)}catch{b=t}
   return {status:r.status, body:b}
 }
+const TODAY = new Date().toISOString().slice(0,10)
 let pass=0,fail=0
 const ok=(n,c,x='')=>{c?(pass++,console.log('  ok   '+n)):(fail++,console.log('  FAIL '+n+(x?' — '+x:'')))}
 for (const [k,u,p] of [['mc','main-counter','1234'],['opd','opd','1234'],['doc','dr.yasir','1234'],['admin','admin','admin-demo-1']]) tok[k]=await login(u,p)
@@ -341,6 +342,151 @@ console.log('\n— a service that cannot be billed without a doctor —')
     const again = (await q('/services', 'mc')).body.find((s) => s.id === proc.id)
     ok('and the flag survives being switched back on', !!again?.requires_doctor)
   }
+}
+
+
+/* --------------------------------- discounts at the main counter -------- */
+
+/**
+ * The counter has had a discount box since it was built, and until now
+ * nothing on the server stopped any amount at all.
+ *
+ * The pharmacy, which came later, got a switch, a ceiling and a refusal
+ * that names the figures. The counter got a plain rupees box. These are the
+ * same three rules, under the counter's own settings — a hospital that lets
+ * the chemist discount a strip of tablets does not necessarily let the
+ * front desk discount a consultation.
+ */
+console.log('\n— discounts at the main counter —')
+{
+  const setRules = (b) => q('/settings/counter-discount', 'admin',
+    { method: 'PUT', body: JSON.stringify(b) })
+
+  /* A fresh patient and visit per bill: a visit can only be billed once. */
+  const freshVisit = async () => {
+    const p = (await q('/patients', 'mc', { method: 'POST', body: JSON.stringify({
+      name: 'Discount Test ' + Math.random().toString(36).slice(2, 7),
+      gender: 'male', ageYears: 40, phone: '03001234567'
+    }) })).body
+    return (await q('/visits', 'mc', { method: 'POST', body: JSON.stringify({
+      patientId: p.id ?? p.patient?.id, doctorId: doctor.id
+    }) })).body
+  }
+
+  const v0 = await freshVisit()
+  const feeNow = Number(v0.consultationFeePaisa)
+  ok('a fresh visit has a fee to discount', feeNow > 0, String(feeNow))
+
+  const bill = async (visitId, discountPaisa) => q('/counter/bills', 'mc', {
+    method: 'POST',
+    body: JSON.stringify({
+      kind: 'consultation', visitId, payMethod: 'cash',
+      tenderedPaisa: 10_000_00, discountPaisa
+    })
+  })
+
+  const before = (await q('/settings/counter-discount', 'mc')).body
+  ok('the counter rules can be read from the till', before.status !== 403
+    && typeof before.discountEnabled === 'boolean', JSON.stringify(before))
+
+  /* No ceiling: anything goes, which is how it behaved before. */
+  await setRules({ discountEnabled: true, discountMaxPct: 0 })
+  let r2 = await bill(v0.id, Math.round(feeNow * 0.5))
+  ok('with no ceiling a large discount goes through', r2.status === 201,
+    `${r2.status} ${r2.body?.code ?? ''}`)
+  ok('and the bill records what was taken off',
+    Number(r2.body?.bill?.discount_paisa) === Math.round(feeNow * 0.5),
+    String(r2.body?.bill?.discount_paisa))
+  ok('and the total is the fee less the discount',
+    Number(r2.body?.bill?.total_paisa) === feeNow - Math.round(feeNow * 0.5),
+    `${r2.body?.bill?.total_paisa} vs ${feeNow - Math.round(feeNow * 0.5)}`)
+
+  /* Under and over a ceiling. */
+  await setRules({ discountEnabled: true, discountMaxPct: 10 })
+  const v1 = await freshVisit()
+  r2 = await bill(v1.id, Math.round(feeNow * 0.05))
+  ok('under the ceiling is allowed', r2.status === 201,
+    `${r2.status} ${r2.body?.code ?? ''}`)
+
+  const v2 = await freshVisit()
+  r2 = await bill(v2.id, Math.round(feeNow * 0.25))
+  ok('over the ceiling is refused', r2.body?.code === 'DISCOUNT_TOO_BIG',
+    `${r2.status} ${r2.body?.code ?? ''}`)
+  ok('and the refusal names the figure, the limit and the rupees',
+    /25\.0%/.test(r2.body?.error ?? '') && /10%/.test(r2.body?.error ?? '')
+    && /Rs/.test(r2.body?.error ?? ''), String(r2.body?.error ?? '').slice(0, 120))
+  /* A refused bill must leave the patient where they were. */
+  let still = (await q(`/visits/${v2.id}`, 'mc')).body
+  still = still.visit ?? still
+  ok('and the refused bill left the visit unbilled',
+    still.status === 'registered' && still.fee_paid !== true, String(still.status))
+
+  /* Switched off entirely. */
+  await setRules({ discountEnabled: false })
+  r2 = await bill(v2.id, Math.round(feeNow * 0.02))
+  ok('switched off, even a small discount is refused',
+    r2.body?.code === 'DISCOUNT_OFF', `${r2.status} ${r2.body?.code ?? ''}`)
+  r2 = await bill(v2.id, 0)
+  ok('but a bill with no discount still completes', r2.status === 201,
+    `${r2.status} ${r2.body?.code ?? ''}`)
+
+  /* A cashier who can raise their own ceiling has no ceiling. */
+  r2 = await q('/settings/counter-discount', 'mc',
+    { method: 'PUT', body: JSON.stringify({ discountMaxPct: 100 }) })
+  ok('a cashier cannot change the rules', r2.status === 403, String(r2.status))
+
+  /*
+   * A discount must not quietly cut the doctor's pay.
+   *
+   * Their share is worked out on the consultation fee, so the hospital
+   * absorbs the concession. The alternative — taking it off the share —
+   * would let the front desk reduce a doctor's earnings without asking
+   * them, which is the kind of thing discovered at the end of a month.
+   */
+  await setRules({ discountEnabled: true, discountMaxPct: 0 })
+  const v3 = await freshVisit()
+  await bill(v3.id, Math.round(feeNow * 0.5))
+
+  const v3row = (await q(`/visits/${v3.id}`, 'mc')).body
+  const v3visit = v3row.visit ?? v3row
+  ok('the consultation fee on the visit is untouched by the discount',
+    Number(v3visit.consultation_fee_paisa ?? v3visit.consultationFeePaisa) === feeNow,
+    String(v3visit.consultation_fee_paisa ?? v3visit.consultationFeePaisa))
+
+  /*
+   * And the share the doctor is actually credited with.
+   *
+   * The fee being untouched is necessary but not sufficient: the share is
+   * written when the consultation is closed, and a future change that read
+   * the BILL total instead of the fee would pass the check above and still
+   * halve the doctor's pay. So close the consultation and read the figure.
+   */
+  const closed = await q(`/visits/${v3.id}/consultation`, 'doc', {
+    method: 'POST',
+    body: JSON.stringify({ diagnosis: 'Discount check', services: [] })
+  })
+  if (closed.status !== 200 && closed.status !== 201) {
+    ok('the consultation could be closed to check the share', false,
+      `${closed.status} ${JSON.stringify(closed.body).slice(0, 100)}`)
+  } else {
+    const share = (await q(`/earnings/me?from=${TODAY}&to=${TODAY}`, 'doc')).body
+    const line = (share?.lines ?? share?.rows ?? []).find(
+      (l) => Number(l.visit_id) === Number(v3.id) && l.source === 'consultation')
+    ok('the doctor is credited on the FULL fee, not the discounted bill',
+      !!line && Number(line.gross_paisa) === feeNow,
+      line ? `gross ${line.gross_paisa} vs fee ${feeNow}` : 'no consultation earning found')
+  }
+
+  /* Put the rules back as they were found. */
+  await setRules({
+    discountEnabled: before.discountEnabled !== false,
+    discountMaxPct: Number(before.discountMaxPct) || 0
+  })
+  const back = (await q('/settings/counter-discount', 'mc')).body
+  ok('the settings are left as they were found',
+    !!back.discountEnabled === (before.discountEnabled !== false)
+    && Number(back.discountMaxPct) === (Number(before.discountMaxPct) || 0),
+    JSON.stringify(back))
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`)

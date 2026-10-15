@@ -154,9 +154,20 @@ await writeFile(join(OUT, 'package.json'), JSON.stringify({
   name: pkg.name,
   version: pkg.version,
   type: pkg.type,
+  /*
+   * The commands a trial install actually has.
+   *
+   * `seed:pharmacy` was missing, so the pharmacy's trading could not be
+   * loaded on a bundled machine at all — not from a terminal, because the
+   * script was not declared, and not from the settings screen, because the
+   * button did not load it either. The button does now; this is here for
+   * anybody who wants to reload just the pharmacy without touching the
+   * hospital side.
+   */
   scripts: {
     start: 'node dist/server/index.js',
-    seed: 'node --experimental-strip-types scripts/seed.ts'
+    seed: 'node --experimental-strip-types scripts/seed.ts',
+    'seed:pharmacy': 'node --experimental-strip-types scripts/seed-pharmacy.ts'
   },
   dependencies: pkg.dependencies
 }, null, 2) + '\n')

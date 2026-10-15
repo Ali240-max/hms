@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Search, Printer, Receipt, FileText, Tags } from 'lucide-react'
+import { Search, Printer, Receipt, FileText, Tags, Eye } from 'lucide-react'
 import { api, rs, today, type SessionUser } from '../../lib/api'
 import { Card, Empty, ErrorNote, Modal, PrintButton, Stat, Tabs, Th, SkeletonRows } from '../../components/ui'
 import { ChitPreview } from '../../components/Chit'
@@ -149,22 +149,32 @@ export function CounterHistory({ me }: { me: SessionUser }) {
                     </td>
                     <td className="px-3 py-2 text-right">
                       {/*
-                        Reprints the document that already exists. It does not
-                        raise a new one, so a patient who lost their chit is
-                        not charged a second time and the day's takings still
-                        reconcile.
+                        VIEW FIRST, THEN PRINT.
+                      
+                        This row offered Print again and nothing else, so the
+                        only way to check you had the right bill was to print
+                        it and look at the paper — and on a thermal printer a
+                        wrong guess is a wasted slip and a confused patient.
+                        The preview dialog already existed and was imported
+                        into this file; nothing ever opened it.
+                      
+                        Print is still here beside it, because somebody
+                        reprinting a chit they just handed over should not
+                        have to open a dialog to do it.
                       */}
-                      {/*
-                        Straight to the thermal printer, like every other
-                        Print in the system. This one still opened the browser
-                        print dialog, which is the behaviour the whole ESC/POS
-                        change existed to remove.
-                      */}
-                      <PrintButton
-                        label={tr('Print again')}
-                        onPrint={() => b.chit_id
-                          ? api.printChit(b.chit_id)
-                          : api.printBill(b.id)} />
+                      <button
+                        onClick={() => b.chit_id ? setChit(b.chit_id) : setBill(b.id)}
+                        className="btn-ghost px-2.5 py-1 text-2xs">
+                        <Eye size={13} className="mr-1 inline" />
+                        {tr('View')}
+                      </button>
+                      <span className="ml-1 inline-block">
+                        <PrintButton block={false}
+                          label={tr('Print again')}
+                          onPrint={() => b.chit_id
+                            ? api.printChit(b.chit_id)
+                            : api.printBill(b.id)} />
+                      </span>
                     </td>
                   </tr>
                 ))}

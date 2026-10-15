@@ -33,7 +33,7 @@ export function Doctor({ me }: { me: SessionUser }) {
     <div className="flex h-full min-h-0">
       <Sidebar items={DOCTOR_NAV} active={tab}
         onSelect={(id: string) => setTab(id as 'queue' | 'earnings' | 'reports')}
-        title="Consultation" subtitle={me.displayName} />
+        title="Consultation" subtitle={me.displayName} brandIcon={Stethoscope} />
       <div className="min-h-0 flex-1 overflow-auto bg-screen">
         {tab === 'queue' ? <Queue onOpen={setOpenVisit} />
           : tab === 'reports' ? <Reports me={me} />

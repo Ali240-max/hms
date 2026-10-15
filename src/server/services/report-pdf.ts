@@ -62,6 +62,19 @@ export type ReportSpec = {
   user: string
   /** Extra lines under the grand total, e.g. a margin percentage. */
   notes?: string[]
+  /**
+   * What the report was narrowed to, printed under the dates.
+   *
+   * The route has been building this list since the dropdowns went in and
+   * nothing printed it, so a statement narrowed to one doctor came out of
+   * the printer looking exactly like the one listing all of them. On a
+   * doctor's monthly statement that is the difference between a page that
+   * can be handed over and a page that can be handed to the wrong person.
+   *
+   * Under the dates rather than beside them, because it is the same kind of
+   * fact: what this page covers.
+   */
+  filters?: { label: string; value: string }[]
   landscape?: boolean
 }
 
@@ -132,6 +145,11 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
     doc.font(MONO).fontSize(11).text(spec.title, { width, align: 'center' })
     if (spec.from && spec.to) {
       doc.fontSize(10).text(`From  # ${fmt(spec.from)}   To   # ${fmt(spec.to)}`,
+        { width, align: 'center' })
+    }
+    if (spec.filters?.length) {
+      doc.fontSize(9.5).text(
+        spec.filters.map((f) => `${f.label}  # ${f.value}`).join('      '),
         { width, align: 'center' })
     }
     if (spec.subtitle) doc.fontSize(9).text(spec.subtitle, { width, align: 'center' })
@@ -299,8 +317,20 @@ export async function reportPdf(spec: ReportSpec): Promise<Buffer> {
     doc.font(MONO).fontSize(7.5).fillColor('#000')
     doc.text(`Page      ${i + 1} of ${range.count}`, MARGIN, headerBottom,
       { width: doc.page.width - MARGIN * 2, align: 'right', lineBreak: false })
-    doc.text(`User  #  ${spec.user}`, MARGIN, doc.page.height - MARGIN - 14,
-      { width: doc.page.width - MARGIN * 2 })
+    /*
+     * The line is dropped when there is no user, rather than printing the
+     * word "undefined" on a hospital's paper.
+     *
+     * Every route through the application supplies one. A caller that does
+     * not — a script, a scheduled job added later — would have printed
+     * "User # undefined" at the foot of a report that otherwise looked
+     * finished, which is the kind of thing that reaches a patient before it
+     * reaches anybody who would recognise it.
+     */
+    if (spec.user) {
+      doc.text(`User  #  ${spec.user}`, MARGIN, doc.page.height - MARGIN - 14,
+        { width: doc.page.width - MARGIN * 2 })
+    }
   }
 
   doc.end()

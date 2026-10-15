@@ -56,6 +56,15 @@ const TRADING_TABLES = [
   'sale_return_items', 'sale_returns', 'sale_items', 'sales',
   // pharmacy buying and stock
   'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
+  /*
+   * Damage and expiry write-offs, before the batches they point at.
+   *
+   * On this list for the same reason cross matches are: a write-off item
+   * references a batch, so clearing batches with one still pointing at them
+   * is refused by the foreign key and takes the whole clearing down with it.
+   * Found by the guard below rather than by a hospital, this time.
+   */
+  'write_off_items', 'write_offs',
   'stock_ledger', 'batches',
   // hospital stores
   'supply_movements', 'supply_batches',
@@ -95,6 +104,8 @@ const LABEL: Record<string, string> = {
   sale_items: 'Lines on pharmacy sales',
   sale_returns: 'Pharmacy returns',
   sale_return_items: 'Lines on pharmacy returns',
+  write_offs: 'Damage and expiry reports',
+  write_off_items: 'Lines on damage and expiry reports',
   purchases: 'Purchases',
   purchase_items: 'Lines on purchases',
   purchase_returns: 'Purchase returns',
