@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, rs, toPaisa, type SearchHit, type SessionUser } from '../../lib/api'
+import { api, newId, rs, toPaisa, type SearchHit, type SessionUser } from '../../lib/api'
 import { useCart, totals as cartTotals, effectivePrice } from '../../lib/cart'
 import { ExpiryPill } from '../../components/Expiry'
 import { Badge, ErrorNote, PrintButton } from '../../components/ui'
@@ -48,6 +48,13 @@ export function Billing({ me, pending, onConsumed }: {
   const [rules, setRules] = useState<{ on: boolean; maxPct: number } | null>(null)
   const [mayDiscount, setMayDiscount] = useState(false)
   const box = useRef<HTMLInputElement>(null)
+  /*
+   * One key per bill, sent with the sale and replaced only once it has gone
+   * through. A second press, or a retry after the connection dropped mid-
+   * request, sends the same key and the server hands back the bill it already
+   * made instead of taking the stock off the shelf again.
+   */
+  const requestKey = useRef(newId())
 
   /* ------------------------------------------- load a prescription in */
   useEffect(() => {
@@ -179,10 +186,18 @@ export function Billing({ me, pending, onConsumed }: {
         customerName: cart.customerName || undefined,
         doctorName: cart.doctorName || undefined,
         payMethod: cart.payMethod,
-        paidPaisa: cart.payMethod === 'cash' ? toPaisa(tendered) : total,
+        /*
+         * Nothing is received on a credit bill. This used to send the full
+         * total, which recorded every credit bill as paid and counted it as
+         * money collected. The server enforces the same rule.
+         */
+        paidPaisa: cart.payMethod === 'cash' ? toPaisa(tendered)
+          : cart.payMethod === 'credit' ? 0 : total,
         visitId: linked?.visitId,
-        patientId: linked?.patientId
+        patientId: linked?.patientId,
+        requestKey: requestKey.current
       })
+      requestKey.current = newId()
       setDone({ ...r, change: (cart.payMethod === 'cash' ? toPaisa(tendered) : total) - total })
       cart.clear(); setTendered(''); setLinked(null); setMissing([])
       setDiscount('')

@@ -332,8 +332,16 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
    * and on a repeat visit it is not even the right day.
    */
   doc.font('Helvetica').fontSize(8.5).fillColor(INK)
-  doc.text(`Sample Taken: ${when(report.collected_at)}`, MARGIN, bandY,
-    { width: width * 0.36, lineBreak: false })
+  /*
+   * Booked first: when the test's bill was made at the counter (see
+   * BOOKED_AT in services/lab.ts). Three times across the band now, left,
+   * centre and right, in the order they happen. A test with no counter bill
+   * behind it prints a dash rather than another timestamp standing in.
+   */
+  doc.text(`Booked: ${when(report.booked_at)}`, MARGIN, bandY,
+    { width: width * 0.34, lineBreak: false })
+  doc.text(`Sample Taken: ${when(report.collected_at)}`, MARGIN + width * 0.33, bandY,
+    { width: width * 0.34, align: 'center', lineBreak: false })
   /*
    * No "Final Report" / "Provisional Report" between the two times.
    *
@@ -346,7 +354,7 @@ function drawPage(doc: any, width: number, r: any, hospital: any,
    */
   doc.font('Helvetica')
      .text(`Reported: ${when(report.resulted_at)}`,
-       MARGIN + width * 0.64, bandY, { width: width * 0.36, align: 'right', lineBreak: false })
+       MARGIN + width * 0.66, bandY, { width: width * 0.34, align: 'right', lineBreak: false })
   doc.y = bandY + 14
   rule(doc, width, 1)
 

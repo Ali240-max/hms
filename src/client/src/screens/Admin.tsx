@@ -1,13 +1,14 @@
 import { motion } from 'framer-motion'
 import { DUR, EASE } from '../lib/motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, rs, toPaisa, bpToPct, pctToBp, today, type SessionUser , newId} from '../lib/api'
+import { api, rs, toPaisa, bpToPct, pctToBp, today, type SessionUser, type ServiceCategory, newId } from '../lib/api'
 import { Badge, Card, Empty, ErrorNote, Field, Modal, Stat, Tabs, Th } from '../components/ui'
 import { useT } from '../lib/prefs'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import { Reports } from './pharma/Reports'
 import { useModules } from '../lib/modules'
 import { BackupLocationCard, DangerZoneCard } from './admin/DangerZone'
+import { RestoreBackupCard } from './admin/RestoreBackup'
 import { AdminAccess } from './admin/AdminAccess'
 import { ReportAccess } from './admin/ReportAccess'
 import { WardSetup } from './admin/WardSetup'
@@ -16,7 +17,7 @@ import { TerminalSync } from './admin/TerminalSync'
 import {
   LayoutDashboard, BarChart3, Users, Percent, ClipboardList,
   Building2, Settings, Database, FlaskConical, ScanLine, Syringe, Plus, AlertTriangle,
-  ShieldCheck, Upload, BedDouble, Clock } from 'lucide-react'
+  ShieldCheck, Upload, BedDouble, Clock, Tags, LayoutGrid } from 'lucide-react'
 import { t as tr } from '../lib/prefs'
 
 const TABS = ['Overview', 'Staff', 'Services', 'Doctor shares', 'Departments',
@@ -100,6 +101,8 @@ export function Admin({ me }: { me: SessionUser }) {
       {tab === 'Demo data' && <DemoTab />}
       {tab === 'Settings' && <SettingsTab />}
       {tab === 'Settings' && <BackupLocationCard />}
+      {/* Its own guarded permission; the server refuses without it either way. */}
+      {tab === 'Settings' && (!allowed || allowed.has('admin.restore')) && <RestoreBackupCard />}
       {tab === 'Settings' && <DangerZoneCard me={me} />}
       {tab === 'Reports' && <Reports me={me} />}
       {tab === 'Wards and beds' && <WardSetup />}
@@ -543,23 +546,28 @@ function ResetPassword({ user, onClose, onDone }: { user: any; onClose: () => vo
 /* -------------------------------------------------------------- services */
 
 /**
- * Services, one department at a time.
+ * Services, one category at a time.
  *
  * Everything in one list made it hard to find anything once the catalogue
  * shipped with fifty entries: CBC sat between a dressing and an ultrasound.
- * Split by department, each list is short enough to read, and the lab
+ * Split by category, each list is short enough to read, and the lab
  * in-charge and the radiographer each see only their own.
+ *
+ * The categories are rows (Administration, Services, Categories), so a
+ * hospital that opens a dental room adds "Dental procedures" and gets a tab
+ * for it. What is fixed is the KIND each category works like, which decides
+ * where results are entered; the icon and the stock blurb follow the kind.
  */
-const SERVICE_GROUPS: { id: string; label: string; icon: any; blurb: string }[] = [
-  { id: 'lab', label: 'Laboratory tests', icon: FlaskConical,
+const KIND_LOOK: Record<string, { icon: any; blurb: string; label: string }> = {
+  lab: { icon: FlaskConical, label: 'Laboratory test',
     blurb: 'Blood, urine and serology. Each has its reference ranges under Test setup.' },
-  { id: 'radiology', label: 'Radiology procedures', icon: ScanLine,
+  radiology: { icon: ScanLine, label: 'Radiology',
     blurb: 'X-rays, ultrasounds and scans.' },
-  { id: 'procedure', label: 'Procedures', icon: Syringe,
+  procedure: { icon: Syringe, label: 'Procedure',
     blurb: 'Dressings, injections, ECG and other bedside work.' },
-  { id: 'other', label: 'Other', icon: ClipboardList,
+  other: { icon: ClipboardList, label: 'Other',
     blurb: 'Anything that fits none of the above.' }
-]
+}
 
 /**
  * The permission each tab needs to be worth showing.
@@ -585,15 +593,30 @@ const TAB_PERMISSION: Record<string, string> = {
 
 function ServicesTab() {
   const [rows, setRows] = useState<any[]>([])
-  const [group, setGroup] = useState('lab')
+  const [cats, setCats] = useState<ServiceCategory[]>([])
+  const [group, setGroup] = useState<string>('')
   const [editing, setEditing] = useState<any | 'new' | null>(null)
   const [setup, setSetup] = useState<any | null>(null)
+  const [managing, setManaging] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const load = useCallback(() => { api.services(true).then(setRows).catch(() => {}) }, [])
+  const load = useCallback(() => {
+    api.services(true).then(setRows).catch(() => {})
+    api.serviceCategories(true).then((c) => {
+      setCats(c)
+      // Opens on the first category, as it opened on the laboratory before.
+      setGroup((g) => g || (c[0] ? String(c[0].id) : 'all'))
+    }).catch((e: any) => setErr(e.message))
+  }, [])
   useEffect(() => { load() }, [load])
 
-  const shown = rows.filter((s) => s.category === group)
-  const current = SERVICE_GROUPS.find((g) => g.id === group)!
+  /*
+   * A category switched off still gets a tab while services are filed under
+   * it, so they can be found and moved; an empty switched-off one does not.
+   */
+  const tabsCats = cats.filter((c) => c.is_active || rows.some((s) => s.category_id === c.id))
+  const cat = cats.find((c) => String(c.id) === group) ?? null
+  const shown = group === 'all' ? rows : rows.filter((s) => String(s.category_id) === group)
+  const look = KIND_LOOK[cat?.kind ?? 'other']
   /*
    * The shipped tests arrive unpriced, and an unpriced test is refused at the
    * counter. Counting them here is what tells an administrator there is work
@@ -604,20 +627,39 @@ function ServicesTab() {
   return (
     <Card title={tr('Tests, scans and procedures')}
       hint={tr('What a doctor can order, what it costs, and the default cut the ordering doctor gets')}
-      action={<button onClick={() => setEditing('new')}
-        className="btn-primary inline-flex items-center gap-1.5">
-        <Plus size={14} /> {tr('Add service')}
-      </button>}>
+      action={<div className="flex gap-2">
+        <button onClick={() => setManaging(true)} className="btn-ghost inline-flex items-center gap-1.5">
+          <Tags size={14} /> {tr('Categories')}
+        </button>
+        <button onClick={() => setEditing('new')}
+          className="btn-primary inline-flex items-center gap-1.5">
+          <Plus size={14} /> {tr('Add service')}
+        </button>
+      </div>}>
 
       <ErrorNote>{err}</ErrorNote>
 
       <Tabs id="service-groups" value={group} onChange={setGroup} className="mb-4 w-fit"
-        tabs={SERVICE_GROUPS.map((g) => ({
-          value: g.id, label: tr(g.label), icon: g.icon,
-          count: rows.filter((s) => s.category === g.id).length
-        }))} />
+        tabs={[
+          { value: 'all', label: tr('All categories'), icon: LayoutGrid, count: rows.length },
+          ...tabsCats.map((c) => ({
+            value: String(c.id), label: tr(c.name), icon: KIND_LOOK[c.kind]?.icon ?? ClipboardList,
+            count: rows.filter((s) => s.category_id === c.id).length
+          }))
+        ]} />
 
-      <p className="mb-3 text-2xs text-muted">{tr(current.blurb)}</p>
+      <p className="mb-3 text-2xs text-muted">
+        {group === 'all' ? tr('Every service, whatever its category.')
+          : cat?.is_builtin ? tr(look.blurb)
+          : `${tr('Works like')}: ${tr(look.label)}.`}
+        {cat && (
+          <span className="ml-1">
+            {cat.department_name
+              ? <>{tr('Department')}: <span className="text-heading">{cat.department_name}</span>.</>
+              : tr('Not mapped to a department — each service may name its own.')}
+          </span>
+        )}
+      </p>
 
       {unpriced.length > 0 && (
         <div className="anim-in mb-3 flex items-start gap-2 rounded-xl border-2 border-warn/40
@@ -652,6 +694,7 @@ function ServicesTab() {
                   <td className="px-3 py-2">
                     <span className="text-sm text-heading">{s.name}</span>
                     {!s.is_active && <Badge>{tr('hidden')}</Badge>}
+                    {group === 'all' && s.category_name && <Badge>{tr(s.category_name)}</Badge>}
                     {s.code && <div className="text-2xs text-muted">{s.code}</div>}
                   </td>
                   <td className="px-3 py-2 text-right num font-medium">
@@ -705,20 +748,32 @@ function ServicesTab() {
       )}
       {setup && <TestSetup service={setup} onClose={() => setSetup(null)} />}
       {editing && (
-        <ServiceForm initial={editing === 'new' ? null : editing} defaultCategory={group}
+        <ServiceForm initial={editing === 'new' ? null : editing} categories={cats}
+          defaultCategoryId={cat?.id ?? null}
           onClose={() => setEditing(null)} onDone={() => { setEditing(null); load() }} />
+      )}
+      {managing && (
+        <CategoryManager categories={cats} onClose={() => setManaging(false)} onChanged={load} />
       )}
     </Card>
   )
 }
 
-function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
-  initial: any | null; defaultCategory?: string; onClose: () => void; onDone: () => void
+function ServiceForm({ initial, categories, defaultCategoryId, onClose, onDone }: {
+  initial: any | null; categories: ServiceCategory[]; defaultCategoryId: number | null
+  onClose: () => void; onDone: () => void
 }) {
+  /*
+   * A new service starts in whichever category's list it was added from;
+   * from "All categories", in the first one. Only active categories are
+   * offered, plus the one an existing service is already filed under.
+   */
+  const choices = categories.filter((c) => c.is_active || c.id === initial?.category_id)
+  const startCat = initial?.category_id ?? defaultCategoryId ?? choices[0]?.id ?? null
+  const startKind = categories.find((c) => c.id === startCat)?.kind ?? 'lab'
   const [f, setF] = useState({
     name: initial?.name ?? '', code: initial?.code ?? '',
-    // A new service starts in whichever department's list it was added from.
-    category: initial?.category ?? defaultCategory ?? 'lab',
+    categoryId: startCat ? String(startCat) : '',
     price: initial ? rs(initial.price_paisa) : '',
     share: initial ? bpToPct(initial.default_share_bp) : '0',
     departmentId: initial?.department_id ? String(initial.department_id) : '',
@@ -726,9 +781,7 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
      * A new procedure starts needing a doctor, which is the common case. An
      * existing service keeps whatever it was saved with.
      */
-    requiresDoctor: initial
-      ? !!initial.requires_doctor
-      : (defaultCategory ?? 'lab') === 'procedure',
+    requiresDoctor: initial ? !!initial.requires_doctor : startKind === 'procedure',
     isActive: initial ? initial.is_active : true
   })
   const [depts, setDepts] = useState<any[]>([])
@@ -736,22 +789,29 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
   const [err, setErr] = useState<string | null>(null)
   useEffect(() => { api.departments().then(setDepts).catch(() => {}) }, [])
   const share = Math.round(toPaisa(f.price) * pctToBp(f.share) / 10000)
+  const cat = categories.find((c) => String(c.id) === f.categoryId) ?? null
+  /*
+   * A category mapped to a department decides the department; the server
+   * enforces it too. The select shows it, locked, so nobody can save a
+   * dental procedure under the laboratory.
+   */
+  const lockedDept = cat?.department_id ?? null
 
   return (
     <Modal title={initial ? `Edit ${initial.name}` : 'Add a service'} onClose={onClose}
       footer={
         <>
           <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
-          <button disabled={busy || !f.name.trim()} className="btn-primary"
+          <button disabled={busy || !f.name.trim() || !f.categoryId} className="btn-primary"
             onClick={async () => {
               setBusy(true); setErr(null)
               try {
                 await api.saveService({
                   ...(initial ? { id: initial.id } : {}),
                   name: f.name.trim(), code: f.code.trim() || null,
-                  category: f.category, pricePaisa: toPaisa(f.price),
+                  categoryId: Number(f.categoryId), pricePaisa: toPaisa(f.price),
                   defaultShareBp: pctToBp(f.share), isActive: f.isActive,
-                  departmentId: f.departmentId ? Number(f.departmentId) : null,
+                  departmentId: lockedDept ?? (f.departmentId ? Number(f.departmentId) : null),
                   requiresDoctor: f.requiresDoctor
                 })
                 onDone()
@@ -766,23 +826,31 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label={tr('Category')}>
-            <select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} className="field">
-              <option value="lab">{tr('Lab')}</option>
-              <option value="radiology">{tr('Radiology')}</option>
-              <option value="procedure">{tr('Procedure')}</option>
-              <option value="other">{tr('Other')}</option>
+            <select value={f.categoryId}
+              onChange={(e) => {
+                const next = categories.find((c) => String(c.id) === e.target.value)
+                setF({
+                  ...f, categoryId: e.target.value,
+                  // A new service follows the new category's usual doctor rule.
+                  requiresDoctor: initial ? f.requiresDoctor : next?.kind === 'procedure'
+                })
+              }} className="field">
+              {choices.length === 0 && <option value="">{tr('No categories yet')}</option>}
+              {choices.map((c) => <option key={c.id} value={c.id}>{tr(c.name)}</option>)}
             </select>
           </Field>
           {/*
             Which department owns it.
             The category routes a service to the right screen; the department
-            is what reports break on, so an ECG and an X-ray can be told
-            apart instead of both appearing as "radiology".
+            is what reports and the token queue break on, so an ECG and an
+            X-ray can be told apart instead of both appearing as "radiology".
           */}
-          <Field label={tr('Department')} hint={tr('Used by the department reports')}>
-            <select value={f.departmentId ?? ''}
+          <Field label={tr('Department')}
+            hint={lockedDept ? tr('Set by the category') : tr('Used by the department reports')}>
+            <select value={lockedDept ? String(lockedDept) : (f.departmentId ?? '')}
+              disabled={!!lockedDept}
               onChange={(e) => setF({ ...f, departmentId: e.target.value })}
-              className="field">
+              className="field disabled:opacity-70">
               <option value="">{tr('Not set — reports use the category')}</option>
               {depts.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
@@ -856,6 +924,146 @@ function ServiceForm({ initial, defaultCategory, onClose, onDone }: {
           price and share it was booked at.
         </p>
         <ErrorNote>{err}</ErrorNote>
+      </div>
+    </Modal>
+  )
+}
+
+/* ----------------------------------------------------- service categories */
+
+/**
+ * Adding and mapping categories.
+ *
+ * A category is a name, the department it belongs to, and the kind of work
+ * it is. The department is what the token queue and the department reports
+ * follow; the kind decides where results are entered, and is fixed once
+ * services are filed under it, because changing it would move finished lab
+ * reports off the laboratory's screen.
+ *
+ * Departments are chosen from the hospital's own list (Administration,
+ * Departments); this screen never creates one.
+ */
+function CategoryManager({ categories, onClose, onChanged }: {
+  categories: ServiceCategory[]; onClose: () => void; onChanged: () => void
+}) {
+  const blank = { id: 0, name: '', departmentId: '', kind: 'procedure', isActive: true }
+  const [f, setF] = useState<any>(blank)
+  const [depts, setDepts] = useState<any[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  useEffect(() => { api.departments().then(setDepts).catch(() => {}) }, [])
+  const editing = categories.find((c) => c.id === f.id) ?? null
+  const kindLocked = !!editing && (editing.is_builtin || editing.service_count > 0)
+
+  async function save() {
+    setBusy(true); setErr(null)
+    try {
+      await api.saveServiceCategory({
+        ...(f.id ? { id: f.id } : {}),
+        name: f.name.trim(),
+        departmentId: f.departmentId ? Number(f.departmentId) : null,
+        kind: f.kind, isActive: f.isActive
+      })
+      setF(blank); onChanged()
+    } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Modal title={tr('Service categories')} wide onClose={onClose}
+      hint={tr('Each category gets its own tab here and its own box at the Main Counter.')}
+      footer={<button onClick={onClose} className="btn-ghost">{tr('Close')}</button>}>
+      <div className="overflow-x-auto rounded-2xl border-2 border-line">
+        <table className="w-full">
+          <thead className="thead-strip">
+            <tr>
+              <Th>{tr('Category')}</Th><Th w="w-44">{tr('Department')}</Th>
+              <Th w="w-32">{tr('Works like')}</Th><Th w="w-20" right>{tr('Services')}</Th>
+              <Th w="w-36" right />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-divide rows-striped">
+            {categories.map((c) => (
+              <tr key={c.id} className={c.is_active ? '' : 'opacity-50'}>
+                <td className="px-3 py-2 text-sm text-heading">
+                  {tr(c.name)}
+                  {c.is_builtin && <Badge>{tr('built in')}</Badge>}
+                  {!c.is_active && <Badge>{tr('off')}</Badge>}
+                </td>
+                <td className="px-3 py-2 text-2xs text-body">
+                  {c.department_name ?? <span className="text-muted">{tr('Not mapped')}</span>}
+                </td>
+                <td className="px-3 py-2 text-2xs text-muted">{tr(KIND_LOOK[c.kind]?.label ?? c.kind)}</td>
+                <td className="px-3 py-2 text-right num text-2xs">{c.service_count}</td>
+                <td className="px-3 py-2 text-right">
+                  <button className="btn-ghost px-2 py-1 text-2xs"
+                    onClick={() => {
+                      setErr(null)
+                      setF({ id: c.id, name: c.name, departmentId: c.department_id ? String(c.department_id) : '',
+                             kind: c.kind, isActive: c.is_active })
+                    }}>{tr('Edit')}</button>
+                  {/* Refused by the server while services are filed under it. */}
+                  {!c.is_builtin && (
+                    <button className="ml-1 btn-ghost px-2 py-1 text-2xs text-bad"
+                      onClick={() => {
+                        setErr(null)
+                        api.deleteServiceCategory(c.id).then(onChanged)
+                          .catch((e: any) => setErr(e.message))
+                      }}>{tr('Delete')}</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 rounded-2xl border-2 border-line p-3">
+        <p className="label">{editing ? `${tr('Edit')} ${editing.name}` : tr('Add a category')}</p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label={tr('Name')}>
+            <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })}
+              placeholder={tr('Dental procedures')} className="field" />
+          </Field>
+          <Field label={tr('Department')} hint={tr('Its token queue and reports')}>
+            <select value={f.departmentId} onChange={(e) => setF({ ...f, departmentId: e.target.value })}
+              className="field">
+              <option value="">{tr('Not mapped')}</option>
+              {depts.filter((d: any) => d.is_active !== false || String(d.id) === f.departmentId)
+                .map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label={tr('Works like')}
+            hint={kindLocked ? tr('Fixed once services use it') : tr('Where its results are entered')}>
+            <select value={f.kind} disabled={kindLocked}
+              onChange={(e) => setF({ ...f, kind: e.target.value })} className="field disabled:opacity-70">
+              <option value="procedure">{tr('Procedure')}</option>
+              <option value="lab">{tr('Laboratory test')}</option>
+              <option value="radiology">{tr('Radiology')}</option>
+              <option value="other">{tr('Other')}</option>
+            </select>
+          </Field>
+        </div>
+        {editing && !editing.is_builtin && (
+          <label className="mt-2 flex items-center gap-2 text-2xs">
+            <input type="checkbox" checked={f.isActive}
+              onChange={(e) => setF({ ...f, isActive: e.target.checked })} />
+            {tr('In use — shown at the Main Counter and in the service form')}
+          </label>
+        )}
+        {editing?.department_id !== undefined && editing && f.departmentId
+          && String(editing.department_id ?? '') !== f.departmentId && editing.service_count > 0 && (
+          <p className="mt-2 text-2xs text-warn">
+            {tr('The services in this category move to the new department with it.')}
+          </p>
+        )}
+        <ErrorNote>{err}</ErrorNote>
+        <div className="mt-3 flex justify-end gap-2">
+          {editing && <button onClick={() => { setF(blank); setErr(null) }} className="btn-ghost">
+            {tr('Cancel')}</button>}
+          <button disabled={busy || !f.name.trim()} onClick={save} className="btn-primary">
+            {busy ? tr('Saving…') : editing ? tr('Save') : tr('Add category')}
+          </button>
+        </div>
       </div>
     </Modal>
   )
@@ -1081,7 +1289,8 @@ function DemoTab() {
       setTyped('')
       setHasData(true)
     } catch (e: any) {
-      setErr(e.message ?? 'Could not load demo data')
+      // The server names the step that failed and says nothing was kept.
+      setErr([e.message ?? 'Could not load demo data', e.detail].filter(Boolean).join(' — '))
     } finally { setBusy(false) }
   }
 
@@ -1093,9 +1302,11 @@ function DemoTab() {
         <div className="space-y-4">
           <p className="text-2xs text-muted">
             Generates patients, visits, prescriptions, test orders and doctor earnings
-            spread over the last few weeks, plus staff, departments, a service list and
-            a stocked pharmacy. Today keeps a few patients still waiting so the queue
-            screens have something live in them.
+            spread over the last few weeks, demo staff accounts, service prices and a
+            stocked pharmacy with counter, credit and department bills. It uses the
+            departments already set up here and never adds or changes one. Today keeps
+            a few patients still waiting so the queue screens have something live in
+            them. The whole load is one step: if anything fails, nothing is kept.
           </p>
 
           {/*
@@ -1138,13 +1349,13 @@ function DemoTab() {
                 {tr('This system already has patient records')}
               </p>
               <p className="mt-1 text-2xs text-bad/90">
-                {tr('Loading demo data')} <strong>{tr('erases everything')}</strong> — every patient, visit,
-                prescription and earning — and replaces it with invented records. Only do
-                this on a test system.
+                {tr('Loading demo data')} <strong>{tr('erases the trading records')}</strong> — every
+                patient, visit, prescription, earning, bill, delivery and stock batch — and
+                replaces them with invented records. Only do this on a test system.
               </p>
               <p className="mt-1 text-2xs text-muted">
-                Staff accounts are recreated, so you will be signed out and will need to
-                sign back in as <span className="num">{tr('admin')}</span>.
+                Staff accounts, departments, the service list and its reference ranges are
+                kept as they are. Demo accounts are added only where the username is free.
               </p>
               <label className="mt-3 block">
                 <span className="label">
@@ -1175,7 +1386,8 @@ function DemoTab() {
                   <Stat label={tr('Medicines')} value={String(result.pharmacy.products)} />
                   <Stat label={tr('Batches on the shelf')} value={String(result.pharmacy.batches)} />
                   <Stat label={tr('Pharmacy bills')} value={String(result.pharmacy.invoices)}
-                    tone="ok" />
+                    tone="ok" sub={`${result.pharmacy.creditBills ?? 0} ${tr('on credit')} · ${
+                      result.pharmacy.departmentBills ?? 0} ${tr('to departments')}`} />
                 </div>
               )}
               <p className="mt-3 text-2xs text-muted">

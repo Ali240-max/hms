@@ -18,6 +18,9 @@ import { LabelSheet } from '../src/client/src/components/Labels'
 import { SignIn } from '../src/client/src/screens/SignIn'
 import { Billing } from '../src/client/src/screens/pharmacy/Billing'
 import { Bills } from '../src/client/src/screens/pharmacy/Bills'
+import { CreditBills } from '../src/client/src/screens/pharmacy/CreditBills'
+import { DepartmentBilling } from '../src/client/src/screens/pharmacy/DepartmentBilling'
+import { WriteOff } from '../src/client/src/screens/pharmacy/WriteOff'
 import { Medicines } from '../src/client/src/screens/pharmacy/Medicines'
 import { Overview } from '../src/client/src/screens/pharmacy/Overview'
 import { Prescriptions } from '../src/client/src/screens/pharmacy/Prescriptions'
@@ -111,7 +114,10 @@ const cases: [string, () => any][] = [
   ['Danger zone', () => <DangerZoneCard me={user('admin')} />],
   ['Pharmacy', () => <Pharmacy me={user('pharmacist')} />],
   ['Pharmacy billing', () => <Billing me={user('pharmacist')} pending={null} onConsumed={noop} />],
-  ['Pharmacy bills', () => <Bills />],
+  ['Pharmacy bills', () => <Bills me={user('pharmacist')} />],
+  ['Pharmacy credit bills', () => <CreditBills me={user('pharmacist')} />],
+  ['Pharmacy interdepartmental billing', () => <DepartmentBilling me={user('pharmacist')} />],
+  ['Pharmacy expiry', () => <WriteOff kind="expiry" me={user('pharmacist')} />],
   ['Pharmacy medicines', () => <Medicines />],
   ['Pharmacy overview', () => <Overview />],
   ['Pharmacy prescriptions', () => <Prescriptions onFill={noop} />],

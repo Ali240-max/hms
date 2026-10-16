@@ -1,6 +1,7 @@
 import { sql, eq } from 'drizzle-orm'
-import { db, nextCounter } from '../db/client'
-import { documentNo } from './numbering'
+import { db } from '../db/client'
+import { raiseChits } from './chits'
+import { CategoryError, builtinCategoryFor, getCategory } from './service-categories'
 import * as s from '../db/schema'
 
 export class ClinicalError extends Error {
@@ -177,40 +178,13 @@ export async function saveConsultation(input: {
      * window for everything the lab is doing, and carries one slip to the lab.
      * Grouping by department is what decides how many slips they end up with.
      */
-    const unbilled = (await tx.execute<any>(sql`
-      SELECT so.id, sv.category
-      FROM service_orders so
-      JOIN services sv ON sv.id = so.service_id
-      WHERE so.visit_id = ${input.visitId} AND so.chit_id IS NULL AND so.status <> 'cancelled'
-      ORDER BY sv.category, so.id
-      FOR UPDATE OF so`)).rows as any[]
-
-    const byCategory = new Map<string, number[]>()
-    for (const row of unbilled) {
-      const list = byCategory.get(row.category) ?? []
-      list.push(row.id)
-      byCategory.set(row.category, list)
-    }
-
-    for (const [category, ids] of byCategory) {
-      const n = await nextCounter(tx, 'chit')
-      const chitNo = await documentNo(tx, { prefix: 'CHIT', letter: 'T' })
-      const chit = (await tx.execute<any>(sql`
-        INSERT INTO chits (chit_no, visit_id, patient_id, category, total_paisa, created_by)
-        SELECT ${chitNo}, ${input.visitId}, v.patient_id, ${category}::service_category,
-               (SELECT COALESCE(SUM(price_paisa), 0) FROM service_orders
-                WHERE id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})),
-               ${'Ordered during consultation'}
-        FROM visits v WHERE v.id = ${input.visitId}
-        RETURNING *`)).rows[0]
-      await tx.execute(sql`
-        UPDATE service_orders SET chit_id = ${chit.id}
-        WHERE id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})`)
-    }
+    const chits = await raiseChits(tx, {
+      visitId: input.visitId, createdBy: 'Ordered during consultation'
+    })
 
     return {
       prescriptionId, items: input.items.length, services: input.services.length,
-      chits: byCategory.size
+      chits: chits.length
     }
   })
 }
@@ -404,55 +378,87 @@ export async function listServices(includeInactive = false) {
            -- So the laboratory can see at a glance which tests still have no
            -- reference ranges set against them.
            (SELECT COUNT(*)::int FROM service_parameters sp
-            WHERE sp.service_id = sv.id AND sp.is_active) AS parameter_count
+            WHERE sp.service_id = sv.id AND sp.is_active) AS parameter_count,
+           sc.name AS category_name,
+           -- The department the token and the reports use: the category's
+           -- when it is mapped, otherwise the service's own.
+           COALESCE(sc.department_id, sv.department_id) AS effective_department_id
     FROM services sv
+    LEFT JOIN service_categories sc ON sc.id = sv.category_id
     LEFT JOIN service_orders so ON so.service_id = sv.id
     WHERE ${includeInactive ? sql`true` : sql`sv.is_active AND sv.price_paisa > 0`}
-    GROUP BY sv.id ORDER BY sv.category, sv.name`)).rows
+    GROUP BY sv.id, sc.id ORDER BY sv.category, sv.name`)).rows
 }
 
 export async function upsertService(input: {
   id?: number; code?: string | null; name: string
-  category: 'lab' | 'radiology' | 'procedure' | 'other'
+  /**
+   * The category it is filed under. The service's kind (`category`) and,
+   * when the category is mapped to one, its department follow from it.
+   */
+  categoryId?: number | null
+  /** The kind, for callers that predate categories (the demo loader). */
+  category?: 'lab' | 'radiology' | 'procedure' | 'other'
   pricePaisa: number; defaultShareBp: number; isActive?: boolean
-  /** Which department owns it. Optional; reports fall back to the category. */
+  /** Which department owns it. Ignored when its category is mapped to one. */
   departmentId?: number | null
   /** Cannot be billed without naming a doctor. Mostly for procedures. */
   requiresDoctor?: boolean
 }) {
-  /*
-   * Written with raw SQL for the department, because the Drizzle schema in
-   * this file predates the column. Kept explicit rather than silently
-   * dropping the field, which is how a form that appears to save ends up
-   * saving nothing.
-   */
-  if (input.id) {
-    const [row] = await db.update(s.services).set({
-      code: input.code ?? null, name: input.name.trim(), category: input.category,
-      pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp,
-      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-      ...(input.requiresDoctor !== undefined
-        ? { requiresDoctor: input.requiresDoctor } : {})
-    }).where(eq(s.services.id, input.id)).returning()
-    if (input.departmentId !== undefined) {
-      await db.execute(sql`
-        UPDATE services SET department_id = ${input.departmentId} WHERE id = ${input.id}`)
-    }
-    return row
-  }
-  const [row] = await db.insert(s.services).values({
-    code: input.code ?? null, name: input.name.trim(), category: input.category,
-    pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp,
+  return db.transaction(async (tx) => {
     /*
-     * A procedure needs a doctor unless somebody says otherwise. That is the
-     * common case by a wide margin, and the alternative — a procedure billed
-     * with nobody named and the share lost — is the thing being fixed.
+     * The category decides the kind and, when mapped, the department. Read
+     * here rather than trusted from the form, so a screen holding a stale
+     * list cannot file a test under a deleted category or pair a category
+     * with some other department.
      */
-    requiresDoctor: input.requiresDoctor ?? input.category === 'procedure'
-  }).returning()
-  if (input.departmentId != null) {
-    await db.execute(sql`
-      UPDATE services SET department_id = ${input.departmentId} WHERE id = ${row.id}`)
-  }
-  return row
+    const cat = input.categoryId
+      ? await getCategory(tx, input.categoryId)
+      : await builtinCategoryFor(tx, input.category ?? 'lab')
+    if (!cat) throw new CategoryError('That category does not exist', 'NOT_FOUND')
+    if (!cat.is_active && input.categoryId) {
+      throw new CategoryError('That category is switched off', 'INACTIVE')
+    }
+    const kind = cat.kind as 'lab' | 'radiology' | 'procedure' | 'other'
+    const departmentId = cat.department_id != null
+      ? Number(cat.department_id)
+      : input.departmentId
+
+    /*
+     * Written with raw SQL for the department and category, because the
+     * Drizzle schema in this file predates those columns. Kept explicit
+     * rather than silently dropping the fields, which is how a form that
+     * appears to save ends up saving nothing.
+     */
+    if (input.id) {
+      const [row] = await tx.update(s.services).set({
+        code: input.code ?? null, name: input.name.trim(), category: kind,
+        pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp,
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        ...(input.requiresDoctor !== undefined
+          ? { requiresDoctor: input.requiresDoctor } : {})
+      }).where(eq(s.services.id, input.id)).returning()
+      if (!row) throw new CategoryError('Service not found', 'NOT_FOUND')
+      await tx.execute(sql`UPDATE services SET category_id = ${cat.id} WHERE id = ${input.id}`)
+      if (departmentId !== undefined) {
+        await tx.execute(sql`
+          UPDATE services SET department_id = ${departmentId} WHERE id = ${input.id}`)
+      }
+      return row
+    }
+    const [row] = await tx.insert(s.services).values({
+      code: input.code ?? null, name: input.name.trim(), category: kind,
+      pricePaisa: input.pricePaisa, defaultShareBp: input.defaultShareBp,
+      /*
+       * A procedure needs a doctor unless somebody says otherwise. That is the
+       * common case by a wide margin, and the alternative — a procedure billed
+       * with nobody named and the share lost — is the thing being fixed.
+       */
+      requiresDoctor: input.requiresDoctor ?? kind === 'procedure'
+    }).returning()
+    await tx.execute(sql`
+      UPDATE services SET category_id = ${cat.id}, department_id = ${departmentId ?? null}
+      WHERE id = ${row.id}`)
+    return row
+  })
 }

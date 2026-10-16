@@ -653,7 +653,7 @@ function Consultation({ visitId, me, onBack }: {
                       e.target.checked ? [...c, sv.id] : c.filter((x) => x !== sv.id))} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-2xs text-heading">{sv.name}</span>
-                    <span className="block text-2xs capitalize text-muted">{sv.category}</span>
+                    <span className="block text-2xs capitalize text-muted">{sv.category_name ?? sv.category}</span>
                   </span>
                   <span className="num shrink-0 text-2xs font-medium text-primary">
                     {rs(sv.price_paisa)}

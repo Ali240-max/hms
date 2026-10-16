@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
+import { raiseChits } from './chits'
 import { documentNo } from './numbering'
 import { getSetting } from './settings'
 
@@ -74,7 +75,8 @@ export async function draftForVisit(visitId: number) {
 export async function draftForChit(chitId: number) {
   const chit = (await db.execute<any>(sql`
     SELECT c.*, p.mrn, p.name AS patient_name, p.phone, p.age_years, p.gender,
-           v.token_no, v.visit_no, st.display_name AS doctor_name
+           COALESCE(c.token_no, v.token_no) AS token_no, v.visit_no,
+           st.display_name AS doctor_name
     FROM chits c
     JOIN patients p ON p.id = c.patient_id
     JOIN visits v ON v.id = c.visit_id
@@ -305,8 +307,6 @@ export async function directServiceVisit(input: {
     const shareBp = (sv: any) =>
       input.doctorId ? Number(sv.default_share_bp ?? 0) : 0
 
-    const today = new Date().toISOString().slice(0, 10)
-    const tokenNo = await nextCounter(tx, `token:direct:${today}`)
     /*
      * VIS-260918-D00042.
      *
@@ -321,12 +321,18 @@ export async function directServiceVisit(input: {
      * No doctor and no fee. `doctor_id` is nullable only for this case, so
      * the earnings tables simply never see these rows — which is correct,
      * since no doctor referred them and none should be paid a share.
+     *
+     * Written with token 0 and given its real token below, once the chits
+     * exist: a walk-in visit has no queue of its own any more (it used to
+     * draw from a shared "direct" counter), so it carries the token of the
+     * first department it was sent to. All one transaction, so nobody ever
+     * sees the 0.
      */
     const visit = (await tx.execute<any>(sql`
       INSERT INTO visits
         (visit_no, token_no, patient_id, doctor_id, consultation_fee_paisa,
          fee_paid, status, visit_type, registered_by, complaint)
-      VALUES (${visitNo}, ${tokenNo}, ${input.patientId}, NULL, 0,
+      VALUES (${visitNo}, 0, ${input.patientId}, NULL, 0,
               true, 'completed', 'direct', ${input.byId}, 'Walk-in test, no consultation')
       RETURNING *`)).rows[0]
 
@@ -340,29 +346,11 @@ export async function directServiceVisit(input: {
                 ${Math.round(Number(sv.price_paisa) * shareBp(sv) / 10000)}, 'ordered')`)
     }
 
-    // Grouped by department, the same as any other chit.
-    const byCategory = new Map<string, any[]>()
-    for (const sv of services) {
-      const list = byCategory.get(sv.category) ?? []
-      list.push(sv)
-      byCategory.set(sv.category, list)
-    }
-
-    const chits: any[] = []
-    for (const [category, list] of byCategory) {
-      const n = await nextCounter(tx, 'chit')
-      const chitNo = await documentNo(tx, { prefix: 'CHIT', letter: 'T' })
-      const total = list.reduce((sum, sv) => sum + Number(sv.price_paisa), 0)
-      const chit = (await tx.execute<any>(sql`
-        INSERT INTO chits (chit_no, visit_id, patient_id, category, total_paisa, created_by)
-        VALUES (${chitNo}, ${visit.id}, ${input.patientId}, ${category}::service_category,
-                ${total}, ${input.by})
-        RETURNING *`)).rows[0]
-      await tx.execute(sql`
-        UPDATE service_orders SET chit_id = ${chit.id}
-        WHERE visit_id = ${visit.id} AND service_id IN (
-          ${sql.join(list.map((sv) => sql`${sv.id}`), sql`, `)})`)
-      chits.push(chit)
+    // Grouped by department, with that department's token, like any other chit.
+    const chits = await raiseChits(tx, { visitId: visit.id, createdBy: input.by })
+    if (chits[0]) {
+      await tx.execute(sql`UPDATE visits SET token_no = ${chits[0].token_no} WHERE id = ${visit.id}`)
+      visit.token_no = chits[0].token_no
     }
 
     return { visit, chits }
@@ -373,10 +361,12 @@ export async function directServiceVisit(input: {
 export async function billForPrint(billId: number) {
   const bill = (await db.execute<any>(sql`
     SELECT b.*, p.mrn, p.name AS patient_name, p.phone, p.age_years, p.gender,
-           v.token_no, v.visit_no, st.display_name AS doctor_name
+           COALESCE(ch.token_no, v.token_no) AS token_no, v.visit_no,
+           st.display_name AS doctor_name
     FROM counter_bills b
     LEFT JOIN patients p ON p.id = b.patient_id
     LEFT JOIN visits v   ON v.id = b.visit_id
+    LEFT JOIN chits ch   ON ch.id = b.chit_id
     LEFT JOIN doctors d  ON d.id = v.doctor_id
     LEFT JOIN staff st   ON st.id = d.staff_id
     WHERE b.id = ${billId}`)).rows[0]
@@ -401,10 +391,12 @@ export async function listBills(opts: { q?: string; from?: string; to?: string; 
                           OR p.name ILIKE ${like} OR p.phone ILIKE ${like})`
   }
   const rows = (await db.execute<any>(sql`
-    SELECT b.*, p.mrn, p.name AS patient_name, v.token_no
+    SELECT b.*, p.mrn, p.name AS patient_name,
+           COALESCE(ch.token_no, v.token_no) AS token_no
     FROM counter_bills b
     LEFT JOIN patients p ON p.id = b.patient_id
     LEFT JOIN visits v ON v.id = b.visit_id
+    LEFT JOIN chits ch ON ch.id = b.chit_id
     WHERE ${where} ORDER BY b.created_at DESC LIMIT 300`)).rows
   const totals = (await db.execute<any>(sql`
     SELECT COUNT(*)::int AS bill_count,

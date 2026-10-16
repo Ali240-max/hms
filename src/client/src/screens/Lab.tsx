@@ -759,6 +759,8 @@ function EnterResults({ group, isRadiology, onBack, onDone }: {
                                      text-2xs text-warn">{tr('locked')}</span>
                   : undefined}>
 
+                <LabTimes test={panel.test} />
+
                 {panel.values[0]?.freeText && !panel.locked && (
                   <p className="mb-2 text-2xs text-muted">
                     {tr('No panel set up for this test, so write the finding in full. An administrator can add reference ranges under Services.')}
@@ -843,6 +845,35 @@ function EnterResults({ group, isRadiology, onBack, onDone }: {
 const DRAFTS = new Map<string, { values: Record<string, string>; notes: string }>()
 
 const draftKey = (test: any) => `so:${test.service_order_id}`
+
+/**
+ * Booked, sample taken, reported — the three times the printed report
+ * carries, in the order they happen.
+ *
+ * Booked is when the test's bill was made at the counter, read by the
+ * server from that invoice. A test with no counter bill behind it shows a
+ * dash, never some other time passed off as the booking.
+ */
+function LabTimes({ test }: { test: any }) {
+  const at = (v: any) => v
+    ? new Date(v).toLocaleString('en-GB',
+        { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : '—'
+  const cells: [string, any][] = [
+    [tr('Booked'), test.booked_at], [tr('Sample taken'), test.collected_at],
+    [tr('Reported'), test.resulted_at]
+  ]
+  return (
+    <dl className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-2xs">
+      {cells.map(([label, v]) => (
+        <div key={label} className="flex items-baseline gap-1.5">
+          <dt className="text-muted">{label}</dt>
+          <dd className={`num ${v ? 'text-body' : 'text-muted'}`}>{at(v)}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
 
 function remember(panel: any) {
   if (!panel || panel.locked) return
@@ -1050,6 +1081,8 @@ function ReportFindings({ group, onBack, onDone }: {
                 hint={panel.locked ? tr('Not started yet')
                   : `${panel.test.report_no ?? tr('new')}${
                       panel.test.collected_by ? ` · ${panel.test.collected_by}` : ''}`}>
+
+                <LabTimes test={panel.test} />
 
                 <Field label={tr('Technique')} hint={tr('Optional. Views taken, contrast, position.')} span>
                   <input value={panel.technique} disabled={panel.locked}

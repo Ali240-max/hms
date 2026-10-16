@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import { DUR, EASE } from '../lib/motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, rs, type SessionUser } from '../lib/api'
+import { api, rs, type SessionUser, type ServiceCategory } from '../lib/api'
 import { useT } from '../lib/prefs'
 import { Badge, Card, ErrorNote, Field, Modal, Stat, Th, Empty } from '../components/ui'
 import { ChitPreview } from '../components/Chit'
@@ -14,7 +14,7 @@ import { CounterHistory, PatientLabels } from './counter/History'
 import {
   UserPlus, Banknote, Receipt, Users, LayoutDashboard, BarChart3, Printer,
   Stethoscope, FlaskConical, Search, AlertTriangle, History, Tags,
-  ScanLine, Syringe, type LucideIcon
+  ScanLine, Syringe, ClipboardList, ArrowLeft, type LucideIcon
 } from 'lucide-react'
 
 type Tab = 'overview' | 'desk' | 'billing' | 'patients' | 'chits' | 'history'
@@ -114,11 +114,14 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
   const [booking, setBooking] = useState<any | null>(null)
   const [editing, setEditing] = useState<any | null>(null)
   /*
-   * The patient, and which kind of work the counter said they came for. The
-   * kind only narrows the list that opens; it is not a commitment.
+   * The patient, and which category of work the counter said they came for.
+   * The category only narrows the list that opens; it is not a commitment.
+   * `fromWhatFor` is whether they got here through "what are they here
+   * for?", which is what decides whether a Back button leads there.
    */
   const [direct, setDirect] = useState<
-    { patient: any; category: 'lab' | 'radiology' | 'procedure' | null } | null>(null)
+    { patient: any; categoryId: number | null; fromWhatFor?: boolean } | null>(null)
+  const [bookingFromWhatFor, setBookingFromWhatFor] = useState(false)
   const [next, setNext] = useState<any | null>(null)
   const [labels, setLabels] = useState<any | null>(null)
   const search = useRef<HTMLInputElement>(null)
@@ -180,7 +183,7 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
                   Not everyone at the window needs a doctor. Somebody with a
                   form from another hospital just wants the test.
                 */}
-                <button onClick={() => setDirect({ patient: p, category: null })}
+                <button onClick={() => setDirect({ patient: p, categoryId: null })}
                   className="btn-ghost shrink-0">
                   {tr('Test only')}
                 </button>
@@ -191,7 +194,8 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
                   itself, which the hospital has not started using yet. Hiding
                   this would have stopped them selling the appointment.
                 */}
-                <button onClick={() => setBooking(p)} className="btn-ghost shrink-0">
+                <button onClick={() => { setBookingFromWhatFor(false); setBooking(p) }}
+                  className="btn-ghost shrink-0">
                   {tr('Send to doctor')}
                 </button>
                 <button onClick={() => setLabels(p)} title={tr('Print labels')}
@@ -286,6 +290,14 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
       {booking && (
         <SendToDoctor patient={booking} me={me}
           onClose={() => setBooking(null)}
+          /*
+            Back to the question, with the same registered patient. Nothing
+            has been created yet at this point — the visit and its token are
+            only made by "Create visit" — so going back and choosing again
+            cannot leave a stray token behind.
+          */
+          onBack={bookingFromWhatFor
+            ? () => { const p = booking; setBooking(null); setNext(p) } : undefined}
           onDone={(visit: any) => {
             setBooking(null); setQ(''); setResults([]); refresh()
             // Straight to the till: the visit exists but is not in the queue
@@ -303,16 +315,23 @@ function Desk({ me, onBill }: { me: SessionUser; onBill: (t: BillTarget) => void
       {next && (
         <WhatFor patient={next}
           onClose={() => setNext(null)}
-          onDoctor={() => { const p = next; setNext(null); setBooking(p) }}
-          onTests={(category) => { const p = next; setNext(null); setDirect({ patient: p, category }) }} />
+          onDoctor={() => {
+            const p = next; setNext(null); setBookingFromWhatFor(true); setBooking(p)
+          }}
+          onTests={(categoryId) => {
+            const p = next; setNext(null); setDirect({ patient: p, categoryId, fromWhatFor: true })
+          }} />
       )}
       {labels && (
         <PatientLabels patient={labels} visitId={labels.last_visit_id ?? null}
           onClose={() => setLabels(null)} />
       )}
       {direct && (
-        <DirectTests patient={direct.patient} category={direct.category}
+        <DirectTests patient={direct.patient} categoryId={direct.categoryId}
           onClose={() => setDirect(null)}
+          // As for the doctor: nothing is billed until "Take payment".
+          onBack={direct.fromWhatFor
+            ? () => { const p = direct.patient; setDirect(null); setNext(p) } : undefined}
           onDone={(chit: any) => {
             setDirect(null); setQ(''); setResults([]); refresh()
             if (chit) onBill({ kind: 'chit', chitId: chit.id })
@@ -493,8 +512,10 @@ function RegisterPatient({ onClose, onDone }: { onClose: () => void; onDone: (p:
 
 /* --------------------------------------------------------- send to doctor */
 
-function SendToDoctor({ patient, me, onClose, onDone }: {
+function SendToDoctor({ patient, me, onClose, onDone, onBack }: {
   patient: any; me: SessionUser; onClose: () => void; onDone: (visit?: any) => void
+  /** Back to "what are they here for?", when that is where this was opened from. */
+  onBack?: () => void
 }) {
   const [doctors, setDoctors] = useState<any[]>([])
   const [doctorId, setDoctorId] = useState(0)
@@ -531,6 +552,7 @@ function SendToDoctor({ patient, me, onClose, onDone }: {
       hint={`${patient.mrn}${patient.phone ? ` · ${patient.phone}` : ''}`}
       footer={
         <>
+          {onBack && <BackButton onClick={onBack} disabled={busy} />}
           <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
           <button onClick={save} disabled={busy || !doctorId} className="btn-primary">
             {busy ? 'Creating…' : 'Create visit'}
@@ -827,6 +849,7 @@ const CHIT_STATUS: [string, string][] = [
 function ChitCounter({ onBill }: { onBill: (t: BillTarget) => void }) {
   const [status, setStatus] = useState('ordered')
   const [category, setCategory] = useState('all')
+  const [cats, setCats] = useState<ServiceCategory[]>([])
   const [q, setQ] = useState('')
   const [rows, setRows] = useState<any[]>([])
   const [preview, setPreview] = useState<number | null>(null)
@@ -842,6 +865,20 @@ function ChitCounter({ onBill }: { onBill: (t: BillTarget) => void }) {
     const t = setInterval(load, 30_000)
     return () => clearInterval(t)
   }, [load])
+
+  useEffect(() => { api.serviceCategories(true).then(setCats).catch(() => {}) }, [])
+  /*
+   * The filter's choices, from the categories: a category mapped to a
+   * department filters on that department (chits carry it since the token
+   * queues), an unmapped one on its kind. Two categories sharing a
+   * department are one choice, because they share one chit.
+   */
+  const filterChoices: [string, string][] = []
+  for (const c of cats) {
+    const value = c.department_id ? `dept:${c.department_id}` : c.kind
+    const label = c.department_name ?? c.name
+    if (!filterChoices.some(([v]) => v === value)) filterChoices.push([value, label])
+  }
 
   const total = rows.reduce((n, c) => n + Number(c.total_paisa), 0)
 
@@ -866,10 +903,7 @@ function ChitCounter({ onBill }: { onBill: (t: BillTarget) => void }) {
           <select value={category} onChange={(e) => setCategory(e.target.value)}
             className="field w-40 py-1.5 text-2xs">
             <option value="all">{tr('All departments')}</option>
-            <option value="radiology">{tr('Radiology')}</option>
-            <option value="lab">{tr('Laboratory')}</option>
-            <option value="procedure">{tr('Procedures')}</option>
-            <option value="other">{tr('Other')}</option>
+            {filterChoices.map(([v, label]) => <option key={v} value={v}>{tr(label)}</option>)}
           </select>
           <input value={q} onChange={(e) => setQ(e.target.value)}
             placeholder={tr('Chit no, MRN, name, phone or token')}
@@ -905,7 +939,9 @@ function ChitCounter({ onBill }: { onBill: (t: BillTarget) => void }) {
                       <span className="text-sm text-heading">{c.patient_name}</span>
                       <span className="block num text-2xs text-muted">{c.mrn}</span>
                     </td>
-                    <td className="px-3 py-2 text-2xs capitalize text-body">{tr(c.category)}</td>
+                    <td className="px-3 py-2 text-2xs capitalize text-body">
+                      {c.department_name ?? tr(c.category)}
+                    </td>
                     <td className="px-3 py-2 text-2xs text-muted">{c.doctor_name ?? '—'}</td>
                     <td className="px-3 py-2 text-right num text-sm font-medium text-primary">
                       {rs(c.total_paisa)}
@@ -1107,7 +1143,7 @@ function Key({ className, label }: { className: string; label: string }) {
  * list, the report, the day's takings — reads it exactly like any other chit,
  * because it is one.
  */
-function DirectTests({ patient, category, onClose, onDone }: {
+function DirectTests({ patient, categoryId, onClose, onDone, onBack }: {
   patient: any
   /**
    * Which kind of work the counter said they came for, so this list opens
@@ -1117,11 +1153,14 @@ function DirectTests({ patient, category, onClose, onDone }: {
    * patient who came for an x-ray sometimes needs a blood test with it and
    * sending the cashier back to the start would be worse than a long list.
    */
-  category?: 'lab' | 'radiology' | 'procedure' | null
+  categoryId?: number | null
   onClose: () => void
   onDone: (chit: any) => void
+  /** Back to "what are they here for?", when that is where this was opened from. */
+  onBack?: () => void
 }) {
   const [services, setServices] = useState<any[]>([])
+  const [cats, setCats] = useState<ServiceCategory[]>([])
   const [picked, setPicked] = useState<number[]>([])
   const [q, setQ] = useState('')
   const [doctors, setDoctors] = useState<any[]>([])
@@ -1131,6 +1170,7 @@ function DirectTests({ patient, category, onClose, onDone }: {
 
   useEffect(() => {
     api.services().then(setServices).catch(() => {})
+    api.serviceCategories().then(setCats).catch(() => {})
     api.doctors().then(setDoctors).catch(() => {})
   }, [])
 
@@ -1143,12 +1183,16 @@ function DirectTests({ patient, category, onClose, onDone }: {
    * the cashier typing what the technologist would have to check anyway.
    */
 
-  const [onlyKind, setOnlyKind] = useState<string | null>(category ?? null)
+  const [onlyCat, setOnlyCat] = useState<number | null>(categoryId ?? null)
 
+  /*
+   * Every category's services, "Other" included: since categories became
+   * rows, "Other" is a box at the counter like any other, and a hospital's
+   * own categories may well be filed as that kind.
+   */
   const term = q.trim().toLowerCase()
   const shown = services.filter((s) =>
-    s.category !== 'other' &&
-    (!onlyKind || s.category === onlyKind) &&
+    (!onlyCat || s.category_id === onlyCat) &&
     (!term || s.name.toLowerCase().includes(term)))
 
   /*
@@ -1180,6 +1224,7 @@ function DirectTests({ patient, category, onClose, onDone }: {
     <Modal title={tr('Tests without a consultation')} hint={`${patient.name} · ${patient.mrn}`}
       wide onClose={onClose}
       footer={<>
+        {onBack && <BackButton onClick={onBack} disabled={busy} />}
         <button onClick={onClose} className="btn-ghost">{tr('Cancel')}</button>
         <button onClick={save} disabled={busy || picked.length === 0 || blocked}
           className="btn-primary">
@@ -1232,11 +1277,10 @@ function DirectTests({ patient, category, onClose, onDone }: {
         an x-ray and leaves with a blood test too.
       */}
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        {([['lab', tr('Lab')], ['radiology', tr('X-ray')],
-           ['procedure', tr('Procedures')], [null, tr('Everything')]] as
-           [string | null, string][]).map(([k, label]) => (
-          <button key={label} onClick={() => setOnlyKind(k)}
-            className={onlyKind === k ? 'btn-primary px-2.5 py-1 text-2xs'
+        {[...cats.map((c) => [c.id, tr(c.name)] as [number | null, string]),
+          [null, tr('Everything')] as [number | null, string]].map(([id, label]) => (
+          <button key={id ?? 'all'} onClick={() => setOnlyCat(id)}
+            className={onlyCat === id ? 'btn-primary px-2.5 py-1 text-2xs'
               : 'btn-ghost px-2.5 py-1 text-2xs'}>
             {label}
           </button>
@@ -1267,7 +1311,7 @@ function DirectTests({ patient, category, onClose, onDone }: {
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate text-sm text-heading">{s.name}</span>
-                      <span className="block text-2xs capitalize text-muted">{tr(s.category)}</span>
+                      <span className="block text-2xs text-muted">{tr(s.category_name ?? s.category)}</span>
                     </span>
                   </span>
                   <span className="shrink-0 num text-sm text-primary">{rs(s.price_paisa)}</span>
@@ -1304,41 +1348,55 @@ function WhatFor({ patient, onClose, onDoctor, onTests }: {
   patient: any
   onClose: () => void
   onDoctor: () => void
-  /** The kind of work, so the list that opens next is already narrowed. */
-  onTests: (category: 'lab' | 'radiology' | 'procedure') => void
+  /** The category of work, so the list that opens next is already narrowed. */
+  onTests: (categoryId: number) => void
 }) {
   /*
-   * Four boxes, not two.
+   * One box for seeing a doctor, then one per service category.
    *
    * It used to be "see a doctor" or "tests only", and the second opened a
-   * list of everything the hospital does — lab tests, x-rays and procedures
-   * together, several hundred rows, to be searched. The cashier already
-   * knows which of the three the patient came for before they touch the
-   * screen, so asking turns that search into one tap.
-   *
-   * Procedures are their own box rather than hiding inside "tests" because
-   * they behave differently: most of them cannot be billed without naming
-   * who is performing them.
+   * list of everything the hospital does — several hundred rows, to be
+   * searched. The cashier already knows which kind of work the patient came
+   * for before they touch the screen, so asking turns that search into one
+   * tap. The boxes after the first were fixed at lab, x-ray and procedure;
+   * now they are the hospital's own categories (Administration, Services,
+   * Categories), so a new "Dental" category appears here with nothing else
+   * changed.
    */
+  const [cats, setCats] = useState<ServiceCategory[] | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  useEffect(() => {
+    api.serviceCategories().then(setCats).catch((e: any) => setErr(e.message))
+  }, [])
+
   /*
    * Translated here, with literal strings, not at render time from a
    * variable. verify-i18n.mjs finds tr('...') by reading the source, so a
    * string handed to tr() through a variable is invisible to it and would
-   * silently fall back to English with the check still passing.
+   * silently fall back to English with the check still passing. A category's
+   * own name is data and is shown as typed.
    */
-  const choices: [LucideIcon, string, string, () => void][] = [
+  const KIND: Record<string, [LucideIcon, string]> = {
+    lab: [FlaskConical,
+      tr('Blood, urine, culture. No consultation fee — they pay and go to the laboratory.')],
+    radiology: [ScanLine, tr('Radiology only. No consultation fee, straight to the x-ray room.')],
+    procedure: [Syringe,
+      tr('A dressing, an injection, an ECG. Most of these need the doctor performing it named.')],
+    other: [ClipboardList, tr('No consultation fee. Pick what they need from the list.')]
+  }
+  const choices: [LucideIcon, string, string, () => void, boolean][] = [
     [Stethoscope, tr('See a doctor'),
       tr('Consultation fee, then the queue. The doctor can order tests afterwards.'),
-      onDoctor],
-    [FlaskConical, tr('Lab test'),
-      tr('Blood, urine, culture. No consultation fee — they pay and go to the laboratory.'),
-      () => onTests('lab')],
-    [ScanLine, tr('X-ray or scan'),
-      tr('Radiology only. No consultation fee, straight to the x-ray room.'),
-      () => onTests('radiology')],
-    [Syringe, tr('Procedure'),
-      tr('A dressing, an injection, an ECG. Most of these need the doctor performing it named.'),
-      () => onTests('procedure')]
+      onDoctor, true],
+    ...(cats ?? []).map((c) => {
+      const [icon, blurb] = KIND[c.kind] ?? KIND.other
+      const ready = c.orderable_count > 0
+      return [icon, c.name,
+        !ready ? tr('Nothing priced in this category yet.')
+          : c.is_builtin ? blurb
+          : `${c.department_name ?? tr('No department')} · ${c.orderable_count} ${tr('services')}`,
+        () => onTests(c.id), ready] as [LucideIcon, string, string, () => void, boolean]
+    })
   ]
 
   return (
@@ -1346,10 +1404,10 @@ function WhatFor({ patient, onClose, onDoctor, onTests }: {
       hint={`${patient.name} · ${patient.mrn}`} onClose={onClose}
       footer={<button onClick={onClose} className="btn-ghost">{tr('Decide later')}</button>}>
       <div className="grid gap-3 sm:grid-cols-2">
-        {choices.map(([Icon, title, blurb, go]) => (
-          <button key={title} onClick={go}
-            className="card-tint p-4 text-left transition-transform hover:-translate-y-0.5
-                       hover:shadow-md">
+        {choices.map(([Icon, title, blurb, go, ready]) => (
+          <button key={title} onClick={go} disabled={!ready}
+            className="card-tint p-4 text-left transition-transform enabled:hover:-translate-y-0.5
+                       enabled:hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50">
             <span className="tile mb-2 inline-flex"><Icon size={17} /></span>
             <span className="block text-sm font-medium text-heading">{title}</span>
             <span className="block text-2xs text-muted">{blurb}</span>
@@ -1357,9 +1415,32 @@ function WhatFor({ patient, onClose, onDoctor, onTests }: {
         ))}
       </div>
 
+      {cats === null && !err && <SkeletonBoxes />}
+      <ErrorNote>{err && `${tr('Could not load the service categories.')} ${err}`}</ErrorNote>
+
       <p className="mt-3 text-2xs text-muted">
         {tr('Decide later leaves them registered with nothing owing. You can find them again by name or MRN.')}
       </p>
     </Modal>
+  )
+}
+
+/** Two placeholder boxes while the categories load, so the grid does not jump. */
+function SkeletonBoxes() {
+  return (
+    <div className="mt-3 grid gap-3 sm:grid-cols-2" aria-hidden>
+      <div className="skeleton h-20 rounded-2xl" />
+      <div className="skeleton h-20 rounded-2xl" />
+    </div>
+  )
+}
+
+/** Back to "what are they here for?" from the screen it led to. */
+function BackButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className="btn-ghost mr-auto inline-flex items-center gap-1.5">
+      <ArrowLeft size={14} /> {tr('Back')}
+    </button>
   )
 }

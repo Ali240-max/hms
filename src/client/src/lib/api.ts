@@ -63,9 +63,24 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
     throw Object.assign(new Error(body.error ?? 'Request failed'),
-      { code: body.code, status: res.status })
+      { code: body.code, status: res.status, detail: body.detail as string | undefined })
   }
   return res.json()
+}
+
+export type ServiceCategory = {
+  id: number; name: string; kind: 'lab' | 'radiology' | 'procedure' | 'other'
+  department_id: number | null; department_name: string | null
+  is_builtin: boolean; is_active: boolean; sort_order: number
+  service_count: number; orderable_count: number
+}
+
+export type BackupSummary = {
+  takenAt: string | null; reason: string | null; format: string
+  lastMigration: string | null; currentMigration: string | null
+  sizeBytes: number; tables: number; totalRows: number
+  highlights: { table: string; label: string; rows: number }[]
+  notInBackup: string[]; completenessChecked: boolean; admins: number
 }
 
 export type Role = 'admin' | 'main_counter' | 'receptionist' | 'ipd_counter' | 'store_keeper' | 'lab_tech' | 'radiology' | 'doctor' | 'ward' | 'kiosk' | 'pharmacist' | 'pharmacy_admin' | 'reports'
@@ -175,7 +190,8 @@ export const api = {
     sell: (b: any) => req<any>('/pharmacy/sales', { method: 'POST', body: JSON.stringify(b) }),
     sales: (o: any) => {
       const p = new URLSearchParams({ mode: o.mode })
-      for (const k of ['from', 'to', 'seqFrom', 'seqTo', 'amtFrom', 'amtTo', 'q', 'sort', 'cashier']) {
+      for (const k of ['from', 'to', 'seqFrom', 'seqTo', 'amtFrom', 'amtTo', 'q', 'sort', 'cashier',
+                       'kind', 'department']) {
         if (o[k] != null && o[k] !== '') p.set(k, String(o[k]))
       }
       return req<{ rows: any[]; totals: any }>(`/pharmacy/sales?${p}`)
@@ -186,7 +202,34 @@ export const api = {
 
     expiring: (days = 90) => req<any[]>(`/pharmacy/reports/expiring?days=${days}`),
     lowStock: () => req<any[]>('/pharmacy/reports/low-stock'),
-    dashboard: (days = 30) => req<any>(`/pharmacy/dashboard?days=${days}`)
+    dashboard: (days = 30) => req<any>(`/pharmacy/dashboard?days=${days}`),
+
+    /* Credit bills: what is owed on each, and taking the money. */
+    creditBills: (o: { status?: string; q?: string; from?: string; to?: string; sort?: string }) => {
+      const p = new URLSearchParams()
+      for (const [k, v] of Object.entries(o)) if (v) p.set(k, String(v))
+      return req<{ rows: any[]; totals: any }>(`/pharmacy/credit-bills?${p}`)
+    },
+    creditBill: (id: number) => req<{ bill: any; payments: any[] }>(`/pharmacy/credit-bills/${id}`),
+    receiveCredit: (id: number, b: {
+      amountPaisa: number; expectedOutstandingPaisa: number; method: string
+      reference?: string | null; note?: string | null
+    }) => req<{ payment: any; invoiceNo: string; outstandingPaisa: number; status: string }>(
+      `/pharmacy/credit-bills/${id}/receive`, { method: 'POST', body: JSON.stringify(b) }),
+
+    /* Bills issued to hospital departments. */
+    departments: () => req<{ id: number; name: string; code: string
+      month_bills: number; month_paisa: number }[]>('/pharmacy/departments'),
+    departmentSales: (departmentId?: number) =>
+      req<any[]>(`/pharmacy/department-sales${departmentId ? `?department=${departmentId}` : ''}`),
+    billDepartment: (b: {
+      departmentId: number; requestKey: string; receivedBy?: string; doctorName?: string
+      lines: { productId: number; qty: number; soldAs?: 'pack' | 'unit'; batchId?: number }[]
+    }) => req<{ sale: any; items: any[]; department: any; duplicate: boolean }>(
+      '/pharmacy/department-sales', { method: 'POST', body: JSON.stringify(b) }),
+
+    expiredCount: () => req<{ batches: number; medicines: number; units: number }>(
+      '/pharmacy/expired-count')
   },
 
   authStatus: () => req<{ needsSetup: boolean; user: SessionUser | null }>('/auth/status'),
@@ -219,6 +262,14 @@ export const api = {
 
   services: (all = false) => req<any[]>(`/services${all ? '?all=1' : ''}`),
   saveService: (b: any) => req<any>('/services', { method: 'POST', body: JSON.stringify(b) }),
+  /** The categories services are filed under, each with its department. */
+  serviceCategories: (all = false) =>
+    req<ServiceCategory[]>(`/service-categories${all ? '?all=1' : ''}`),
+  saveServiceCategory: (b: {
+    id?: number; name: string; departmentId: number | null; kind?: string; isActive?: boolean
+  }) => req<ServiceCategory>('/service-categories', { method: 'POST', body: JSON.stringify(b) }),
+  deleteServiceCategory: (id: number) =>
+    req<any>(`/service-categories/${id}`, { method: 'DELETE' }),
 
   searchPatients: (q: string) => req<any[]>(`/patients/search?q=${encodeURIComponent(q)}`),
   checkDuplicates: (b: any) => req<any[]>('/patients/check-duplicates', { method: 'POST', body: JSON.stringify(b) }),
@@ -542,6 +593,21 @@ export const api = {
     req<any>('/admin/wipe', { method: 'POST', body: JSON.stringify({ password, typedName }) }),
   backups: () => req<any[]>('/admin/backups'),
   runBackup: () => req<any>('/admin/backups', { method: 'POST' }),
+  /*
+   * Restoring a backup. The upload sends the file's raw bytes rather than
+   * JSON or a form, so a backup of a few hundred megabytes is streamed to
+   * the server's disk instead of being held in memory on either side.
+   */
+  uploadBackup: (file: File) => req<{ upload: string; summary: BackupSummary }>(
+    '/admin/restore/upload',
+    { method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' } }),
+  inspectBackup: (file: string) => req<BackupSummary>('/admin/restore/inspect',
+    { method: 'POST', body: JSON.stringify({ file }) }),
+  discardBackupUpload: (id: string) =>
+    req<any>(`/admin/restore/upload/${id}`, { method: 'DELETE' }),
+  restoreBackup: (b: { upload?: string; file?: string; password: string; confirm: string }) =>
+    req<{ restoredAt: string; takenAt: string | null; tables: number; rows: number;
+          safetyBackup: string }>('/admin/restore', { method: 'POST', body: JSON.stringify(b) }),
 
   /* -------------------------------------------------- patient directory */
   patients: (bucket: string, q = '') =>

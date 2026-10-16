@@ -66,6 +66,13 @@ export const ADMIN_PERMISSIONS: AdminPermission[] = [
 
   { key: 'admin.backup', group: 'Data', label: 'Backups',
     blurb: 'Run a backup and set where the second copy is kept.' },
+  /*
+   * Its own tick, guarded, and not implied by `admin.backup`: taking a backup
+   * copies the data, restoring one replaces all of it.
+   */
+  { key: 'admin.restore', group: 'Data', label: 'Restore from a backup',
+    blurb: 'Replace everything in the system with what a backup file holds. A backup of the current data is taken first.',
+    guarded: true },
   { key: 'admin.demo', group: 'Data', label: 'Load demo data',
     blurb: 'Fill an empty system with fictional patients for training.',
     guarded: true },

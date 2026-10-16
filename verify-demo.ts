@@ -168,7 +168,15 @@ console.log('\n— the reset list covers every document number —')
     'sessions',         // signed-in sessions; the reset signs everybody out
     'attendance_devices', // the readers on the wall, bought not invented
     'supply_items',     // the store catalogue: gauze, cannulas, gloves
-    'services'          // lab tests and their reference ranges, shipped
+    'services',         // lab tests and their reference ranges, shipped
+    /*
+     * Real people's sign-ins, kept by a reset since the demo stopped wiping
+     * them (it signed everybody out and replaced their passwords). Its one
+     * text key, device_user_id, is the id on the attendance terminal, set
+     * from the device and never drawn from `counters`, so the restarted
+     * counters cannot collide with it.
+     */
+    'staff'
   ])
 
   const numbered = ((await db.execute<any>(sql`

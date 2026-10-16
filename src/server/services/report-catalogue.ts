@@ -23,6 +23,10 @@ import {
   salesByDepartment, patientsByDepartment
 } from './hospital-reports'
 import type { Column } from './report-pdf'
+import { creditBillReport, creditBillStats } from './credit-bills'
+import {
+  departmentBillLines, departmentBillRegister, departmentBillStats, departmentChoices
+} from './department-bills'
 
 /**
  * Every report, defined once.
@@ -89,6 +93,11 @@ export type ReportDef = {
     options: () => Promise<{ value: string; label: string }[]>
   }[]
   landscape?: boolean
+  /**
+   * A free-text box beside the dropdowns, arriving in `q` under `key` like
+   * a filter. For finding one bill by its number without scrolling.
+   */
+  search?: { key: string; label: string; placeholder?: string }
   run: (w: Window, q: Record<string, string>) => Promise<any[]>
   /** Optional headline figures shown above the table. */
   stats?: (w: Window, q: Record<string, string>) => Promise<Record<string, any>>
@@ -766,7 +775,13 @@ const COUNTER: ReportDef[] = [
       text('mrn', 'MRN', 17), money('received_paisa', 'Received'),
       money('discount_paisa', 'Discount')],
     totalKeys: ['received_paisa', 'discount_paisa'],
-    run: (w) => patientsByDepartment(w)
+    /*
+     * One department's sheet on its own. The choices are the department
+     * records themselves, and the value is the department's id.
+     */
+    filters: [{ key: 'department', label: 'Department', allLabel: 'All Departments',
+      options: departmentChoices }],
+    run: (w, q) => patientsByDepartment(w, q)
   },
   {
     id: 'counter-by-hour', group: 'Counter', module: 'counter',
@@ -1008,7 +1023,79 @@ const PURCHASE_DETAIL: ReportDef[] = [
   }
 ]
 
+/* ------------------------------------- credit bills and department bills */
+
+const PHARMACY_ACCOUNTS: ReportDef[] = [
+  {
+    id: 'credit-bills', group: 'Money', module: 'pharmacy',
+    title: 'Credit Bills',
+    blurb: 'Every pharmacy bill given on credit in the period, what has been received against it and what is still owed — with who wrote the bill and who took the money.',
+    permission: 'report.ledger', dated: true, landscape: true,
+    /* Widths sum to the landscape page (see verify-print). */
+    columns: [text('invoice_no', 'Invoice', 17), text('sold_at', 'Billed', 15),
+      text('party_name', 'Customer', 15), text('customer_ref', 'MRN / Phone', 11),
+      text('cashier', 'Billed By', 10), money('total_paisa', 'Bill', 11),
+      money('received_paisa', 'Received', 11), money('outstanding_paisa', 'Owed', 11),
+      text('status_label', 'Status', 9), text('last_received_at', 'Paid On', 15),
+      text('last_received_by', 'Received By', 10), text('last_method', 'Method', 7)],
+    /*
+     * Received is what came in against THESE bills, whenever it came. The
+     * money collected IN the period, whichever bill it was for, is a
+     * different question and is the "collected" headline figure — the two
+     * are kept apart so a bill and its later payment are never added up as
+     * two collections.
+     */
+    totalKeys: ['total_paisa', 'received_paisa', 'outstanding_paisa'],
+    filters: [{
+      key: 'status', label: 'Status', allLabel: 'Every credit bill',
+      options: async () => [
+        { value: 'open', label: 'Still owed (outstanding or part paid)' },
+        { value: 'outstanding', label: 'Outstanding — nothing received' },
+        { value: 'partial', label: 'Part paid' },
+        { value: 'settled', label: 'Settled' }
+      ]
+    }],
+    search: { key: 'q', label: 'Search', placeholder: 'Invoice, customer, MRN or phone' },
+    run: (w, q) => creditBillReport(w, q),
+    stats: (w, q) => creditBillStats(w, q)
+  },
+  {
+    id: 'department-bills', group: 'Sales', module: 'pharmacy',
+    title: 'Interdepartmental Bills',
+    blurb: 'Medicines issued to hospital departments, department by department: each bill with its items, a total per department and a grand total.',
+    permission: 'report.sales', dated: true, landscape: true,
+    groupBy: 'department_name', groupLabel: 'Department',
+    subGroupBy: 'bill_block', subGroupLabel: 'Bill Total',
+    columns: [text('product_name', 'Medicine', 30), text('batch_no', 'Batch', 12),
+      num('qty', 'Qty', 7), text('sold_as', 'As', 6), money('unit_price_paisa', 'Rate', 11),
+      money('line_total_paisa', 'Amount', 13)],
+    totalKeys: ['qty', 'line_total_paisa'],
+    filters: [{ key: 'department', label: 'Department', allLabel: 'Every department',
+      options: departmentChoices }],
+    search: { key: 'q', label: 'Bill number', placeholder: 'e.g. PH-261016' },
+    run: (w, q) => departmentBillLines(w, q),
+    stats: (w, q) => departmentBillStats(w, q)
+  },
+  {
+    id: 'department-bills-register', group: 'Sales', module: 'pharmacy',
+    title: 'Interdepartmental Bill Register',
+    blurb: 'One line per bill issued to a department, grouped by department with a total for each.',
+    permission: 'report.sales', dated: true, landscape: true,
+    groupBy: 'department_name', groupLabel: 'Department',
+    columns: [text('invoice_no', 'Invoice', 17), text('sold_at', 'Date', 15),
+      text('customer_name', 'Issued To', 26), text('cashier', 'Issued By', 15),
+      num('lines', 'Items', 6), text('status', 'Status', 18), money('total_paisa', 'Total', 13)],
+    totalKeys: ['lines', 'total_paisa'],
+    filters: [{ key: 'department', label: 'Department', allLabel: 'Every department',
+      options: departmentChoices }],
+    search: { key: 'q', label: 'Bill number', placeholder: 'e.g. PH-261016' },
+    run: (w, q) => departmentBillRegister(w, q),
+    stats: (w, q) => departmentBillStats(w, q)
+  }
+]
+
 REPORTS.push(
+  ...PHARMACY_ACCOUNTS,
   ...PURCHASE_DETAIL,
   ...GOODS_RECEIVED,
   ...departmentReports('laboratory', 'Laboratory', 'lab', 'test'),

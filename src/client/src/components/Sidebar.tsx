@@ -38,6 +38,13 @@ export type NavItem = {
   glyph?: string
   /** Optional count shown on the right, for work waiting. */
   badge?: number
+  /**
+   * `bad` draws the count light red, for something wrong rather than work
+   * waiting — expired stock still on the shelf.
+   */
+  badgeTone?: 'primary' | 'bad'
+  /** Spelled-out meaning of the count, for the tooltip. */
+  badgeTitle?: string
   /** Puts a labelled divider above this item. */
   section?: string
 }
@@ -156,11 +163,22 @@ export function Sidebar({
                 )}
 
                 {open && item.badge != null && item.badge > 0 && (
-                  <span className={`relative shrink-0 rounded-full px-1.5 py-0.5 num text-[0.6rem]
-                                    font-semibold ${
-                    on ? 'bg-white/25 text-white' : 'bg-primary/15 text-primary'}`}>
+                  <span title={item.badgeTitle}
+                    className={`anim-pop relative shrink-0 rounded-full px-1.5 py-0.5 num text-[0.6rem]
+                                font-semibold ${
+                    on ? 'bg-white/25 text-white'
+                      : item.badgeTone === 'bad' ? 'border border-bad/25 bg-bad/10 text-bad'
+                      : 'bg-primary/15 text-primary'}`}>
                     {item.badge > 99 ? '99+' : item.badge}
                   </span>
+                )}
+                {/*
+                  Collapsed to icons, the count shrinks to a dot on the icon,
+                  so the warning does not disappear with the label.
+                */}
+                {!open && item.badge != null && item.badge > 0 && item.badgeTone === 'bad' && !on && (
+                  <span title={item.badgeTitle}
+                    className="absolute left-8 top-1.5 h-2 w-2 rounded-full bg-bad" />
                 )}
               </button>
             </li>

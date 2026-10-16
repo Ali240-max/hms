@@ -6,7 +6,12 @@ import * as s from '../db/schema'
 import { createSale, StockError, ComplianceError } from '../services/sales'
 import { receiveGoods, ReceiptError } from '../services/purchase'
 import type { SessionUser } from '../services/auth'
+import { todayLocal } from '../services/attendance'
 import { hasPermission as hasPharmaPermission } from '../services/pharma'
+import {
+  listCreditBills, creditBill, receiveCreditPayment, creditReceivedIn, paidAtSale, isCreditBill,
+  CreditBillError, type CreditStatus
+} from '../services/credit-bills'
 
 /**
  * The pharmacy, carried over from the standalone till.
@@ -29,6 +34,15 @@ pharmacy.onError((err, c) => {
   }
   if (err instanceof ReceiptError) {
     return c.json({ error: err.message, detail: err.detail, code: err.code }, 409)
+  }
+  if (err instanceof CreditBillError) {
+    return c.json({ error: err.message, code: err.code },
+      err.code === 'NOT_FOUND' ? 404 : err.code === 'BAD_INPUT' ? 400 : 409)
+  }
+  if (err instanceof z.ZodError) {
+    const issue = err.issues[0]
+    return c.json({ error: issue?.message ?? 'Invalid input', code: 'INVALID_INPUT',
+                    field: issue?.path.join('.') }, 400)
   }
   console.error('[pharmacy]', err)
   return c.json({ error: err.message ?? 'Something went wrong' }, 500)
@@ -358,7 +372,8 @@ pharmacy.post('/sales', async (c) => {
     paidPaisa: z.number().int().optional(),
     /** When set, this sale settles a prescription. */
     visitId: z.number().int().optional(),
-    patientId: z.number().int().optional()
+    patientId: z.number().int().optional(),
+    requestKey: z.string().min(8).max(80).optional()
   }).parse(await c.req.json())
 
   const u = me(c)
@@ -397,7 +412,7 @@ pharmacy.post('/sales', async (c) => {
    * with a different brand is deliberately left pending rather than silently
    * closed: the record should show what was actually handed over.
    */
-  if (b.visitId) {
+  if (b.visitId && !result.duplicate) {
     await db.execute(sql`
       UPDATE prescription_items pi
       SET qty_dispensed = pi.qty_dispensed + sold.qty,
@@ -440,10 +455,36 @@ pharmacy.get('/sales', async (c) => {
     where = sql`${where} AND sa.invoice_seq BETWEEN ${Math.min(seqFrom, seqTo)} AND ${Math.max(seqFrom, seqTo)}`
   }
   if (cashierId > 0) where = sql`${where} AND sa.cashier_staff_id = ${cashierId}`
+  /*
+   * Which kind of bill, for the tabs on the Bills page. The three are a
+   * partition — every live bill is exactly one of them — decided from the
+   * bill's own columns, never from its customer name:
+   *
+   *   department  issued to a hospital department (sales.department_id, or
+   *               the kind the department till writes). Nothing is collected
+   *               for these, though they are written as pay_method 'credit',
+   *               which is why they are tested first.
+   *   credit      owed by a patient or customer (isCreditBill)
+   *   regular     paid at the counter when it was made (paidAtSale)
+   *
+   * 'all' (the default) is every bill, as this list always returned.
+   */
+  const kind = c.req.query('kind') ?? 'all'
+  if (kind === 'department') {
+    where = sql`${where} AND (sa.department_id IS NOT NULL OR sa.sale_kind = 'department')`
+  } else if (kind === 'credit') {
+    where = sql`${where} AND ${isCreditBill('sa')}`
+  } else if (kind === 'regular') {
+    where = sql`${where} AND ${paidAtSale('sa')}`
+  }
+  const departmentId = Number(c.req.query('department') ?? 0)
+  if (departmentId > 0) where = sql`${where} AND sa.department_id = ${departmentId}`
   if (q) {
     const asPaisa = /^\d+(\.\d{1,2})?$/.test(q) ? Math.round(parseFloat(q) * 100) : null
     where = sql`${where} AND (sa.invoice_no ILIKE ${'%'+q+'%'} OR sa.customer_name ILIKE ${'%'+q+'%'}
                           OR sa.customer_phone ILIKE ${'%'+q+'%'} OR sa.doctor_name ILIKE ${'%'+q+'%'}
+                          OR EXISTS (SELECT 1 FROM departments dq WHERE dq.id = sa.department_id
+                                     AND dq.name ILIKE ${'%'+q+'%'})
                           ${asPaisa !== null ? sql`OR sa.total_paisa = ${asPaisa}` : sql``})`
   }
   const order = { oldest: sql`sa.sold_at ASC`, highest: sql`sa.total_paisa DESC, sa.sold_at DESC`,
@@ -451,12 +492,13 @@ pharmacy.get('/sales', async (c) => {
     bill_desc: sql`sa.invoice_seq DESC` }[sort] ?? sql`sa.sold_at DESC`
 
   const rows = await db.execute<any>(sql`
-    SELECT sa.*, p.name AS patient_name, p.mrn,
+    SELECT sa.*, p.name AS patient_name, p.mrn, dep.name AS department_name,
            COALESCE(li.line_count,0)::int AS line_count,
            COALESCE(li.unit_count,0)::int AS unit_count,
            COALESCE(li.margin_paisa,0)::bigint AS margin_paisa
     FROM sales sa
     LEFT JOIN patients p ON p.id = sa.patient_id
+    LEFT JOIN departments dep ON dep.id = sa.department_id
     LEFT JOIN LATERAL (SELECT COUNT(*) AS line_count, SUM(display_qty) AS unit_count,
                        SUM((line_total_paisa - line_tax_paisa) - unit_cost_paisa*qty) AS margin_paisa
                        FROM sale_items WHERE sale_id = sa.id) li ON true
@@ -465,9 +507,33 @@ pharmacy.get('/sales', async (c) => {
     SELECT COUNT(*)::int AS bill_count,
            COALESCE(SUM(sa.total_paisa),0)::bigint AS revenue_paisa,
            COALESCE(SUM(sa.tax_paisa),0)::bigint AS tax_paisa,
-           COALESCE(SUM(sa.discount_paisa),0)::bigint AS discount_paisa
+           COALESCE(SUM(sa.discount_paisa),0)::bigint AS discount_paisa,
+           /*
+            * Billed is not collected. A credit bill or a bill issued to a
+            * department brings in nothing at the counter, so the money taken
+            * is only the bills paid there and then.
+            */
+           COALESCE(SUM(sa.total_paisa) FILTER (WHERE ${paidAtSale('sa')}),0)::bigint
+             AS collected_at_sale_paisa,
+           COALESCE(SUM(sa.total_paisa) FILTER (WHERE NOT ${paidAtSale('sa')}
+             AND sa.department_id IS NULL AND sa.sale_kind <> 'department'),0)::bigint AS credit_paisa,
+           COALESCE(SUM(sa.total_paisa) FILTER (WHERE sa.department_id IS NOT NULL
+             OR sa.sale_kind = 'department'),0)::bigint AS department_paisa
     FROM sales sa WHERE ${where}`)
-  return c.json({ rows: rows.rows, totals: (totals.rows as any[])[0] })
+  const t = (totals.rows as any[])[0]
+  /*
+   * Credit money that came in during the same days, counted on the day it
+   * was received. Only for a date view: "bills 120 to 180" has no days.
+   */
+  const span = mode === 'today' ? { from: todayLocal(), to: todayLocal() }
+    : mode === 'range' && from && to ? { from, to } : null
+  const received = span ? await creditReceivedIn(span) : null
+  return c.json({ rows: rows.rows, totals: {
+    ...t,
+    credit_received_paisa: received?.receivedPaisa ?? null,
+    collected_paisa: received
+      ? Number(t.collected_at_sale_paisa) + received.receivedPaisa : null
+  } })
 })
 
 pharmacy.get('/sales/bounds', async (c) => {
@@ -586,12 +652,35 @@ pharmacy.get('/dashboard', async (c) => {
            COUNT(*) FILTER (WHERE reorder_level>0 AND qty<=reorder_level)::int AS low_count
     FROM live`)).rows[0]
 
+  /*
+   * The drawer: money actually taken today.
+   *
+   * Credit and department bills used to land in "digital" (pay_method <>
+   * 'cash'), so the cash-up promised money that was never handed over. They
+   * are left out now, and credit payments received today are added by the
+   * method they came in by — on the day they came in, not the day of the bill.
+   */
   const cashUp = today ? (await db.execute<any>(sql`
-    SELECT COALESCE(SUM(total_paisa) FILTER (WHERE pay_method='cash'),0)::bigint AS cash_paisa,
-           COALESCE(SUM(total_paisa) FILTER (WHERE pay_method<>'cash'),0)::bigint AS digital_paisa,
-           COUNT(*) FILTER (WHERE pay_method='cash')::int AS cash_bills,
-           COALESCE(SUM(discount_paisa),0)::bigint AS discount_paisa
-    FROM sales WHERE status<>'voided' AND sold_at >= date_trunc('day',now())`)).rows[0] : null
+    WITH sold AS (
+      SELECT * FROM sales sa
+      WHERE sa.status<>'voided' AND sa.cancelled_at IS NULL
+        AND sa.sold_at >= date_trunc('day',now())
+        AND sa.sold_at < date_trunc('day',now()) + interval '1 day'),
+    rcv AS (
+      SELECT * FROM sale_payments WHERE received_at >= date_trunc('day',now())
+        AND received_at < date_trunc('day',now()) + interval '1 day')
+    SELECT
+      (COALESCE((SELECT SUM(total_paisa) FROM sold sa
+                 WHERE pay_method='cash' AND ${paidAtSale('sa')}),0)
+       + COALESCE((SELECT SUM(amount_paisa) FROM rcv WHERE method='cash'),0))::bigint AS cash_paisa,
+      (COALESCE((SELECT SUM(total_paisa) FROM sold sa
+                 WHERE pay_method<>'cash' AND ${paidAtSale('sa')}),0)
+       + COALESCE((SELECT SUM(amount_paisa) FROM rcv WHERE method<>'cash'),0))::bigint AS digital_paisa,
+      (SELECT COUNT(*) FROM sold sa WHERE pay_method='cash' AND ${paidAtSale('sa')})::int AS cash_bills,
+      COALESCE((SELECT SUM(discount_paisa) FROM sold),0)::bigint AS discount_paisa,
+      COALESCE((SELECT SUM(total_paisa) FROM sold sa WHERE NOT ${paidAtSale('sa')}),0)::bigint
+        AS on_credit_paisa,
+      COALESCE((SELECT SUM(amount_paisa) FROM rcv),0)::bigint AS credit_received_paisa`)).rows[0] : null
 
   const dailyCogs = Number(margin.window_cogs) / days
   return c.json({
@@ -599,4 +688,156 @@ pharmacy.get('/dashboard', async (c) => {
     coverDays: dailyCogs > 0 ? Math.round(Number(stock.stock_value_paisa) / dailyCogs) : null,
     stock, trend, expiry, payment, topRevenue, cashUp
   })
+})
+
+/* ---------------------------------------------------------- permissions */
+
+/**
+ * Does the signed-in person hold this pharmacy tick? Administrators always
+ * do, the same rule the discount check above uses.
+ */
+async function holds(c: any, key: string) {
+  const u = me(c)
+  return u.role === 'admin' || await hasPharmaPermission(u.id, key)
+}
+const refuse = (c: any, what: string) =>
+  c.json({ error: `You are not set up to ${what}`, code: 'NOT_ALLOWED' }, 403)
+
+/* --------------------------------------------------------- credit bills */
+
+/**
+ * Bills on credit, with what is still owed on each.
+ *
+ * Seen by whoever may see the Bills page (report.sales); taking the money is
+ * a separate tick (payment.receive), checked on the POST below rather than by
+ * hiding a button.
+ */
+pharmacy.get('/credit-bills', async (c) => {
+  if (!(await holds(c, 'report.sales'))) return refuse(c, 'see bills')
+  const status = (c.req.query('status') ?? 'open') as CreditStatus
+  return c.json(await listCreditBills({
+    status: ['open', 'outstanding', 'partial', 'settled', 'all'].includes(status) ? status : 'open',
+    q: c.req.query('q') ?? '',
+    from: c.req.query('from') || undefined,
+    to: c.req.query('to') || undefined,
+    sort: (c.req.query('sort') as any) ?? 'newest'
+  }))
+})
+
+pharmacy.get('/credit-bills/:id', async (c) => {
+  if (!(await holds(c, 'report.sales'))) return refuse(c, 'see bills')
+  return c.json(await creditBill(Number(c.req.param('id'))))
+})
+
+pharmacy.post('/credit-bills/:id/receive', async (c) => {
+  if (!(await holds(c, 'payment.receive'))) return refuse(c, 'take a payment from a customer')
+  const b = z.object({
+    amountPaisa: z.number().int().min(1),
+    /** What the confirmation dialog showed as owed. See receiveCreditPayment. */
+    expectedOutstandingPaisa: z.number().int().min(0),
+    method: z.enum(['cash', 'card', 'easypaisa', 'jazzcash', 'bank']).default('cash'),
+    reference: z.string().max(120).nullable().optional(),
+    note: z.string().max(300).nullable().optional()
+  }).parse(await c.req.json())
+  const u = me(c)
+  // Who received it comes from the session, never the body.
+  return c.json(await receiveCreditPayment({
+    saleId: Number(c.req.param('id')), ...b, by: u.displayName, byStaffId: u.id
+  }), 201)
+})
+
+/* ------------------------------------------------ interdepartmental bills */
+
+/**
+ * The hospital's own departments, for the department cards.
+ *
+ * Read from the departments the hospital set up under Administration — this
+ * screen never creates, renames or switches one off. Each carries this
+ * month's bills so the card says something at a glance.
+ */
+pharmacy.get('/departments', async (c) => {
+  if (!(await holds(c, 'sale.department'))) return refuse(c, 'bill a department')
+  const r = await db.execute<any>(sql`
+    SELECT d.id, d.name, d.code,
+           COUNT(sa.id)::int AS month_bills,
+           COALESCE(SUM(sa.total_paisa), 0)::bigint AS month_paisa
+    FROM departments d
+    LEFT JOIN sales sa ON sa.department_id = d.id
+      AND sa.status <> 'voided' AND sa.cancelled_at IS NULL
+      AND sa.sold_at >= date_trunc('month', now())
+    WHERE d.is_active
+    GROUP BY d.id ORDER BY d.name`)
+  return c.json(r.rows)
+})
+
+pharmacy.get('/department-sales', async (c) => {
+  if (!(await holds(c, 'sale.department'))) return refuse(c, 'bill a department')
+  const deptId = Number(c.req.query('department') ?? 0)
+  const r = await db.execute<any>(sql`
+    SELECT sa.id, sa.invoice_no, sa.sold_at, sa.total_paisa, sa.cashier, sa.customer_name,
+           d.name AS department_name,
+           (SELECT COUNT(*)::int FROM sale_items si WHERE si.sale_id = sa.id) AS line_count
+    FROM sales sa JOIN departments d ON d.id = sa.department_id
+    WHERE sa.status <> 'voided' AND sa.cancelled_at IS NULL
+      ${deptId > 0 ? sql`AND sa.department_id = ${deptId}` : sql``}
+    ORDER BY sa.sold_at DESC LIMIT 50`)
+  return c.json(r.rows)
+})
+
+/**
+ * Issue medicines to a department.
+ *
+ * The same createSale the counter uses — FEFO batch choice, expiry cut-off,
+ * the pack/loose rules, controlled-drug prescriber check, the row locks that
+ * stop stock going negative, and the stock ledger — with the department
+ * recorded as a real foreign key. Nothing is taken at the counter for it, so
+ * it is never counted as money collected.
+ */
+pharmacy.post('/department-sales', async (c) => {
+  if (!(await holds(c, 'sale.department'))) return refuse(c, 'bill a department')
+  const b = z.object({
+    departmentId: z.number().int().min(1),
+    lines: z.array(z.object({
+      productId: z.number().int(), qty: z.number().int().min(1).max(100000),
+      soldAs: z.enum(['pack', 'unit']).optional(),
+      batchId: z.number().int().optional()
+    })).min(1).max(200),
+    /** Who in the department asked for it — a ward sister, the OT in-charge. */
+    receivedBy: z.string().max(120).optional(),
+    doctorName: z.string().max(120).optional(),
+    requestKey: z.string().min(8).max(80)
+  }).parse(await c.req.json())
+
+  const dept = ((await db.execute<any>(sql`
+    SELECT id, name FROM departments WHERE id = ${b.departmentId} AND is_active`)).rows as any[])[0]
+  if (!dept) return c.json({ error: 'That department does not exist or is switched off',
+                             code: 'NOT_FOUND' }, 404)
+  const u = me(c)
+  const result = await createSale(db, {
+    lines: b.lines, saleKind: 'department', departmentId: dept.id,
+    customerName: b.receivedBy?.trim() ? `${dept.name} — ${b.receivedBy.trim()}` : dept.name,
+    doctorName: b.doctorName, payMethod: 'credit', paidPaisa: 0,
+    cashier: u.displayName, cashierStaffId: u.id, requestKey: b.requestKey
+  })
+  const items = await db.select().from(s.saleItems).where(eq(s.saleItems.saleId, result.sale.id))
+  return c.json({ sale: result.sale, items, department: dept, duplicate: result.duplicate }, 201)
+})
+
+/* ------------------------------------------------------ expired on shelf */
+
+/**
+ * How much expired stock is still on the shelf.
+ *
+ * Batches past their expiry date (before today, the database's CURRENT_DATE,
+ * the same test the Expiry screen uses for its "expired" flag) that still
+ * hold stock. A batch already written off or sold out holds none and is not
+ * counted. `batches` is what the badge shows, because the Expiry screen lists
+ * batches; `medicines` is the distinct products among them.
+ */
+pharmacy.get('/expired-count', async (c) => {
+  const r = await db.execute<any>(sql`
+    SELECT COUNT(*)::int AS batches, COUNT(DISTINCT product_id)::int AS medicines,
+           COALESCE(SUM(qty_on_hand), 0)::int AS units
+    FROM batches WHERE qty_on_hand > 0 AND expiry_date < CURRENT_DATE`)
+  return c.json((r.rows as any[])[0])
 })

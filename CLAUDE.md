@@ -33,6 +33,7 @@ Use `;` not `&&` in Windows PowerShell 5.1. There is no test framework: tests ar
 - Many "offline" suites in `verify-all` (ipd, attendance, audit, ordering, writeoff, demo, crossmatch, layouts) import `src/server/db/client` and **write to the database**. "Offline" only means "no HTTP server needed".
 - HTTP suites (`verify-billing.mjs`, etc.) create records through the API and sign in with demo-seed accounts, so they assume a seeded dev database.
 - `npm run seed -- --reset` and Administration → Demo data (reset) wipe and recreate data, including staff.
+- `verify-queues.mjs` with `VERIFY_RESTORE=1` (and Administration → Settings → Restore from backup) **replaces the entire database** with a backup. Without the flag it only creates records, like the other HTTP suites.
 - Safe with no DB: `typecheck`, `verify:i18n`, `verify:render`, `verify:tabs`, `verify:lan`, `verify:roles` (source/render checks; confirm before relying on this for any other suite). `verify:tabs` has one check that fails on Windows (it matches `screens/` with a forward slash).
 - To run DB suites without touching the dev database, start a throwaway cluster (`initdb` + `pg_ctl` from `C:\Program Files\PostgreSQL\18\bin`, on another port) and set `DATABASE_URL` to it — real environment variables win over `.env`.
 
@@ -80,6 +81,8 @@ agent/                       C# attendance agent
 - Type parsers: `DATE` stays a `'YYYY-MM-DD'` string; `BIGINT` is parsed to `Number`.
 - **Numbering:** `nextCounter(tx, key)` is a gapless, row-locked counter. Use `documentNo(tx, { prefix, letter })` → `INV-YYMMDD-C00123` (daily reset) and `nextMrn(tx)` → `MRN-000123`. Always call these inside the transaction that writes the document.
 - **Transactions:** `db.transaction(async (tx) => …)` for any multi-row write; pass `tx` down. Stock allocation locks batches `FOR UPDATE` in FEFO order (`services/sales.ts`). Do not use `SKIP LOCKED` there.
+- **Tokens** are per department per local day: `nextToken(tx, queueFor(departmentId, fallback))` in `services/numbering.ts`. A doctor visit uses the doctor's department (else `opd`); a chit carries its own department token (`chits.token_no`, raised only in `chits.ts` `raiseChits`); emergency has its own queue. Old chits have NULL and display the visit token.
+- **Service categories** are rows (`service_categories`, each mapped to a department). `services.category` (the old enum) stays as the category's *kind* and still drives lab/radiology/procedure behaviour; saving a service copies kind and (if mapped) department from its category.
 - Prices and doctor shares are **snapshotted** on orders. Doctor earnings are a ledger with a unique `(source, ref_table, ref_id)` so a re-save can't pay twice. Prescribed and dispensed quantities are separate.
 - Backups: every 12 h, NDJSON.gz of every public table to `BACKUP_DIR` (default `./backups`), keep 14, plus an optional extra directory set in Settings.
 

@@ -3,6 +3,7 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm'
 import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import * as schema from './schema'
 import { DATABASE_URL, loadEnv } from '../env'
 
@@ -21,7 +22,42 @@ pgTypes.setTypeParser(20, (v: string) => Number(v))
 
 export const url = DATABASE_URL()
 export const pool = new Pool({ connectionString: url, max: 20 })
-export const db: NodePgDatabase<typeof schema> = drizzle(pool, { schema })
+const rootDb: NodePgDatabase<typeof schema> = drizzle(pool, { schema })
+
+/**
+ * A transaction that every `db` call inside `fn` runs on, wherever it is made.
+ *
+ * Written for the demo loader. It calls a dozen services (createStaff,
+ * registerPatient, saveConsultation, payChit…) that each import `db` and open
+ * their own transactions, and it used to run them all on autocommit. When it
+ * failed halfway — a duplicate department code on the very first insert, a
+ * pharmacy error two minutes in — it left staff, patients and stock behind,
+ * and the next press was refused with "there are already patients" while the
+ * data was only half there.
+ *
+ * Threading `tx` through every one of those services would have meant
+ * changing all their signatures for one caller. Instead `db` below consults
+ * this store: inside `withTransactionScope` it IS the transaction, and a
+ * service's own `db.transaction(...)` becomes a savepoint within it. Outside
+ * the scope nothing changes — the store is empty and `db` is the pool.
+ *
+ * Do not run work in parallel (Promise.all) inside a scope: it is one
+ * connection, and savepoints from two interleaved transactions corrupt each
+ * other.
+ */
+const scope = new AsyncLocalStorage<NodePgDatabase<typeof schema>>()
+
+export const db: NodePgDatabase<typeof schema> = new Proxy(rootDb, {
+  get(target, prop) {
+    const active = (scope.getStore() ?? target) as any
+    const value = active[prop]
+    return typeof value === 'function' ? value.bind(active) : value
+  }
+})
+
+export function withTransactionScope<T>(fn: (tx: NodePgDatabase<typeof schema>) => Promise<T>) {
+  return rootDb.transaction((tx) => scope.run(tx as any, () => fn(tx as any)))
+}
 
 /**
  * ONE TRANSACTION PER FILE. Postgres has transactional DDL, so a migration

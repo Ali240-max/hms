@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { db, nextCounter } from "../db/client";
 import { documentNo } from "./numbering";
+import { receiveCreditPayment } from "./credit-bills";
 
 /**
  * Demo data for the rebuilt pharmacy.
@@ -115,8 +116,15 @@ function referenceFile(): string {
 }
 
 export async function loadPharmacyDemo(
-  opts: { days?: number; futureDays?: number } = {}
+  opts: {
+    days?: number;
+    futureDays?: number;
+    /** Told which step is running, so a failure can name it. */
+    onStep?: (step: string) => void;
+  } = {}
 ) {
+  const step = opts.onStep ?? (() => {});
+  step("loading the pharmacy formulas and companies");
   const days = opts.days ?? 60;
   /**
    * The pharmacy also trades into the future.
@@ -180,6 +188,7 @@ export async function loadPharmacyDemo(
   const saltNameList = salts.map((s) => s.name);
 
   /* ----------------------------------------------------------- products */
+  step("adding the pharmacy catalogue");
 
   /**
    * The medicines already in the system are used as they are.
@@ -359,6 +368,16 @@ export async function loadPharmacyDemo(
     perPack,
     retail,
   ] of CATALOGUE) {
+    /*
+     * "ON CONFLICT DO NOTHING" below never fired — products have no unique
+     * name — so every load added the whole catalogue again beside the last
+     * one. Skipped by name instead.
+     */
+    const have = (
+      (await db.execute<any>(sql`
+      SELECT 1 FROM products WHERE lower(name) = lower(${name}) LIMIT 1`)).rows as any[]
+    ).length;
+    if (have) continue;
     await db.execute(sql`
       INSERT INTO products
         (name, generic_name, form, strength, pack_label, pack_size,
@@ -437,15 +456,24 @@ export async function loadPharmacyDemo(
     "Al-Noor Distributors",
     "Shifa Medicos",
   ];
+  step("adding suppliers and customer accounts");
   const supplierIds: number[] = [];
   for (const name of supplierNames) {
-    const r = (
-      await db.execute<any>(sql`
+    // Reused by name: the hospital half of the demo, or the hospital itself,
+    // may already deal with them.
+    const r =
+      (
+        (await db.execute<any>(sql`
+      SELECT id FROM suppliers WHERE lower(name) = lower(${name}) ORDER BY id LIMIT 1`))
+          .rows as any[]
+      )[0] ??
+      (
+        await db.execute<any>(sql`
       INSERT INTO suppliers (name, phone, address)
       VALUES (${name}, ${"053-35" + between(10000, 99999)}, 'GT Road, Gujrat')
       RETURNING id`)
-    ).rows[0];
-    supplierIds.push(r.id);
+      ).rows[0];
+    supplierIds.push(Number(r.id));
   }
 
   /* ------------------------------------------------------------ parties */
@@ -463,15 +491,52 @@ export async function loadPharmacyDemo(
   ];
   const partyIds: Record<string, number> = {};
   for (const [name, kind, limit] of parties) {
-    const r = (
-      await db.execute<any>(sql`
+    const r =
+      (
+        (await db.execute<any>(sql`
+      SELECT id FROM parties WHERE lower(name) = lower(${name}) AND kind = ${kind}
+      ORDER BY id LIMIT 1`)).rows as any[]
+      )[0] ??
+      (
+        await db.execute<any>(sql`
       INSERT INTO parties (name, kind, credit_limit_paisa)
       VALUES (${name}, ${kind}, ${limit}) RETURNING id`)
-    ).rows[0];
-    partyIds[name] = r.id;
+      ).rows[0];
+    partyIds[name] = Number(r.id);
   }
 
+  /*
+   * The hospital's real departments, for bills issued to them.
+   *
+   * The pharmacy parties above called "General Ward" and "Emergency Room"
+   * are the old way of selling to a department: a name in the customer
+   * box. Department bills now point at the department itself.
+   */
+  const departments = (
+    await db.execute<any>(sql`
+    SELECT id, name FROM departments WHERE is_active ORDER BY id`)
+  ).rows as any[];
+  const wardDepts = departments.filter((d) =>
+    /emerg|surg|\bo\.?t\b|theat|ward|icu|paed|gyn|medicine/i.test(d.name)
+  );
+  const billDepts = wardDepts.length ? wardDepts : departments;
+
+  /*
+   * The people at the counter, as staff accounts, so "who made this bill"
+   * and "who took the payment" point at somebody who can sign in.
+   */
+  const counterStaff = (
+    await db.execute<any>(sql`
+    SELECT id, display_name FROM staff
+    WHERE role IN ('pharmacist', 'pharmacy_admin') AND is_active ORDER BY id`)
+  ).rows as any[];
+  const cashierPick = () =>
+    counterStaff.length
+      ? pick(counterStaff)
+      : { id: null, display_name: pick(["Bilal", "Awais", "Idrees"]) };
+
   /* ---------------------------------------------------------- purchases */
+  step("receiving pharmacy deliveries");
 
   let batchCount = 0;
   /**
@@ -501,7 +566,7 @@ export async function loadPharmacyDemo(
       await db.execute<any>(sql`
       INSERT INTO purchases (supplier_id, supplier_invoice_no, grn_no, invoice_date,
                              total_paisa, received_by)
-      VALUES (${supplierId}, ${"INV-" + between(1000, 99999)}, ${grnNo},
+      VALUES (${supplierId}, ${"SI-" + grnNo.slice(4)}, ${grnNo},
               ${when.toISOString().slice(0, 10)}::date, 0, 'Demo')
       RETURNING *`)
     ).rows[0];
@@ -541,6 +606,14 @@ export async function loadPharmacyDemo(
       await db.execute(sql`
         INSERT INTO purchase_items (purchase_id, batch_id, qty, bonus_qty, unit_cost_paisa)
         VALUES (${purchase.id}, ${batch.id}, ${packs}, ${bonus}, ${prod.purchase_paisa})`);
+      // The stock movement, as receiveGoods writes it, so a medicine's
+      // movement report starts from its deliveries.
+      await db.execute(sql`
+        INSERT INTO stock_ledger (batch_id, product_id, qty_delta, balance_after,
+                                  reason, ref_table, ref_id, actor, occurred_at)
+        VALUES (${batch.id}, ${productId}, ${qty + bonusQty}, ${qty + bonusQty},
+                'purchase', 'purchases', ${purchase.id}, 'Demo',
+                ${when.toISOString()}::timestamptz)`);
     }
 
     await db.execute(sql`
@@ -556,11 +629,20 @@ export async function loadPharmacyDemo(
   }
 
   /* -------------------------------------------------------------- sales */
+  step("ringing up pharmacy sales");
 
   let invoices = 0,
     returns = 0,
-    cancelled = 0;
-  const cashiers = ["Bilal", "Awais", "Idrees"];
+    cancelled = 0,
+    creditBills = 0,
+    departmentBills = 0;
+  /** Credit bills, for the payments taken against them further down. */
+  const credits: { id: number; at: Date }[] = [];
+  const creditCustomers = [
+    "Dr Tariq (staff)",
+    "Chaudhry Medical Store",
+    "Rana Ali Hussnain",
+  ];
   for (let d = days; d >= -futureDays; d--) {
     const when = new Date();
     when.setDate(when.getDate() - d);
@@ -569,42 +651,52 @@ export async function loadPharmacyDemo(
     for (let i = 0; i < busy; i++) {
       const at = new Date(when);
       at.setHours(between(9, 21), between(0, 59), between(0, 59));
-      const credit = Math.random() < 0.1;
-      const party = credit
-        ? pick([
-            "Dr Tariq (staff)",
-            "Chaudhry Medical Store",
-            "Rana Ali Hussnain",
-            "General Ward",
-            "Emergency Room",
-          ])
-        : "Counter";
+      /*
+       * Three kinds of bill, the way a hospital pharmacy sees them: paid at
+       * the counter, put on a customer's account (credit), and issued to a
+       * department of the hospital. The last two take no money at the
+       * counter, so they are written exactly as the till now writes them —
+       * paid_paisa 0 — and never counted as collected.
+       */
+      const roll = Math.random();
+      const kind: "counter" | "credit" | "department" =
+        roll < 0.08
+          ? "credit"
+          : roll < 0.14 && billDepts.length
+          ? "department"
+          : "counter";
+      const party = kind === "credit" ? pick(creditCustomers) : "Counter";
+      const dept = kind === "department" ? pick(billDepts) : null;
+      const cashier = cashierPick();
 
       const n = await nextCounter(db as any, "sale");
       const lineCount = between(1, 5);
       let subtotal = 0,
-        cost = 0,
         discount = 0;
 
       const sale = (
         await db.execute<any>(sql`
-        INSERT INTO sales (invoice_no, invoice_seq, sold_at, cashier, pay_method,
-                           sale_kind, party_id, customer_name, salesman,
+        INSERT INTO sales (invoice_no, invoice_seq, sold_at, cashier, cashier_staff_id, pay_method,
+                           sale_kind, party_id, department_id, customer_name, salesman,
                            subtotal_paisa, discount_paisa, tax_paisa, total_paisa, paid_paisa)
         VALUES (${await documentNo(db, {
           prefix: "PH",
           letter: "S",
           when: at,
         })}, ${n}, ${at.toISOString()}::timestamptz,
-                ${pick(cashiers)}, ${
-          credit
-            ? "credit"
-            : pick(["cash", "cash", "cash", "easypaisa", "card"])
-        },
-                ${credit ? "credit" : "counter"}, ${partyIds[party]},
+                ${cashier.display_name}, ${cashier.id},
                 ${
-                  credit
+                  kind === "counter"
+                    ? pick(["cash", "cash", "cash", "easypaisa", "card"])
+                    : "credit"
+                },
+                ${kind}, ${kind === "credit" ? partyIds[party] : null},
+                ${dept ? dept.id : null},
+                ${
+                  kind === "credit"
                     ? party
+                    : dept
+                    ? dept.name
                     : pick([
                         "Walk-in customer",
                         "Muhammad Aslam",
@@ -614,71 +706,96 @@ export async function loadPharmacyDemo(
                         "Imran Ali",
                       ])
                 },
-                ${pick(cashiers)}, 0, 0, 0, 0, 0)
+                ${cashier.display_name}, 0, 0, 0, 0, 0)
         RETURNING *`)
       ).rows[0];
 
       for (let j = 0; j < lineCount; j++) {
+        /*
+         * Only stock that was on the shelf and in date on the day of the
+         * sale. Picking any batch with stock sold medicines past their
+         * expiry, which the till refuses to do.
+         */
         const batch = (
           (
             await db.execute<any>(sql`
           SELECT b.*, p.name, p.retail_paisa, p.pack_size, p.unit_label
           FROM batches b JOIN products p ON p.id = b.product_id
-          WHERE b.qty_on_hand > 0 ORDER BY random() LIMIT 1`)
+          WHERE b.qty_on_hand > 0
+            AND b.expiry_date > ${at.toISOString().slice(0, 10)}::date
+            AND b.received_at <= ${at.toISOString()}::timestamptz
+          ORDER BY random() LIMIT 1`)
           ).rows as any[]
         )[0];
         if (!batch) continue;
         const qty = Math.min(Number(batch.qty_on_hand), between(1, 6));
         const gross = qty * Number(batch.retail_paisa);
         const off =
-          Math.random() < 0.18 ? Math.round(gross * (between(2, 10) / 100)) : 0;
+          kind === "counter" && Math.random() < 0.18
+            ? Math.round(gross * (between(2, 10) / 100))
+            : 0;
         subtotal += gross;
         discount += off;
-        cost += qty * Number(batch.cost_paisa);
 
-        await db.execute(sql`
-          UPDATE batches SET qty_on_hand = qty_on_hand - ${qty} WHERE id = ${batch.id}`);
+        const left = (
+          await db.execute<any>(sql`
+          UPDATE batches SET qty_on_hand = qty_on_hand - ${qty} WHERE id = ${batch.id}
+          RETURNING qty_on_hand`)
+        ).rows[0];
         await db.execute(sql`
           INSERT INTO sale_items (sale_id, product_id, batch_id, product_name, batch_no,
                                   expiry_date, qty, display_qty, sold_as, unit_price_paisa,
                                   unit_cost_paisa, discount_paisa, line_tax_paisa, line_total_paisa)
-          VALUES (${sale.id}, ${batch.product_id}, ${batch.id}, ${
-          batch.name
-        }, ${batch.batch_no},
-                  ${batch.expiry_date}, ${qty}, ${qty}, 'unit', ${
-          batch.retail_paisa
-        },
+          VALUES (${sale.id}, ${batch.product_id}, ${batch.id}, ${batch.name}, ${batch.batch_no},
+                  ${batch.expiry_date}, ${qty}, ${qty}, 'unit', ${batch.retail_paisa},
                   ${batch.cost_paisa}, ${off}, 0, ${gross - off})`);
+        // The movement, as createSale writes it.
+        await db.execute(sql`
+          INSERT INTO stock_ledger (batch_id, product_id, qty_delta, balance_after,
+                                    reason, ref_table, ref_id, actor, occurred_at)
+          VALUES (${batch.id}, ${batch.product_id}, ${-qty}, ${Number(left.qty_on_hand)},
+                  'sale', 'sales', ${sale.id}, ${cashier.display_name},
+                  ${at.toISOString()}::timestamptz)`);
+      }
+
+      /*
+       * A bill that found nothing on the shelf is removed rather than left
+       * behind as an invoice with no lines and a zero total.
+       */
+      if (subtotal === 0) {
+        await db.execute(sql`DELETE FROM sales WHERE id = ${sale.id}`);
+        continue;
       }
 
       const total = subtotal - discount;
       await db.execute(sql`
         UPDATE sales SET subtotal_paisa = ${subtotal}, discount_paisa = ${discount},
-               total_paisa = ${total}, paid_paisa = ${credit ? 0 : total}
+               total_paisa = ${total}, paid_paisa = ${kind === "counter" ? total : 0}
         WHERE id = ${sale.id}`);
       invoices++;
+      if (kind === "department") departmentBills++;
 
-      if (credit) {
+      if (kind === "credit") {
+        creditBills++;
         await db.execute(sql`
           INSERT INTO ledger_entries (party_kind, party_ref, entry_date, description,
                                       debit_paisa, source, source_id, created_by)
-          VALUES ('customer', ${partyIds[party]}, ${at
-          .toISOString()
-          .slice(0, 10)}::date,
-                  ${"Invoice " + sale.invoice_no}, ${total}, 'sale', ${
-          sale.id
-        }, 'Demo')`);
+          VALUES ('customer', ${partyIds[party]}, ${at.toISOString().slice(0, 10)}::date,
+                  ${"Invoice " + sale.invoice_no}, ${total}, 'sale', ${sale.id}, 'Demo')`);
       }
 
       // A few go wrong, the way they do.
       if (Math.random() < 0.015) {
         await db.execute(sql`
           UPDATE sales SET cancelled_at = ${at.toISOString()}::timestamptz,
-                 cancelled_by = 'Bilal', cancel_reason = 'Entered against the wrong customer'
+                 cancelled_by = ${cashier.display_name},
+                 cancel_reason = 'Entered against the wrong customer'
           WHERE id = ${sale.id}`);
         cancelled++;
-      } else if (Math.random() < 0.02) {
-        const rn = await nextCounter(db as any, "sale_return");
+        continue;
+      }
+      if (kind === "credit") credits.push({ id: Number(sale.id), at });
+      if (kind === "counter" && Math.random() < 0.02) {
         const item = (
           (
             await db.execute<any>(sql`
@@ -701,7 +818,7 @@ export async function loadPharmacyDemo(
                       "Patient did not need it",
                       "Damaged strip",
                     ])},
-                    'Bilal', ${at.toISOString()}::timestamptz)
+                    ${cashier.display_name}, ${at.toISOString()}::timestamptz)
             RETURNING *`)
           ).rows[0];
           await db.execute(sql`
@@ -709,50 +826,76 @@ export async function loadPharmacyDemo(
                                            qty, unit_price_paisa, line_total_paisa, restock)
             VALUES (${ret.id}, ${item.product_id}, ${item.batch_id}, ${item.product_name},
                     ${item.qty}, ${item.unit_price_paisa}, ${item.line_total_paisa}, true)`);
+          const back = (
+            await db.execute<any>(sql`
+            UPDATE batches SET qty_on_hand = qty_on_hand + ${item.qty}
+            WHERE id = ${item.batch_id} RETURNING qty_on_hand`)
+          ).rows[0];
           await db.execute(sql`
-            UPDATE batches SET qty_on_hand = qty_on_hand + ${item.qty} WHERE id = ${item.batch_id}`);
+            INSERT INTO stock_ledger (batch_id, product_id, qty_delta, balance_after,
+                                      reason, ref_table, ref_id, actor, occurred_at)
+            VALUES (${item.batch_id}, ${item.product_id}, ${item.qty},
+                    ${Number(back.qty_on_hand)}, 'sale_return', 'sale_returns', ${ret.id},
+                    ${cashier.display_name}, ${at.toISOString()}::timestamptz)`);
           returns++;
         }
       }
     }
   }
 
-  /* --------------------------------------------------- payments, prices */
+  /* ------------------------------------------- payments against credit */
+  step("taking payments against credit bills");
 
-  for (const name of [
-    "Dr Tariq (staff)",
-    "Chaudhry Medical Store",
-    "Rana Ali Hussnain",
-  ]) {
-    for (let k = 0; k < between(2, 5); k++) {
-      const when = new Date();
-      when.setDate(when.getDate() - between(0, days));
-      const amount = between(2000, 40000) * 100;
-      const n = await nextCounter(db as any, "receipt_vou");
-      const v = (
-        await db.execute<any>(sql`
-        INSERT INTO payments (voucher_no, kind, party_kind, party_ref, amount_paisa,
-                              method, created_by, created_at)
-        VALUES (${await documentNo(db, {
-          prefix: "RV",
-          letter: "R",
-          when,
-        })}, 'receipt', 'customer',
-                ${partyIds[name]}, ${amount}, 'cash', 'Demo',
-                ${when.toISOString()}::timestamptz)
-        RETURNING *`)
-      ).rows[0];
-      await db.execute(sql`
-        INSERT INTO ledger_entries (party_kind, party_ref, entry_date, description,
-                                    credit_paisa, source, source_id, created_by)
-        VALUES ('customer', ${partyIds[name]}, ${when
-        .toISOString()
-        .slice(0, 10)}::date,
-                ${"Received — " + v.voucher_no}, ${amount}, 'payment', ${
-        v.id
-      }, 'Demo')`);
-    }
+  /*
+   * Most older credit bills are settled, some only in part, and the recent
+   * ones are still owed, so the Credit Bills tab has all three states. Taken
+   * through receiveCreditPayment, the same function as the button, so each
+   * one writes its voucher, its ledger credit and its sale_payments row
+   * exactly as a real payment does. Nothing is received in the future.
+   *
+   * This replaces lump sums paid "on account" with no bill behind them,
+   * which left every credit bill looking unpaid while the customer's ledger
+   * said they owed nothing.
+   */
+  let creditPayments = 0;
+  const now = new Date();
+  for (const bill of credits) {
+    const age = (now.getTime() - bill.at.getTime()) / 86400000;
+    if (age < 3 || Math.random() < 0.3) continue;
+    const owed = Number(
+      (
+        (
+          await db.execute<any>(sql`
+      SELECT GREATEST(0, total_paisa
+        - COALESCE((SELECT SUM(total_paisa) FROM sale_returns WHERE sale_id = ${bill.id}), 0)
+        - COALESCE((SELECT SUM(amount_paisa) FROM sale_payments WHERE sale_id = ${bill.id}), 0)
+      )::bigint AS owed FROM sales WHERE id = ${bill.id}`)
+        ).rows as any[]
+      )[0].owed
+    );
+    if (owed <= 0) continue;
+    const part = Math.random() < 0.3;
+    const amount = part ? Math.max(100, Math.round(owed / 2)) : owed;
+    const at = new Date(
+      bill.at.getTime() +
+        between(1, Math.max(1, Math.floor(age) - 1)) * 86400000
+    );
+    if (at > now) continue;
+    const who = cashierPick();
+    await receiveCreditPayment({
+      saleId: bill.id,
+      amountPaisa: Math.min(amount, owed),
+      expectedOutstandingPaisa: owed,
+      method: pick(["cash", "cash", "easypaisa", "bank"]),
+      by: who.display_name,
+      byStaffId: who.id,
+      at,
+    });
+    creditPayments++;
   }
+
+  /* --------------------------------------------------- payments, prices */
+  step("recording supplier payments and price changes");
 
   for (const supplierId of supplierIds) {
     for (let k = 0; k < between(1, 4); k++) {
@@ -807,7 +950,7 @@ export async function loadPharmacyDemo(
     },
               ${Math.round(Number(p.trade_paisa) / factor)}, ${p.trade_paisa},
               ${Math.round(Number(p.retail_paisa) / factor)}, ${p.retail_paisa},
-              ${pick(cashiers)}, ${when.toISOString()}::timestamptz,
+              ${cashierPick().display_name}, ${when.toISOString()}::timestamptz,
               ${pick([
                 "Company increased the rate",
                 "New price list",
@@ -824,6 +967,9 @@ export async function loadPharmacyDemo(
     invoices,
     returns,
     cancelled,
+    creditBills,
+    creditPayments,
+    departmentBills,
   };
 }
 

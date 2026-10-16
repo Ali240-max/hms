@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
-import { db, nextCounter } from '../db/client'
-import { documentNo } from './numbering'
+import { db } from '../db/client'
+import { documentNo, nextToken } from './numbering'
 
 /**
  * Emergency intake.
@@ -49,8 +49,12 @@ export async function createEmergencyVisit(input: {
       WHERE d.id = ${input.doctorId} AND d.is_active`)).rows[0]
     if (!doctor) throw new EmergencyError('That duty doctor is not available', 'NO_DOCTOR')
 
-    const today = new Date().toISOString().slice(0, 10)
-    const tokenNo = await nextCounter(tx, `token:emergency:${today}`)
+    /*
+     * The emergency floor keeps its own queue, as it always has — it is seen
+     * by triage, not by token, and its numbers must not move the OPD's on.
+     * Now on the hospital's local day rather than the UTC one.
+     */
+    const tokenNo = await nextToken(tx, 'emergency')
     /*
      * VIS-260918-E00042.
      *

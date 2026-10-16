@@ -62,7 +62,11 @@ const WORDS: Record<Kind, {
   }
 }
 
-export function WriteOff({ kind, me }: { kind: Kind; me: SessionUser }) {
+export function WriteOff({ kind, me, onWrittenOff }: {
+  kind: Kind; me: SessionUser
+  /** Told after stock comes off, so the rail's expired count can fall. */
+  onWrittenOff?: () => void
+}) {
   const [tab, setTab] = useState<'new' | 'past'>('new')
   const w = WORDS[kind]
 
@@ -84,15 +88,21 @@ export function WriteOff({ kind, me }: { kind: Kind; me: SessionUser }) {
 
   return (
     <div className="space-y-4 p-4">
-      <Tabs id={`writeoff-${kind}`} value={tab} onChange={(v) => setTab(v as any)}
-        className="w-fit"
-        tabs={[
-          { value: 'new', label: tr(w.verb),
-            icon: kind === 'damage' ? AlertTriangle : CalendarX },
-          { value: 'past', label: tr('Previous reports'), icon: History }
-        ]} />
+      <div className="flex flex-wrap items-center gap-2">
+        <Tabs id={`writeoff-${kind}`} value={tab} onChange={(v) => setTab(v as any)}
+          className="w-fit"
+          tabs={[
+            { value: 'new', label: tr(w.verb),
+              icon: kind === 'damage' ? AlertTriangle : CalendarX },
+            { value: 'past', label: tr('Previous reports'), icon: History }
+          ]} />
+        {/*
+          The expired-batch count that sat here moved to the rail, beside
+          Expiry (Pharmacy.tsx), so it is seen without opening this screen.
+        */}
+      </div>
       {tab === 'new'
-        ? <NewWriteOff kind={kind} mayWrite={mayWrite !== false} />
+        ? <NewWriteOff kind={kind} mayWrite={mayWrite !== false} onSaved={onWrittenOff} />
         : <PastWriteOffs kind={kind} />}
     </div>
   )
@@ -100,7 +110,9 @@ export function WriteOff({ kind, me }: { kind: Kind; me: SessionUser }) {
 
 /* ------------------------------------------------------------ making one */
 
-function NewWriteOff({ kind, mayWrite }: { kind: Kind; mayWrite: boolean }) {
+function NewWriteOff({ kind, mayWrite, onSaved }: {
+  kind: Kind; mayWrite: boolean; onSaved?: () => void
+}) {
   const w = WORDS[kind]
   const [q, setQ] = useState('')
   /*
@@ -175,7 +187,7 @@ function NewWriteOff({ kind, mayWrite }: { kind: Kind; mayWrite: boolean }) {
         }))
       })
       setDone(r)
-      setPicked([]); setNote(''); load()
+      setPicked([]); setNote(''); load(); onSaved?.()
     } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
   }
 

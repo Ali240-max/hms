@@ -381,6 +381,13 @@ export const PERMISSIONS: { group: string; key: string; label: string }[] = [
   { group: 'Selling', key: 'sale.return',    label: 'Take goods back' },
   { group: 'Selling', key: 'sale.reprint',   label: 'Reprint an invoice' },
   { group: 'Selling', key: 'sale.estimate',  label: 'Write an estimate' },
+  /*
+   * Issuing medicines to a hospital department (OT, Emergency…) against a
+   * departmental bill. Its own tick because it takes stock off the shelf
+   * with no money at the counter, which a shop may want to keep to the
+   * people who answer to the departments.
+   */
+  { group: 'Selling', key: 'sale.department', label: 'Bill a hospital department' },
 
   { group: 'Buying',  key: 'purchase.receive', label: 'Receive a delivery' },
   { group: 'Buying',  key: 'purchase.return',  label: 'Return goods to a supplier' },
@@ -500,7 +507,14 @@ const ROLE_DEFAULTS: Record<string, string[]> = {
                 * that already uses it. A standalone chemist turns it off once
                 * and it stays off.
                 */
-               'prescriptions.see'],
+               'prescriptions.see',
+               /*
+                * On for counter staff: in a hospital pharmacy the OT and the
+                * emergency room send for medicines all day, and the person
+                * at the counter is who hands them over. The tick can be
+                * taken off per person under Access.
+                */
+               'sale.department'],
   pharmacy_admin: PERMISSIONS.map((p) => p.key),
   admin: PERMISSIONS.map((p) => p.key)
 }

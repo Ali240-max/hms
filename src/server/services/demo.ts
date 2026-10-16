@@ -1,11 +1,12 @@
 import { sql } from 'drizzle-orm'
-import { db } from '../db/client'
-import { documentNo, dateSegment } from './numbering'
+import { db, withTransactionScope } from '../db/client'
+import { documentNo } from './numbering'
+import { completeBill } from './billing'
 import * as s from '../db/schema'
 import { createFirstAdmin, createStaff, needsSetup } from './auth'
 import { registerPatient, createVisit } from './patients'
 import { saveConsultation, upsertService } from './clinical'
-import { createChitsForVisit, payChit, completeChit } from './chits'
+import { createChitsForVisit, completeChit } from './chits'
 
 /**
  * Demo data, generous enough that every screen has something to show.
@@ -47,10 +48,65 @@ export type SeedResult = {
    * Absent rather than zeroed when it was skipped, so the screen can tell
    * "not asked for" from "asked for and nothing happened".
    */
-  pharmacy?: { products: number; batches: number; invoices: number; returns: number }
+  pharmacy?: {
+    products: number; batches: number; invoices: number; returns: number
+    creditBills: number; creditPayments: number; departmentBills: number
+  }
 }
 
+export class DemoError extends Error {
+  constructor(message: string, public code: 'HAS_DATA' | 'LOAD_FAILED',
+              public detail?: string) {
+    super(message)
+  }
+}
+
+/**
+ * Load the demo, all of it or none of it.
+ *
+ * The whole load is one transaction (see withTransactionScope). It used to
+ * run on autocommit, and every failure — a duplicate department code on the
+ * first insert, a pharmacy error two minutes in — left a half-loaded system
+ * that the next press then refused to touch because "there are already
+ * patients". Now a failure rolls everything back, including a reset's
+ * TRUNCATE, and the error names the step that failed.
+ *
+ * An advisory lock stops two presses (two admins, a double click) from
+ * loading two demos side by side, and the "is this system empty" check is
+ * repeated under it so the second one is refused rather than doubled.
+ */
 export async function loadDemoData(
+  opts: Parameters<typeof loadDemoDataUnscoped>[0] & { requireEmpty?: boolean } = {}
+): Promise<SeedResult> {
+  return withTransactionScope(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(31, 1)`)
+    if (opts.requireEmpty && !opts.reset && await hasAnyData()) {
+      throw new DemoError('There are already patients in this system', 'HAS_DATA',
+        'Loading demo data on top would mix real records with invented ones. ' +
+        'Choose the replace option if this is a test system.')
+    }
+    step = 'starting'
+    try {
+      return await loadDemoDataUnscoped(opts)
+    } catch (e: any) {
+      if (e instanceof DemoError) throw e
+      console.error('[demo] failed while', step, e)
+      throw new DemoError(`Demo data could not be loaded: ${step} failed`, 'LOAD_FAILED',
+        [e?.message, e?.detail].filter(Boolean).join(' — ') +
+        '. Nothing was saved; the system is exactly as it was before.')
+    }
+  })
+}
+
+/**
+ * The step the load is on, so a failure can say where it stopped instead of
+ * surfacing a bare "duplicate key" with no idea which of forty steps it was.
+ * One load at a time (the advisory lock above), so one variable is enough.
+ */
+let step = 'starting'
+export const setDemoStep = (s: string) => { step = s }
+
+async function loadDemoDataUnscoped(
   opts: {
     reset?: boolean; days?: number; futureDays?: number
     /**
@@ -132,11 +188,29 @@ export async function loadDemoData(
      * two tables. So nothing takes them along, and they are why this comment
      * exists.
      */
+    /*
+     * Departments, staff and doctors are NOT on this list any more.
+     *
+     * Departments ship with the software (0017) and are the hospital's own
+     * set-up; truncating them also reached `services` by CASCADE (services
+     * point at a department) and took the whole shipped catalogue and every
+     * reference range with it. Staff are real people's sign-ins, and taking
+     * them meant everybody — the administrator included — was signed out
+     * and their passwords replaced by demo ones. A reset now replaces the
+     * hospital's TRADING (patients, visits, bills, stock), and leaves who
+     * works here and how the hospital is organised alone. The demo staff
+     * are created only where their usernames are free.
+     *
+     * Store stock and its movements are on the list for the first time:
+     * every reset used to add another two deliveries and a month of issues
+     * to the same sixteen items.
+     */
     await db.execute(sql`
       TRUNCATE doctor_earnings, service_orders, prescription_items, prescriptions,
-               visits, patients, doctor_service_shares, doctors, staff,
-               departments, sale_items, sales, stock_ledger, purchase_items, purchases,
+               visits, patients,
+               sale_payments, sale_items, sales, stock_ledger, purchase_items, purchases,
                batches, products, suppliers,
+               supply_movements, supply_batches,
                stock_audits, stock_adjustments, purchase_orders, write_offs,
                write_off_items,
                /* reached by cascade, named so the rule above is checkable */
@@ -151,37 +225,80 @@ export async function loadDemoData(
   }
 
   /* ------------------------------------------------------------ people */
-  const depts = await db.insert(s.departments).values([
-    { name: 'General Medicine', code: 'GEN' },
-    { name: 'Paediatrics', code: 'PAED' },
-    { name: 'Orthopaedics', code: 'ORTHO' },
-    { name: 'Gynaecology', code: 'GYN' },
-    { name: 'ENT', code: 'ENT' }
-  ]).returning()
+  /*
+   * The departments the hospital already has, never new ones.
+   *
+   * This used to INSERT its own five (GEN, PAED, ORTHO, GYN, ENT). Migration
+   * 0017 ships PAED, ORTHO and ENT on every install, so the very first
+   * statement of the demo failed on departments_code_uq, and the only way
+   * past it was to delete departments by hand. Now each doctor is placed in
+   * the existing department matching by code or by name; where none
+   * matches the doctor simply has no department. Nothing is created,
+   * changed or removed.
+   */
+  setDemoStep('finding the existing departments')
+  const deptRows = (await db.execute<any>(sql`
+    SELECT id, name, code FROM departments WHERE is_active ORDER BY id`)).rows as any[]
+  const findDept = (codes: string[], names: string[]): number | null => {
+    const hit = deptRows.find((d) => codes.includes(String(d.code).toUpperCase()))
+      ?? deptRows.find((d) => names.some((n) => String(d.name).toLowerCase().startsWith(n)))
+    return hit ? Number(hit.id) : null
+  }
+  const depts = [
+    findDept(['MED', 'GEN'], ['general medicine', 'medicine']),
+    findDept(['PAED'], ['paed', 'ped']),
+    findDept(['ORTHO'], ['ortho']),
+    findDept(['GYN'], ['gyn']),
+    findDept(['ENT'], ['ent'])
+  ]
 
+  setDemoStep('creating the demo staff accounts')
   if (await needsSetup()) {
     await createFirstAdmin({ username: 'admin', displayName: 'Administrator', password: 'admin-demo-1' })
   }
+  /*
+   * Only where the username is free.
+   *
+   * Staff are no longer wiped by a reset, so a second load finds last
+   * time's demo accounts — and a real install may already have somebody
+   * called "pharmacy". Either way the existing account is used as it is,
+   * password and all, instead of failing on staff_username_uq.
+   */
+  const taken = new Set(((await db.execute<any>(sql`
+    SELECT lower(username) AS u FROM staff`)).rows as any[]).map((r) => r.u))
+  const addStaff = async (input: Parameters<typeof createStaff>[0]) => {
+    if (taken.has(input.username.toLowerCase())) return
+    await createStaff(input)
+    taken.add(input.username.toLowerCase())
+  }
   // The cash window: registration, fees, chit payments.
-  await createStaff({ username: 'main-counter', displayName: 'Sana Tariq', password: '1234', role: 'main_counter' })
-  await createStaff({ username: 'main-counter2', displayName: 'Hina Butt', password: '1234', role: 'main_counter' })
+  await addStaff({ username: 'main-counter', displayName: 'Sana Tariq', password: '1234', role: 'main_counter' })
+  await addStaff({ username: 'main-counter2', displayName: 'Hina Butt', password: '1234', role: 'main_counter' })
   // The OPD desk outside the doctors' rooms: queue and vitals, no money.
-  await createStaff({ username: 'opd', displayName: 'Nadia Aslam', password: '1234', role: 'receptionist' })
-  await createStaff({ username: 'opd2', displayName: 'Rabia Noor', password: '1234', role: 'receptionist' })
+  await addStaff({ username: 'opd', displayName: 'Nadia Aslam', password: '1234', role: 'receptionist' })
+  await addStaff({ username: 'opd2', displayName: 'Rabia Noor', password: '1234', role: 'receptionist' })
   // The emergency desk: admits arrivals, records bedside medicines, no cash.
-  await createStaff({ username: 'emergency', displayName: 'Bilal Raza', password: '1234', role: 'ipd_counter' })
+  await addStaff({ username: 'emergency', displayName: 'Bilal Raza', password: '1234', role: 'ipd_counter' })
   // The store: consumables issued to departments, never sold.
-  await createStaff({ username: 'stores', displayName: 'Tariq Mehmood', password: '1234', role: 'store_keeper' })
+  await addStaff({ username: 'stores', displayName: 'Tariq Mehmood', password: '1234', role: 'store_keeper' })
   // The laboratory: samples, results, reports. Handles no money.
-  await createStaff({ username: 'lab', displayName: 'Farhan Javed', password: '1234', role: 'lab_tech' })
+  await addStaff({ username: 'lab', displayName: 'Farhan Javed', password: '1234', role: 'lab_tech' })
   // The accounts desk: reads every report, changes nothing.
-  await createStaff({ username: 'reports', displayName: 'Nadia Saleem', password: '1234', role: 'reports' })
+  await addStaff({ username: 'reports', displayName: 'Nadia Saleem', password: '1234', role: 'reports' })
   // Radiology keeps its own list: an x-ray room and a blood lab share nothing
   // but the shape of the workflow.
-  await createStaff({ username: 'xray', displayName: 'Waseem Akhtar', password: '1234', role: 'radiology' })
+  await addStaff({ username: 'xray', displayName: 'Waseem Akhtar', password: '1234', role: 'radiology' })
   // The pharmacy office: reports, ledgers and who may do what at the counter.
-  await createStaff({ username: 'pharmacy-office', displayName: 'Shaafi Ahmed', password: '1234', role: 'pharmacy_admin' })
-  await createStaff({ username: 'pharmacy', displayName: 'Bilal Ahmed', password: '1234', role: 'pharmacist' })
+  await addStaff({ username: 'pharmacy-office', displayName: 'Shaafi Ahmed', password: '1234', role: 'pharmacy_admin' })
+  await addStaff({ username: 'pharmacy', displayName: 'Bilal Ahmed', password: '1234', role: 'pharmacist' })
+
+  // Who the demo's chits are billed by: the main counter account, or any
+  // account that can take money at the window if that name was taken.
+  const counterStaff = ((await db.execute<any>(sql`
+    SELECT id, display_name FROM staff
+    WHERE role IN ('main_counter', 'admin') AND is_active
+    ORDER BY (lower(username) = 'main-counter') DESC, (role = 'main_counter') DESC, id
+    LIMIT 1`)).rows as any[])[0]
 
   const DOCS = [
     { u: 'dr.yasir', n: 'Dr Yasir Habib', spec: 'General Physician', q: 'MBBS, FCPS', d: 0, room: '3', fee: 100000, keep: 6000, svc: 1000 },
@@ -191,9 +308,9 @@ export async function loadDemoData(
     { u: 'dr.kamran', n: 'Dr Kamran Ali', spec: 'ENT Surgeon', q: 'MBBS, FCPS', d: 4, room: '9', fee: 110000, keep: 5500, svc: 1200 }
   ]
   for (const d of DOCS) {
-    await createStaff({
+    await addStaff({
       username: d.u, displayName: d.n, password: '1234', role: 'doctor',
-      departmentId: depts[d.d].id,
+      departmentId: depts[d.d] ?? undefined,
       doctor: {
         specialisation: d.spec, qualification: d.q, room: d.room,
         consultationFeePaisa: d.fee, consultationShareBp: d.keep, defaultServiceShareBp: d.svc
@@ -224,6 +341,7 @@ export async function loadDemoData(
    * The demo gives them demo prices by name; only the procedures, which do not
    * ship, are created here.
    */
+  setDemoStep('pricing the services')
   for (const [name, cat, price, share] of SERVICES) {
     const existing = ((await db.execute<any>(sql`
       SELECT id FROM services WHERE lower(name) = lower(${name}) LIMIT 1`)).rows as any[])[0]
@@ -246,9 +364,18 @@ export async function loadDemoData(
     .map((r) => Number(r.id))
 
   /* ---------------------------------------------------------- pharmacy */
-  const [supplier] = await db.insert(s.suppliers).values({
-    name: 'Muslim Distributors, Gujrat', phone: '053-3512340', address: 'GT Road, Gujrat'
-  }).returning()
+  setDemoStep('stocking the pharmacy shelf')
+  /*
+   * Reused by name rather than inserted again: the pharmacy half of the demo
+   * creates the same supplier, and a system that already trades with them
+   * should not get a second one.
+   */
+  const supplier = ((await db.execute<any>(sql`
+    SELECT id FROM suppliers WHERE lower(name) = lower('Muslim Distributors, Gujrat')
+    ORDER BY id LIMIT 1`)).rows as any[])[0]
+    ?? (await db.insert(s.suppliers).values({
+      name: 'Muslim Distributors, Gujrat', phone: '053-3512340', address: 'GT Road, Gujrat'
+    }).returning())[0]
 
   const MEDS = [
     ['Panadol 500mg', 'Paracetamol', 'GSK Pakistan', 10, 3800, 5000],
@@ -274,6 +401,14 @@ export async function loadDemoData(
   ] as const
 
   for (const [name, generic, mfr, pack, cost, price] of MEDS) {
+    /*
+     * A medicine already on the books is left as it is: no second "Panadol
+     * 500mg" beside the hospital's own, and no extra batches on a product
+     * somebody is really selling.
+     */
+    const exists = ((await db.execute<any>(sql`
+      SELECT 1 FROM products WHERE lower(name) = lower(${name}) LIMIT 1`)).rows as any[]).length
+    if (exists) continue
     const [p] = await db.insert(s.products).values({
       name, genericName: generic, manufacturer: mfr, packSize: pack,
       unitLabel: pack > 1 ? 'strip' : 'bottle',
@@ -285,7 +420,13 @@ export async function loadDemoData(
     for (let b = 0; b < between(1, 2); b++) {
       await db.insert(s.batches).values({
         productId: p.id,
-        batchNo: `${name.slice(0, 2).toUpperCase()}-${between(1000, 9999)}`,
+        /*
+         * Numbered, not random. Two batches of one product drew from the
+         * same 9,000 random numbers and, now and then, the same one — a
+         * batches_product_batchno_uq failure that came and went between
+         * presses of the same button.
+         */
+        batchNo: `${name.slice(0, 2).toUpperCase()}-${p.id}-${b + 1}`,
         expiryDate: new Date(Date.now() + between(b === 0 ? 40 : 300, b === 0 ? 200 : 700) * 86400000)
           .toISOString().slice(0, 10),
         costPaisa: cost, pricePaisa: price,
@@ -296,6 +437,7 @@ export async function loadDemoData(
   const products = (await db.execute<any>(sql`SELECT id, name FROM products`)).rows as any[]
 
   /* ---------------------------------------------------------- patients */
+  setDemoStep('registering patients, visits and consultations')
   let visitCount = 0
   for (let offset = -days; offset <= futureDays; offset++) {
     const daysAgo = -offset
@@ -439,10 +581,26 @@ export async function loadDemoData(
             const roll = Math.random()
             // Older visits are mostly settled; recent ones are still moving.
             const settled = daysAgo > 2 ? 0.9 : 0.45
-            if (roll < settled) {
-              await payChit(chit.id, 'Sana Tariq', pick(['cash', 'easypaisa', 'card'])).catch(() => {})
+            if (roll < settled && counterStaff) {
+              /*
+               * Paid the way the window pays it: through completeBill, which
+               * writes the INV-…-D invoice and its lines. payChit only flips
+               * the chit's status, so every demo test had no bill behind it
+               * — no takings on the counter reports, and no Booked time on
+               * the lab report, which is read from that invoice.
+               */
+              const paid = await completeBill({
+                kind: 'chit', chitId: chit.id,
+                payMethod: pick(['cash', 'easypaisa', 'card']),
+                tenderedPaisa: Number(chit.total_paisa),
+                cashierStaffId: Number(counterStaff.id), cashierName: counterStaff.display_name
+              }).catch(() => null)
+              if (!paid) continue
               await db.execute(sql`
                 UPDATE chits SET paid_at = ${at.toISOString()}::timestamptz WHERE id = ${chit.id}`)
+              await db.execute(sql`
+                UPDATE counter_bills SET created_at = ${at.toISOString()}::timestamptz
+                WHERE id = ${paid.bill.id}`)
               if (Math.random() < 0.75) {
                 await completeChit(chit.id, 'Radiology Desk').catch(() => {})
               }
@@ -485,10 +643,18 @@ export async function loadDemoData(
     ['Thermometer', 'instrument', 'piece', 6, false]
   ]
 
-  const deptIds = (await db.execute<any>(sql`SELECT id FROM departments`)).rows as any[]
+  setDemoStep('stocking the store')
+  const deptIds = (await db.execute<any>(sql`SELECT id FROM departments WHERE is_active`)).rows as any[]
 
   for (const [name, category, unit, reorder, expires] of SUPPLIES) {
-    const item = (await db.execute<any>(sql`
+    /*
+     * Reused by name. supply_items is not cleared by a reset (lab recipes
+     * point at it), and inserting every time left the store with two, then
+     * three, then four "Sterile gauze 10x10cm".
+     */
+    const item = ((await db.execute<any>(sql`
+      SELECT * FROM supply_items WHERE lower(name) = lower(${name}) ORDER BY id LIMIT 1`)).rows as any[])[0]
+      ?? (await db.execute<any>(sql`
       INSERT INTO supply_items (name, category, unit_label, reorder_level, tracks_expiry)
       VALUES (${name}, ${category}, ${unit}, ${reorder}, ${expires}) RETURNING *`)).rows[0]
 
@@ -502,7 +668,7 @@ export async function loadDemoData(
       const batch = (await db.execute<any>(sql`
         INSERT INTO supply_batches
           (item_id, batch_no, expiry_date, qty_on_hand, cost_paisa, received_at, received_by)
-        VALUES (${item.id}, ${'B-' + between(1000, 9999)},
+        VALUES (${item.id}, ${`B-${item.id}-${d + 1}-${between(100, 999)}`},
                 ${expires ? sql`${expiry.toISOString().slice(0, 10)}::date` : sql`NULL`},
                 ${qty}, ${between(500, 25000)}, ${received.toISOString()}::timestamptz,
                 'Tariq Mehmood')
@@ -537,6 +703,7 @@ export async function loadDemoData(
   }
 
   /* -------------------------------------------------------- lab set-up */
+  setDemoStep('setting up lab ranges and recipes')
   /**
    * Reference ranges and recipes.
    *
@@ -650,6 +817,7 @@ export async function loadDemoData(
   }
 
   /* ------------------------------------------------------- lab workload */
+  setDemoStep('putting tests through the laboratory')
   /**
    * Paid tests at every stage, so the lab screen opens with a real day's work
    * on it: some waiting for a sample, some on the bench, some already
@@ -768,11 +936,14 @@ export async function loadDemoData(
    * path does not pay for loading it.
    */
   if (opts.pharmacy !== false) {
+    setDemoStep('loading the pharmacy trading')
     const { loadPharmacyDemo } = await import('./pharma-demo')
-    const ph = await loadPharmacyDemo({ days, futureDays })
+    const ph = await loadPharmacyDemo({ days, futureDays, onStep: setDemoStep })
     out.pharmacy = {
       products: ph.products, batches: ph.batches,
-      invoices: ph.invoices, returns: ph.returns
+      invoices: ph.invoices, returns: ph.returns,
+      creditBills: ph.creditBills, creditPayments: ph.creditPayments,
+      departmentBills: ph.departmentBills
     }
   }
 

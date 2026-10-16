@@ -324,6 +324,18 @@ export async function sessionForUser(
 }
 
 /**
+ * Forget every cached session.
+ *
+ * Called after a backup is restored: the sessions table has just been
+ * replaced, so a token cached in memory may belong to an account the restored
+ * data does not even contain. Everybody signs in again against the restored
+ * staff list.
+ */
+export function clearSessionCache() {
+  cache.clear();
+}
+
+/**
  * Sign somebody out everywhere.
  *
  * Used when an account is archived or its password is changed: a session that

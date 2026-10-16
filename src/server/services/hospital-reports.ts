@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db } from '../db/client'
+import { paidAtSale } from './credit-bills'
 import type { Window } from './pharma-reports'
 
 /**
@@ -506,9 +507,21 @@ export async function hospitalIncome(w: Window) {
 
     UNION ALL
 
+    /*
+     * Money taken, so only bills paid at the counter. A credit bill brings
+     * in nothing the day it is written and a bill to a department brings in
+     * nothing at all; what a credit customer pays later is its own line, on
+     * the day it was received, so it is counted once.
+     */
     SELECT 'Pharmacy', COUNT(*)::int, COALESCE(SUM(total_paisa), 0)::bigint
-    FROM sales
+    FROM sales sa
     WHERE status <> 'voided' AND cancelled_at IS NULL AND ${between('sold_at', w)}
+      AND ${paidAtSale('sa')}
+
+    UNION ALL
+
+    SELECT 'Pharmacy credit received', COUNT(*)::int, COALESCE(SUM(amount_paisa), 0)::bigint
+    FROM sale_payments WHERE ${between('received_at', w)}
 
     UNION ALL
 
@@ -532,7 +545,10 @@ export async function hospitalDaily(w: Window) {
                      WHERE cb.created_at::date = days.d), 0) AS counter_paisa,
            COALESCE((SELECT SUM(sa.total_paisa)::bigint FROM sales sa
                      WHERE sa.sold_at::date = days.d
-                       AND sa.status <> 'voided' AND sa.cancelled_at IS NULL), 0)
+                       AND sa.status <> 'voided' AND sa.cancelled_at IS NULL
+                       AND ${paidAtSale('sa')}), 0)
+           + COALESCE((SELECT SUM(sp.amount_paisa)::bigint FROM sale_payments sp
+                     WHERE sp.received_at::date = days.d), 0)
              AS pharmacy_paisa,
            COALESCE((SELECT COUNT(*)::int FROM lab_orders lo
                      WHERE lo.created_at::date = days.d), 0) AS lab_tests
@@ -660,14 +676,17 @@ export async function salesByDepartment(w: Window) {
       -- The service's own department when one is set, otherwise its broad
       -- category. The fallback is what lets this report work on a hospital
       -- that has not filled the new field in yet.
-      SELECT COALESCE(sd.name, INITCAP(sv.category::text), 'Other') AS department,
+      SELECT COALESCE(sd.name, sc.name, INITCAP(sv.category::text), 'Other') AS department,
              ch.patient_id,
              ch.total_paisa,
              0 AS discount_paisa
       FROM chits ch
       JOIN service_orders so ON so.chit_id = ch.id
       JOIN services sv       ON sv.id = so.service_id
-      LEFT JOIN departments sd ON sd.id = sv.department_id
+      -- Grouped the way Patients by Department and the token queue are:
+      -- the category's department when mapped, otherwise the service's.
+      LEFT JOIN service_categories sc ON sc.id = sv.category_id
+      LEFT JOIN departments sd ON sd.id = COALESCE(sc.department_id, sv.department_id)
       WHERE ${between('ch.created_at', w)}
         AND ch.status = 'paid'
     )
@@ -688,7 +707,19 @@ export async function salesByDepartment(w: Window) {
  * and what was taken for it. The table breaks by department, which is what
  * `groupBy` on the report definition does with it.
  */
-export async function patientsByDepartment(w: Window) {
+export async function patientsByDepartment(w: Window, q: Record<string, string> = {}) {
+  /*
+   * One department, by its id, when the screen's filter names one. Matched
+   * on the same department each row is grouped under — the visit's for a
+   * consultation, the service's (through its category's mapping) for a test
+   * — never on the name, so a renamed department still filters correctly.
+   * Empty means every department, which is the report as it always was.
+   */
+  const deptId = Number(q.department ?? 0)
+  const onlyVisit = deptId > 0 ? sql`AND v.department_id = ${deptId}` : sql``
+  const onlyService = deptId > 0
+    ? sql`AND COALESCE(sc.department_id, sv.department_id) = ${deptId}` : sql``
+
   const r = await db.execute<any>(sql`
     SELECT COALESCE(d.name, 'Unassigned')            AS department,
            COALESCE(st.display_name, '—')            AS doctor_name,
@@ -705,6 +736,7 @@ export async function patientsByDepartment(w: Window) {
     LEFT JOIN doctors doc   ON doc.id = v.doctor_id
     LEFT JOIN staff st      ON st.id = doc.staff_id
     WHERE ${between('cb.created_at', w)}
+      ${onlyVisit}
 
     UNION ALL
 
@@ -713,7 +745,7 @@ export async function patientsByDepartment(w: Window) {
      * laboratory sheet "Consultation" against every line would tell a
      * pathologist nothing.
      */
-    SELECT COALESCE(sd.name, INITCAP(sv.category::text), 'Other') AS department,
+    SELECT COALESCE(sd.name, sc.name, INITCAP(sv.category::text), 'Other') AS department,
            COALESCE(st.display_name, '—')            AS doctor_name,
            p.name                                    AS patient_name,
            so.service_name                           AS procedure_name,
@@ -725,12 +757,16 @@ export async function patientsByDepartment(w: Window) {
     JOIN chits ch        ON ch.id = so.chit_id
     JOIN patients p      ON p.id = ch.patient_id
     JOIN services sv     ON sv.id = so.service_id
-    LEFT JOIN departments sd ON sd.id = sv.department_id
+    -- The category's department when it is mapped to one, as the token
+    -- queue uses; otherwise the service's own.
+    LEFT JOIN service_categories sc ON sc.id = sv.category_id
+    LEFT JOIN departments sd ON sd.id = COALESCE(sc.department_id, sv.department_id)
     LEFT JOIN visits v   ON v.id = ch.visit_id
     LEFT JOIN doctors doc ON doc.id = v.doctor_id
     LEFT JOIN staff st    ON st.id = doc.staff_id
     WHERE ${between('ch.created_at', w)}
       AND ch.status = 'paid'
+      ${onlyService}
 
     ORDER BY 1, created_at`)
 

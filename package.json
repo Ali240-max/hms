@@ -21,6 +21,8 @@
     "verify:i18n": "node verify-i18n.mjs",
     "reset-password": "tsx scripts/reset-password.ts",
     "verify:billing": "node verify-billing.mjs",
+    "verify:credit": "node verify-credit.mjs",
+    "verify:queues": "node verify-queues.mjs",
     "verify:render": "node .rendercheck/build.mjs && node .rendercheck/run.mjs",
     "verify:emergency": "node verify-emergency.mjs",
     "verify:roles": "node verify-roles.mjs",

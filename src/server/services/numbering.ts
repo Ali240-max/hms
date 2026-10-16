@@ -72,3 +72,40 @@ export async function documentNo(tx: any, opts: {
 export async function nextMrn(tx: any): Promise<string> {
   return `MRN-${String(await nextCounter(tx, 'mrn')).padStart(6, '0')}`
 }
+
+/**
+ * Token numbers: one queue per department, restarting each local day.
+ *
+ * Tokens used to come from one counter for every doctor and a second for
+ * every walk-in test, so the laboratory called out whatever number the
+ * consultation before had left behind — the first blood test of the morning
+ * was token 7 because six people had already seen a doctor. A queue is what a
+ * department calls out, so a department is what owns the sequence: the first
+ * patient each department sees today is token 1 there, whatever the others
+ * are up to.
+ *
+ * The key carries the hospital's own date (dateSegment, local time), not the
+ * UTC one the old keys used. In Pakistan the UTC date only turns over at five
+ * in the morning, so the night shift's tokens carried on from yesterday's.
+ *
+ * Safe under any number of counters at once for the same reason invoice
+ * numbers are: nextCounter is a single upsert that row-locks the key until the
+ * calling transaction ends, so two cashiers can never draw the same token,
+ * and a bill that fails and rolls back gives its token back.
+ */
+export async function nextToken(tx: any, queue: string, when?: Date): Promise<number> {
+  return nextCounter(tx, `token:${dateSegment(when)}:${queue}`)
+}
+
+/**
+ * Which queue a piece of work joins.
+ *
+ * A department when one is known — the doctor's, or the one a service's
+ * category is mapped to — so two categories mapped to the same department
+ * share its queue. Otherwise `fallback`: the general OPD queue for a doctor
+ * with no department, or the kind of work (lab, radiology…) for a service
+ * whose category is not mapped to one yet.
+ */
+export function queueFor(departmentId: number | null | undefined, fallback: string): string {
+  return departmentId ? `dept:${departmentId}` : fallback
+}

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db } from '../db/client'
+import { paidAtSale } from './credit-bills'
 
 /**
  * Reports.
@@ -59,9 +60,23 @@ export async function salesSummary(w: Window) {
            COALESCE(SUM(total_paisa),0)::bigint AS cancelled_paisa
     FROM sales WHERE cancelled_at IS NOT NULL AND ${between('cancelled_at', w)}`)).rows[0]
 
+  /*
+   * Billed is not collected. Revenue above is everything billed; collected
+   * is what was paid at the counter plus credit payments received in the
+   * window, each counted on the day the money arrived.
+   */
+  const collected = (await db.execute<any>(sql`
+    SELECT COALESCE((SELECT SUM(sa.total_paisa) FROM sales sa
+                     WHERE ${LIVE} AND ${between('sa.sold_at', w)} AND ${paidAtSale('sa')}), 0)::bigint
+             AS collected_at_sale_paisa,
+           COALESCE((SELECT SUM(amount_paisa) FROM sale_payments
+                     WHERE ${between('received_at', w)}), 0)::bigint AS credit_received_paisa`)).rows[0]
+
   const revenue = Number(head.revenue_paisa)
   return {
     ...head, ...cost, ...returns, ...cancelled,
+    credit_received_paisa: Number(collected.credit_received_paisa),
+    collected_paisa: Number(collected.collected_at_sale_paisa) + Number(collected.credit_received_paisa),
     net_paisa: revenue - Number(returns.returned_paisa),
     margin_pct: revenue > 0 ? (Number(cost.margin_paisa) / revenue) * 100 : 0
   }

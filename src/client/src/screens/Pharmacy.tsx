@@ -1,11 +1,11 @@
 import { motion } from 'framer-motion'
 import { DUR, EASE } from '../lib/motion'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Sidebar, type NavItem } from '../components/Sidebar'
 import {
   Settings2, Calculator, FileText, Undo2, Pill, ClipboardList, PackagePlus,
   Boxes, ClipboardCheck, PackageX, CalendarX, PackageOpen, LayoutDashboard,
-  ReceiptText, BookOpen, BarChart3, ShieldCheck, Printer, Cross
+  ReceiptText, BookOpen, BarChart3, ShieldCheck, Printer, Cross, Building2
 } from 'lucide-react'
 import { api, type SessionUser } from '../lib/api'
 import { useT } from '../lib/prefs'
@@ -19,6 +19,7 @@ import { WriteOff } from './pharmacy/WriteOff'
 import { Ordering } from './pharmacy/Ordering'
 import { Opening } from './pharmacy/Opening'
 import { Bills } from './pharmacy/Bills'
+import { DepartmentBilling } from './pharmacy/DepartmentBilling'
 import { Overview } from './pharmacy/Overview'
 import { PrinterSettingsCard } from '../components/PrinterSettings'
 import { Reports } from './pharma/Reports'
@@ -29,7 +30,7 @@ import { Returns } from './pharma/Returns'
 
 type Tab = 'billing' | 'prescriptions' | 'medicines' | 'receive' | 'stock' | 'bills'
   | 'returns' | 'overview' | 'reports' | 'ledgers' | 'access' | 'setup' | 'printing'
-  | 'audits' | 'ordering' | 'opening' | 'damage' | 'expiry'
+  | 'audits' | 'ordering' | 'opening' | 'damage' | 'expiry' | 'departments'
 
 /**
  * The rail, grouped by what a person is doing rather than alphabetically.
@@ -42,6 +43,11 @@ const NAV: (NavItem & { id: Tab })[] = [
   { id: 'billing', label: 'Billing', glyph: 'B', icon: Calculator, section: 'Counter' },
   { id: 'prescriptions', label: 'Prescriptions', glyph: 'Rx', icon: FileText },
   { id: 'returns', label: 'Returns', glyph: 'R', icon: Undo2 },
+  /*
+   * In the Counter group: it is billing, done at the same counter by the
+   * same people, just to a department of the hospital instead of a patient.
+   */
+  { id: 'departments', label: 'Interdepartmental Billing', glyph: 'ID', icon: Building2 },
 
   { id: 'medicines', label: 'Medicines', glyph: 'M', icon: Pill, section: 'Stock' },
   { id: 'ordering', label: 'Order', glyph: 'PO', icon: ClipboardList },
@@ -99,6 +105,8 @@ export type PendingFill = {
  */
 const TAB_PERMISSION: Partial<Record<Tab, string>> = {
   billing: 'sale.counter',
+  /* Its own tick, on for counter staff by default; the server checks it too. */
+  departments: 'sale.department',
   /*
    * Off for a pharmacy running on its own.
    *
@@ -177,7 +185,35 @@ export function Pharmacy({ me }: { me: SessionUser }) {
     setTab('billing')
   }
 
-  const items = NAV.filter((n) => can(n.id))
+  /*
+   * Expired batches still on the shelf, as a badge beside Expiry in the rail.
+   *
+   * The same request, and so the same rule, as the Expiry screen used for
+   * the badge that sat beside its title: batches past their expiry date
+   * (before the database's today) that still hold stock. Read once when the
+   * module opens, again whenever the person moves between tabs — stock comes
+   * in under Receive and goes out under Expiry and Damage, and moving away
+   * from those is when the count can have changed — after every write-off,
+   * and every ten minutes so it turns over at midnight on a till left open.
+   * A failed read leaves the last count rather than flashing it away.
+   */
+  const [expired, setExpired] = useState<{ batches: number; medicines: number; units: number } | null>(null)
+  const mayExpiry = can('expiry')
+  const loadExpired = useCallback(() => {
+    if (!mayExpiry) return
+    api.ph.expiredCount().then(setExpired).catch(() => {})
+  }, [mayExpiry])
+  useEffect(loadExpired, [loadExpired, tab])
+  useEffect(() => {
+    const t = setInterval(loadExpired, 10 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [loadExpired])
+
+  const items = NAV.filter((n) => can(n.id)).map((n) => n.id === 'expiry' && expired
+    ? { ...n, badge: expired.batches, badgeTone: 'bad' as const,
+        badgeTitle: `${expired.batches} ${tr('expired batches')} · ${expired.medicines} ${
+          tr('medicines')} · ${expired.units} ${tr('units on the shelf')}` }
+    : n)
 
   return (
     <div className="flex h-full min-h-0">
@@ -212,10 +248,11 @@ export function Pharmacy({ me }: { me: SessionUser }) {
         {tab === 'stock' && <StockScreen />}
         {tab === 'audits' && <Audits me={me} />}
         {tab === 'damage' && <WriteOff kind="damage" me={me} />}
-        {tab === 'expiry' && <WriteOff kind="expiry" me={me} />}
+        {tab === 'expiry' && <WriteOff kind="expiry" me={me} onWrittenOff={loadExpired} />}
         {tab === 'ordering' && <Ordering me={me} />}
         {tab === 'opening' && <Opening me={me} />}
-        {tab === 'bills' && <Bills />}
+        {tab === 'bills' && <Bills me={me} />}
+        {tab === 'departments' && <DepartmentBilling me={me} />}
         {tab === 'overview' && <Overview />}
         {tab === 'reports' && <Reports me={me} />}
         {tab === 'ledgers' && <Ledgers me={me} />}

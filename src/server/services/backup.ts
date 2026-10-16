@@ -77,21 +77,38 @@ export async function checkExtraDir(dir: string) {
   }
 }
 
-export async function runBackup(reason: 'scheduled' | 'manual' = 'manual') {
+export async function runBackup(reason: 'scheduled' | 'manual' | 'pre-restore' = 'manual') {
   const dir = backupDir()
   await mkdir(dir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const file = join(dir, `hms-${stamp}.ndjson.gz`)
   const tables = await tableNames()
 
+  /*
+   * Which migration the data was taken at, so a restore can tell a backup
+   * from a newer version of the software apart from an older one. Missing
+   * from backups written before restore existed; those are still accepted.
+   */
+  const lastMigration = ((await db.execute<any>(sql`
+    SELECT name FROM _migrations ORDER BY name DESC LIMIT 1`)).rows as any[])[0]?.name ?? null
+
   async function* lines() {
     yield JSON.stringify({
-      _meta: true, takenAt: new Date().toISOString(), reason, tables, format: 'ndjson.gz/v1'
+      _meta: true, takenAt: new Date().toISOString(), reason, tables, format: 'ndjson.gz/v1',
+      lastMigration
     }) + '\n'
+    const counts: Record<string, number> = {}
     for (const t of tables) {
       const rows = (await db.execute<any>(sql.raw(`SELECT * FROM ${t}`))).rows as any[]
+      counts[t] = rows.length
       for (const row of rows) yield JSON.stringify({ _table: t, row }) + '\n'
     }
+    /*
+     * A closing line with the row counts. The restore checks the file
+     * against it, so a backup cut short — a full disk, a USB stick pulled
+     * mid-copy — is refused instead of restored as if it were complete.
+     */
+    yield JSON.stringify({ _end: true, counts }) + '\n'
   }
 
   await pipeline(Readable.from(lines()), createGzip(), createWriteStream(file))

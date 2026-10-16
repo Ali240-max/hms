@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
-import { documentNo } from './numbering'
+import { documentNo, nextToken, queueFor } from './numbering'
 
 /**
  * Payment chits.
@@ -47,49 +47,91 @@ export const CATEGORY_LABEL: Record<string, string> = {
 }
 
 /**
- * Print chits for everything ordered on a visit that has not been billed yet.
+ * Raise chits for whatever on a visit has not been put on one yet.
+ *
+ * The one place chits are made — the doctor's orders, the counter's walk-in
+ * tests and the "print chits" button all come through here — so the grouping
+ * and the token cannot drift apart between them, which is how the walk-in
+ * path ended up with its own token counter in the first place.
  *
  * Grouped by department, so a patient sent for two x-rays and three blood
- * tests carries two chits and makes two payments, not five.
+ * tests carries two chits and makes two payments, not five. The department is
+ * the one the service's category is mapped to, falling back to the service's
+ * own; work with neither is grouped by its kind, as it always was.
+ *
+ * Each chit carries the token of its department's queue (see nextToken).
+ * Chits raised together for the same queue share one token: it is one patient
+ * standing in that department's line, not two.
+ */
+export async function raiseChits(tx: any, input: {
+  visitId: number
+  createdBy: string
+}): Promise<any[]> {
+  const pending = (await tx.execute(sql`
+    SELECT so.id, so.price_paisa, sv.category,
+           COALESCE(sc.department_id, sv.department_id) AS department_id
+    FROM service_orders so
+    JOIN services sv ON sv.id = so.service_id
+    LEFT JOIN service_categories sc ON sc.id = sv.category_id
+    WHERE so.visit_id = ${input.visitId} AND so.chit_id IS NULL AND so.status <> 'cancelled'
+    ORDER BY sv.category, so.id
+    FOR UPDATE OF so`)).rows as any[]
+  if (pending.length === 0) return []
+
+  const visit = (await tx.execute(sql`
+    SELECT id, patient_id FROM visits WHERE id = ${input.visitId}`)).rows[0] as any
+  if (!visit) throw new ChitError('Visit not found', 'NOT_FOUND')
+
+  /*
+   * One chit per department AND kind. The kind stays on the chit because the
+   * chit list, its printed heading and the counter's collection report all
+   * read it; a department mapped from two kinds still gets one token.
+   */
+  const groups = new Map<string, { kind: string; departmentId: number | null; rows: any[] }>()
+  for (const row of pending) {
+    const dept = row.department_id == null ? null : Number(row.department_id)
+    const key = `${dept ?? '-'}|${row.category}`
+    const g = groups.get(key) ?? { kind: String(row.category), departmentId: dept, rows: [] as any[] }
+    g.rows.push(row)
+    groups.set(key, g)
+  }
+
+  const tokens = new Map<string, number>()
+  const made: any[] = []
+  for (const g of groups.values()) {
+    const queue = queueFor(g.departmentId, `kind:${g.kind}`)
+    let token = tokens.get(queue)
+    if (token === undefined) {
+      token = await nextToken(tx, queue)
+      tokens.set(queue, token)
+    }
+    const total = g.rows.reduce((n, l) => n + Number(l.price_paisa), 0)
+    const chitNo = await nextChitNo(tx)
+    const chit = (await tx.execute(sql`
+      INSERT INTO chits (chit_no, visit_id, patient_id, category, total_paisa, created_by,
+                         token_no, department_id)
+      VALUES (${chitNo}, ${input.visitId}, ${visit.patient_id}, ${g.kind}::service_category,
+              ${total}, ${input.createdBy}, ${token}, ${g.departmentId})
+      RETURNING *`)).rows[0]
+    await tx.execute(sql`
+      UPDATE service_orders SET chit_id = ${chit.id}
+      WHERE id IN (${sql.join(g.rows.map((l) => sql`${l.id}`), sql`, `)})`)
+    made.push(chit)
+  }
+  return made
+}
+
+/**
+ * Print chits for everything ordered on a visit that has not been billed yet.
  */
 export async function createChitsForVisit(visitId: number, createdBy: string) {
   return db.transaction(async (tx) => {
     const visit = (await tx.execute<any>(sql`
-      SELECT v.id, v.patient_id FROM visits v WHERE v.id = ${visitId}`)).rows[0]
+      SELECT v.id FROM visits v WHERE v.id = ${visitId}`)).rows[0]
     if (!visit) throw new ChitError('Visit not found', 'NOT_FOUND')
-
-    const pending = (await tx.execute<any>(sql`
-      SELECT so.id, so.service_name, so.price_paisa, s.category
-      FROM service_orders so
-      JOIN services s ON s.id = so.service_id
-      WHERE so.visit_id = ${visitId} AND so.chit_id IS NULL AND so.status <> 'cancelled'
-      ORDER BY s.category, so.id
-      FOR UPDATE OF so`)).rows
-
-    if (pending.length === 0) {
+    const made = await raiseChits(tx, { visitId, createdBy })
+    if (made.length === 0) {
       throw new ChitError('Everything ordered on this visit has already been printed', 'NOTHING_TO_BILL')
-    }
-
-    const byCategory = new Map<string, any[]>()
-    for (const row of pending) {
-      const list = byCategory.get(row.category) ?? []
-      list.push(row)
-      byCategory.set(row.category, list)
-    }
-
-    const made: any[] = []
-    for (const [category, lines] of byCategory) {
-      const total = lines.reduce((n, l) => n + Number(l.price_paisa), 0)
-      const chitNo = await nextChitNo(tx)
-      const chit = (await tx.execute<any>(sql`
-        INSERT INTO chits (chit_no, visit_id, patient_id, category, total_paisa, created_by)
-        VALUES (${chitNo}, ${visitId}, ${visit.patient_id}, ${category}::service_category,
-                ${total}, ${createdBy})
-        RETURNING *`)).rows[0]
-      await tx.execute(sql`
-        UPDATE service_orders SET chit_id = ${chit.id}
-        WHERE id IN (${sql.join(lines.map((l) => sql`${l.id}`), sql`, `)})`)
-      made.push(chit)
     }
     return made
   })
@@ -99,11 +141,13 @@ export async function createChitsForVisit(visitId: number, createdBy: string) {
 export async function chitForPrint(chitId: number) {
   const chit = (await db.execute<any>(sql`
     SELECT c.*, p.mrn, p.name AS patient_name, p.phone, p.gender, p.age_years,
-           v.visit_no, v.token_no, v.created_at,
+           v.visit_no, COALESCE(c.token_no, v.token_no) AS token_no, v.created_at,
+           dep.name AS department_name,
            st.display_name AS doctor_name, d.specialisation
     FROM chits c
     JOIN patients p ON p.id = c.patient_id
     JOIN visits v   ON v.id = c.visit_id
+    LEFT JOIN departments dep ON dep.id = c.department_id
     LEFT JOIN doctors d ON d.id = v.doctor_id
     LEFT JOIN staff st  ON st.id = d.staff_id
     WHERE c.id = ${chitId}`)).rows[0]
@@ -113,7 +157,12 @@ export async function chitForPrint(chitId: number) {
     SELECT so.id, so.service_name, so.price_paisa, so.status
     FROM service_orders so WHERE so.chit_id = ${chitId} ORDER BY so.id`)).rows
 
-  return { chit, lines, categoryLabel: CATEGORY_LABEL[chit.category] ?? chit.category }
+  /*
+   * "Show this slip at Dental" rather than "at Procedure": the department the
+   * chit was raised for, where it has one, is where the patient walks to.
+   */
+  return { chit, lines,
+    categoryLabel: chit.department_name ?? CATEGORY_LABEL[chit.category] ?? chit.category }
 }
 
 export async function chitsForVisit(visitId: number) {
@@ -183,21 +232,36 @@ export async function listChits(opts: {
   const { status = 'all', category = 'all', q = '', from, to } = opts
   let where = sql`true`
   if (status !== 'all') where = sql`${where} AND c.status = ${status}::order_status`
-  if (category !== 'all') where = sql`${where} AND c.category = ${category}::service_category`
+  /*
+   * `dept:<id>` is a department, as the counter's category filter sends for
+   * a category mapped to one. Chits raised before departments were stamped
+   * on them match through their kind, so last month's lab chits are still
+   * found under the laboratory.
+   */
+  const dept = /^dept:(\d+)$/.exec(category)
+  if (dept) {
+    const id = Number(dept[1])
+    where = sql`${where} AND (c.department_id = ${id} OR (c.department_id IS NULL AND c.category IN (
+      SELECT sc.kind FROM service_categories sc WHERE sc.department_id = ${id})))`
+  } else if (['lab', 'radiology', 'procedure', 'other'].includes(category)) {
+    where = sql`${where} AND c.category = ${category}::service_category`
+  }
   if (from && to) where = sql`${where} AND c.created_at >= ${from}::date AND c.created_at < (${to}::date + interval '1 day')`
   if (q) {
     const like = `%${q}%`
     where = sql`${where} AND (c.chit_no ILIKE ${like} OR p.mrn ILIKE ${like}
                            OR p.name ILIKE ${like} OR p.phone ILIKE ${like}
-                           OR v.token_no::text = ${q})`
+                           OR COALESCE(c.token_no, v.token_no)::text = ${q})`
   }
   const rows = (await db.execute<any>(sql`
-    SELECT c.*, p.mrn, p.name AS patient_name, p.phone, v.token_no, v.visit_no,
-           st.display_name AS doctor_name,
+    SELECT c.*, p.mrn, p.name AS patient_name, p.phone,
+           COALESCE(c.token_no, v.token_no) AS token_no, v.visit_no,
+           st.display_name AS doctor_name, dep.name AS department_name,
            (SELECT COUNT(*)::int FROM service_orders so WHERE so.chit_id = c.id) AS line_count
     FROM chits c
     JOIN patients p ON p.id = c.patient_id
     JOIN visits v   ON v.id = c.visit_id
+    LEFT JOIN departments dep ON dep.id = c.department_id
     LEFT JOIN doctors d ON d.id = v.doctor_id
     LEFT JOIN staff st  ON st.id = d.staff_id
     WHERE ${where}

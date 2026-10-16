@@ -65,6 +65,21 @@ export function Reports({ me }: { me: SessionUser }) {
    * filter across and show somebody a report that looks empty.
    */
   const [picks, setPicks] = useState<Record<string, Record<string, string>>>({})
+  /*
+   * The search box, held apart from `picks` and copied in after a pause, so
+   * the report is not re-run on every keystroke of a bill number.
+   */
+  const [typed, setTyped] = useState<Record<string, string>>({})
+  useEffect(() => {
+    const key = catalogue.find((r) => r.id === selected)?.search?.key
+    if (!key) return
+    const v = typed[selected] ?? ''
+    if ((picks[selected]?.[key] ?? '') === v) return
+    const t = setTimeout(() => setPicks((p) => ({
+      ...p, [selected]: { ...(p[selected] ?? {}), [key]: v }
+    })), 300)
+    return () => clearTimeout(t)
+  }, [typed, selected, catalogue, picks])
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -215,9 +230,23 @@ export function Reports({ me }: { me: SessionUser }) {
             report and these belong to one, and mixing them makes a row that
             changes shape as you move down the list.
           */}
-          {def?.filters?.length > 0 && (
+          {(def?.filters?.length > 0 || def?.search) && (
             <div className="mt-3 flex flex-wrap items-end gap-3">
-              {def.filters.map((f: any) => (
+              {/*
+                A typed search, for the reports that have one — finding one
+                bill by its number. Kept in the same per-report bag as the
+                dropdowns, so it goes on the PDF too.
+              */}
+              {def?.search && (
+                <label className="block">
+                  <span className="label">{tr(def.search.label)}</span>
+                  <input value={typed[selected] ?? ''}
+                    onChange={(e) => setTyped((t) => ({ ...t, [selected]: e.target.value }))}
+                    placeholder={def.search.placeholder ? tr(def.search.placeholder) : undefined}
+                    className="field w-56 py-1.5 text-2xs" />
+                </label>
+              )}
+              {(def.filters ?? []).map((f: any) => (
                 <label key={f.key} className="block">
                   <span className="label">{tr(f.label)}</span>
                   <select
@@ -234,7 +263,10 @@ export function Reports({ me }: { me: SessionUser }) {
                 </label>
               ))}
               {Object.keys(chosen).length > 0 && (
-                <button onClick={() => setPicks((p) => ({ ...p, [selected]: {} }))}
+                <button onClick={() => {
+                  setPicks((p) => ({ ...p, [selected]: {} }))
+                  setTyped((t) => ({ ...t, [selected]: '' }))
+                }}
                   className="btn-ghost px-2.5 py-1.5 text-2xs">
                   {tr('Clear')}
                 </button>
@@ -297,6 +329,24 @@ function columnLabel(data: any, key: string) {
 /** The figures worth seeing before the table. */
 function Headline({ stats }: { stats: any }) {
   const cards: [string, string, string | undefined][] = []
+  /* The credit bills report. Received and collected are kept apart on
+     purpose: see the definition in report-catalogue.ts. */
+  if (stats.outstanding_paisa != null && stats.billed_paisa != null) {
+    cards.push([tr('Billed on credit'), `Rs ${rs(stats.billed_paisa)}`,
+      `${stats.bills} ${tr('bills')}`])
+    cards.push([tr('Received on these bills'), `Rs ${rs(stats.received_on_these_paisa)}`,
+      `${stats.settled_bills} ${tr('settled')} · ${stats.part_paid_bills} ${tr('part paid')}`])
+    cards.push([tr('Still owed'), `Rs ${rs(stats.outstanding_paisa)}`,
+      `${stats.outstanding_bills} ${tr('with nothing received')}`])
+    cards.push([tr('Credit collected in period'), `Rs ${rs(stats.collected_in_period_paisa)}`,
+      tr('by the day it was received')])
+  }
+  if (stats.dept_bills != null) {
+    cards.push([tr('Department bills'), String(stats.dept_bills),
+      `${stats.departments} ${tr('departments')}`])
+    cards.push([tr('Charged to departments'), `Rs ${rs(stats.dept_paisa)}`,
+      tr('not money collected')])
+  }
   if (stats.invoices != null) {
     cards.push([tr('Invoices'), String(stats.invoices),
       stats.credit_invoices ? `${stats.credit_invoices} ${tr('on credit')}` : undefined])
@@ -304,6 +354,14 @@ function Headline({ stats }: { stats: any }) {
   if (stats.revenue_paisa != null) {
     cards.push([tr('Revenue'), `Rs ${rs(stats.revenue_paisa)}`,
       stats.average_paisa ? `${tr('avg')} Rs ${rs(stats.average_paisa)}` : undefined])
+  }
+  /* Billed is not collected: credit and department bills bring nothing in
+     until paid. Shown beside revenue so the two cannot be mistaken. */
+  if (stats.collected_paisa != null && stats.revenue_paisa != null) {
+    cards.push([tr('Collected'), `Rs ${rs(stats.collected_paisa)}`,
+      stats.credit_received_paisa
+        ? `${tr('incl. credit received')} Rs ${rs(stats.credit_received_paisa)}`
+        : tr('paid at the counter')])
   }
   if (stats.margin_paisa != null) {
     cards.push([tr('Margin'), `Rs ${rs(stats.margin_paisa)}`,
@@ -335,7 +393,64 @@ function Headline({ stats }: { stats: any }) {
 function Table({ data }: { data: any }) {
   const cols = data.columns as any[]
   const totals = data.totals ?? {}
-  const hasTotals = (data.totalKeys ?? []).length > 0
+  const keys: string[] = data.totalKeys ?? []
+  const hasTotals = keys.length > 0
+  const isRight = (c: any) => c.money || c.align === 'right'
+
+  /*
+   * Grouped the way the printed copy is, when the report is grouped.
+   *
+   * The PDF has always broken a grouped report into blocks — supplier, then
+   * each delivery, with a total under each — while this screen showed one
+   * flat list, so "the OT's bills" could only be seen by printing. The rows
+   * arrive already in group order; this only draws the headings and the
+   * subtotals between them.
+   */
+  const body: any[] = []
+  if (!data.groupBy) {
+    data.rows.forEach((row: any, i: number) => body.push({ kind: 'row', row, i }))
+  } else {
+    const g = data.groupBy as string, sg = data.subGroupBy as string | undefined
+    let i = 0
+    while (i < data.rows.length) {
+      const group = String(data.rows[i][g] ?? '—')
+      body.push({ kind: 'group', label: group })
+      const groupRows: any[] = []
+      while (i < data.rows.length && String(data.rows[i][g] ?? '—') === group) {
+        if (sg) {
+          const sub = String(data.rows[i][sg] ?? '—')
+          body.push({ kind: 'sub', label: sub })
+          const subRows: any[] = []
+          while (i < data.rows.length && String(data.rows[i][g] ?? '—') === group
+                 && String(data.rows[i][sg] ?? '—') === sub) {
+            body.push({ kind: 'row', row: data.rows[i], i })
+            subRows.push(data.rows[i]); groupRows.push(data.rows[i]); i++
+          }
+          if (hasTotals) body.push({ kind: 'subtotal', rows: subRows, label: data.subGroupLabel ?? 'Total' })
+        } else {
+          body.push({ kind: 'row', row: data.rows[i], i })
+          groupRows.push(data.rows[i]); i++
+        }
+      }
+      if (hasTotals) {
+        body.push({ kind: 'total', rows: groupRows,
+          label: `${data.groupLabel ?? 'Group'} ${tr('total')} — ${group}` })
+      }
+    }
+  }
+  const sum = (rows: any[], k: string) => rows.reduce((n, r) => n + Number(r[k] ?? 0), 0)
+  const totalRow = (key: string, rows: any[], label: string, strong: boolean) => (
+    <tr key={key} className={strong ? 'border-t-2 border-line bg-raised' : 'bg-screen'}>
+      {cols.map((c, ci) => (
+        <td key={c.key} className={`px-3 py-1.5 text-2xs ${strong ? 'font-semibold' : 'font-medium'} ${
+          isRight(c) ? 'text-right num text-primary' : 'text-muted'}`}>
+          {keys.includes(c.key)
+            ? (c.money ? rs(sum(rows, c.key)) : sum(rows, c.key))
+            : ci === 0 ? tr(label) : ''}
+        </td>
+      ))}
+    </tr>
+  )
 
   return (
     <div className="overflow-x-auto">
@@ -343,26 +458,49 @@ function Table({ data }: { data: any }) {
         <thead className="thead-strip">
           <tr>
             {cols.map((c) => (
-              <Th key={c.key} right={c.money || c.align === 'right'}>{tr(c.label)}</Th>
+              <Th key={c.key} right={isRight(c)}>{tr(c.label)}</Th>
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-divide rows-striped anim-rows">
-          {data.rows.map((row: any, i: number) => (
-            <tr key={i}>
-              {cols.map((c) => {
-                const v = row[c.key]
-                const right = c.money || c.align === 'right'
-                return (
-                  <td key={c.key}
-                    className={`px-3 py-1.5 text-2xs ${right ? 'text-right num' : 'text-body'} ${
-                      c.money && Number(v) < 0 ? 'text-bad' : ''}`}>
-                    {c.money ? rs(v) : (v ?? '—')}
+        <tbody className={data.groupBy ? 'divide-y divide-divide'
+          : 'divide-y divide-divide rows-striped anim-rows'}>
+          {body.map((b, n) => {
+            if (b.kind === 'group') {
+              return (
+                <tr key={`g${n}`} className="bg-primary/5">
+                  <td colSpan={cols.length} className="px-3 py-2 text-sm font-semibold text-heading">
+                    {b.label}
                   </td>
-                )
-              })}
-            </tr>
-          ))}
+                </tr>
+              )
+            }
+            if (b.kind === 'sub') {
+              return (
+                <tr key={`s${n}`}>
+                  <td colSpan={cols.length} className="px-3 pb-1 pt-2 num text-2xs font-medium text-primary">
+                    {b.label}
+                  </td>
+                </tr>
+              )
+            }
+            if (b.kind === 'subtotal') return totalRow(`st${n}`, b.rows, b.label, false)
+            if (b.kind === 'total') return totalRow(`t${n}`, b.rows, b.label, true)
+            const row = b.row
+            return (
+              <tr key={`r${n}`} className={data.groupBy && b.i % 2 ? 'bg-raised/40' : ''}>
+                {cols.map((c) => {
+                  const v = row[c.key]
+                  return (
+                    <td key={c.key}
+                      className={`px-3 py-1.5 text-2xs ${isRight(c) ? 'text-right num' : 'text-body'} ${
+                        c.money && Number(v) < 0 ? 'text-bad' : ''}`}>
+                      {c.money ? rs(v) : (v ?? '—')}
+                    </td>
+                  )
+                })}
+              </tr>
+            )
+          })}
         </tbody>
         {hasTotals && (
           <tfoot>
@@ -370,8 +508,8 @@ function Table({ data }: { data: any }) {
               {cols.map((c, i) => (
                 <td key={c.key}
                   className={`px-3 py-2 text-2xs font-semibold ${
-                    c.money || c.align === 'right' ? 'text-right num text-primary' : 'text-muted'}`}>
-                  {(data.totalKeys ?? []).includes(c.key)
+                    isRight(c) ? 'text-right num text-primary' : 'text-muted'}`}>
+                  {keys.includes(c.key)
                     ? (c.money ? rs(totals[c.key]) : totals[c.key])
                     : i === 0 ? tr('Grand Total') : ''}
                 </td>

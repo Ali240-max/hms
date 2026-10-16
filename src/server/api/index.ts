@@ -19,7 +19,7 @@ import {
   saveConsultation, getPrescription, pendingPrescriptions, doctorEarnings,
   allDoctorEarnings, listServices, upsertService, ClinicalError
 } from '../services/clinical'
-import { loadDemoData, hasAnyData } from '../services/demo'
+import { loadDemoData, hasAnyData, DemoError } from '../services/demo'
 import { pharmacy } from './pharmacy'
 import { pharma } from './pharma'
 import { reports } from './reports'
@@ -94,6 +94,13 @@ import {
   directServiceVisit, BillError
 } from '../services/billing'
 
+import {
+  listCategories, saveCategory, deleteCategory, CategoryError, SERVICE_KINDS
+} from '../services/service-categories'
+import {
+  inspectBackup, restoreBackup, saveUpload, RestoreError, discardUpload
+} from '../services/restore'
+
 export const api = new Hono()
 api.use('*', cors({ origin: '*' }))
 
@@ -121,6 +128,9 @@ api.onError((err, c) => {
     const status = err.code === 'NOT_FOUND' || err.code === 'NO_STAFF' ? 404
       : err.code === 'BAD_ID' ? 400 : 409
     return c.json({ error: err.message, code: err.code }, status)
+  }
+  if (err instanceof CategoryError || err instanceof RestoreError) {
+    return c.json({ error: err.message, code: err.code }, err.code === 'NOT_FOUND' ? 404 : 409)
   }
   if (err instanceof PatientError || err instanceof ClinicalError) {
     return c.json({ error: err.message, code: err.code }, err.code === 'NOT_FOUND' ? 404 : 409)
@@ -555,6 +565,33 @@ api.get('/doctors', async (c) =>
 
 api.get('/services', async (c) => c.json(await listServices(c.req.query('all') === '1')))
 
+/* ---------------------------------------------------- service categories */
+
+/**
+ * The categories services are filed under, each with its department.
+ *
+ * Read by the Services screen, the Main Counter's "what are they here for?"
+ * boxes and the walk-in test list, so it is open to every signed-in role the
+ * way the service list is. `all=1` includes switched-off categories, for the
+ * administrator's screen.
+ */
+api.get('/service-categories', async (c) =>
+  c.json(await listCategories(c.req.query('all') === '1')))
+
+api.post('/service-categories', adminCan('admin.services.edit'), async (c) => {
+  const b = z.object({
+    id: z.number().int().optional(),
+    name: z.string().trim().min(1, 'Give the category a name').max(80),
+    departmentId: z.number().int().nullable(),
+    kind: z.enum(SERVICE_KINDS as [string, ...string[]]).optional(),
+    isActive: z.boolean().optional()
+  }).parse(await c.req.json())
+  return c.json(await saveCategory(b as any), b.id ? 200 : 201)
+})
+
+api.delete('/service-categories/:id', adminCan('admin.services.edit'), async (c) =>
+  c.json(await deleteCategory(Number(c.req.param('id')))))
+
 /**
  * Delete a service outright.
  *
@@ -590,7 +627,13 @@ api.post('/services', adminOnly, async (c) => {
     id: z.number().int().optional(),
     code: z.string().nullable().optional(),
     name: z.string().min(1),
-    category: z.enum(['lab', 'radiology', 'procedure', 'other']),
+    /*
+     * The category it is filed under, which brings its kind and department
+     * with it. `category` (the bare kind) is still accepted from older
+     * screens and files the service under that kind's built-in category.
+     */
+    categoryId: z.number().int().nullable().optional(),
+    category: z.enum(['lab', 'radiology', 'procedure', 'other']).optional(),
     pricePaisa: z.number().int().min(0),
     defaultShareBp: z.number().int().min(0).max(10000),
     // Which department owns it, so reports can split an ECG from an X-ray
@@ -2194,6 +2237,45 @@ api.post('/admin/wipe', adminCan('admin.wipe'), async (c) => {
 })
 api.post('/admin/backups', adminCan('admin.backup'), async (c) => c.json(await runBackup('manual'), 201))
 
+/* ------------------------------------------------- restore from a backup */
+
+/*
+ * Restoring is its own permission (admin.restore), separate from taking a
+ * backup, and guarded: it replaces every record in the system. The checks,
+ * the safety backup and the single transaction are in services/restore.ts.
+ */
+
+/** Upload a backup file to be checked. The body is the raw .ndjson.gz. */
+api.post('/admin/restore/upload', adminCan('admin.restore'), async (c) =>
+  c.json(await saveUpload(c.req.raw.body), 201))
+
+/** Check a backup already in the server's backups folder, by its file name. */
+api.post('/admin/restore/inspect', adminCan('admin.restore'), async (c) => {
+  const b = z.object({ file: z.string().min(1).max(200) }).parse(await c.req.json())
+  return c.json(await inspectBackup({ file: b.file }))
+})
+
+api.delete('/admin/restore/upload/:id', adminCan('admin.restore'), async (c) => {
+  await discardUpload(c.req.param('id'))
+  return c.json({ ok: true })
+})
+
+api.post('/admin/restore', adminCan('admin.restore'), async (c) => {
+  const b = z.object({
+    upload: z.string().optional(),
+    file: z.string().optional(),
+    password: z.string().min(1),
+    confirm: z.string().min(1)
+  }).parse(await c.req.json())
+  if (!b.upload === !b.file) {
+    return c.json({ error: 'Choose one backup to restore', code: 'INVALID_INPUT' }, 400)
+  }
+  return c.json(await restoreBackup({
+    source: b.upload ? { upload: b.upload } : { file: b.file! },
+    staffId: me(c).id, password: b.password, confirm: b.confirm
+  }))
+})
+
 /**
  * The reception day, for closing the counter.
  *
@@ -2602,16 +2684,21 @@ api.post('/admin/demo-data', adminCan('admin.demo'), async (c) => {
     pharmacy: z.boolean().default(true)
   }).parse(await c.req.json().catch(() => ({})))
 
-  if (!b.reset && await hasAnyData()) {
-    return c.json({
-      error: 'There are already patients in this system',
-      detail: 'Loading demo data on top would mix real records with invented ones. ' +
-              'Choose the replace option if this is a test system.',
-      code: 'HAS_DATA'
-    }, 409)
+  /*
+   * The emptiness check is made again inside the load, under a lock, so
+   * two presses at once cannot both pass it. The whole load is one
+   * transaction: on any failure nothing is kept, and the error says which
+   * step failed.
+   */
+  try {
+    return c.json(await loadDemoData(
+      { reset: b.reset, days: b.days, pharmacy: b.pharmacy, requireEmpty: true }), 201)
+  } catch (e: any) {
+    if (e instanceof DemoError) {
+      return c.json({ error: e.message, detail: e.detail, code: e.code }, 409)
+    }
+    throw e
   }
-  return c.json(await loadDemoData(
-    { reset: b.reset, days: b.days, pharmacy: b.pharmacy }), 201)
 })
 
 /* ------------------------------------------------------------ admin home */

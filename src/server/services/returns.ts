@@ -171,7 +171,14 @@ export async function createReturn(input: {
 
     return {
       ...ret, total_paisa: refund, items: done,
-      refund_to: sale.sale_kind === 'credit' ? 'ledger' : (input.refundMethod ?? 'cash'),
+      /*
+       * A credit bill from the till carries pay_method 'credit' without the
+       * kind, and a department bill was never paid either: neither is
+       * refunded in cash. The return comes off what is owed instead, which
+       * is how the credit bill's outstanding balance is worked out.
+       */
+      refund_to: sale.sale_kind === 'credit' || sale.sale_kind === 'department'
+        || sale.pay_method === 'credit' ? 'ledger' : (input.refundMethod ?? 'cash'),
       invoice_no: sale.invoice_no
     }
   })

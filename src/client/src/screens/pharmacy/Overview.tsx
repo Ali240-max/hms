@@ -57,6 +57,18 @@ export function Overview() {
               sub={tr('Settles to the bank, not the drawer')} />
             <Stat label={tr('Discount given')} value={`Rs ${rs(d.cashUp.discount_paisa)}`} />
           </div>
+          {/*
+            Credit is not in either figure above until it is paid. Shown so
+            the gap between the day's bills and the drawer is explained.
+          */}
+          {(Number(d.cashUp.on_credit_paisa) > 0 || Number(d.cashUp.credit_received_paisa) > 0) && (
+            <p className="mt-3 text-2xs text-muted">
+              {tr('Billed on credit or to departments today, not in the drawer')}:{' '}
+              <span className="num text-body">Rs {rs(d.cashUp.on_credit_paisa)}</span>
+              {' · '}{tr('Credit payments received today, included above')}:{' '}
+              <span className="num text-ok">Rs {rs(d.cashUp.credit_received_paisa)}</span>
+            </p>
+          )}
         </Card>
       )}
 

@@ -1,7 +1,7 @@
 import { sql, eq } from 'drizzle-orm'
 import { db, nextCounter } from '../db/client'
 import * as s from '../db/schema'
-import { documentNo } from './numbering'
+import { documentNo, nextToken, queueFor } from './numbering'
 
 /**
  * Patient identity.
@@ -241,9 +241,13 @@ export async function createVisit(input: {
     const doctor = (doc.rows as any[])[0]
     if (!doctor) throw new PatientError('No such doctor', 'NOT_FOUND')
 
-    const today = new Date().toISOString().slice(0, 10)
-    const tokenKey = `token:${today}`
-    const tokenNo = await nextCounter(tx, tokenKey)
+    /*
+     * The doctor's department queue. Two doctors in the same department
+     * share a line; a doctor with no department set joins the general OPD
+     * queue. The laboratory and the x-ray room keep their own (see
+     * nextToken), so a consultation no longer moves their numbers on.
+     */
+    const tokenNo = await nextToken(tx, queueFor(doctor.department_id, 'opd'))
     /*
      * VIS-260918-V00042.
      *

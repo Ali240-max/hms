@@ -94,7 +94,7 @@ reports.get('/', async (c) => {
     out.push({
       id: r.id, group: r.group, module: r.module, title: r.title, blurb: r.blurb,
       dated: r.dated, columns: r.columns, chart: r.chart, totalKeys: r.totalKeys,
-      groupBy: r.groupBy, groupLabel: r.groupLabel, filters
+      groupBy: r.groupBy, groupLabel: r.groupLabel, filters, search: r.search
     })
   }
   return c.json(out)
@@ -144,6 +144,8 @@ reports.get('/run/:id', async (c) => {
   return c.json({
     id: def.id, title: def.title, blurb: def.blurb, window: w,
     columns: def.columns, chart: def.chart, totalKeys: def.totalKeys,
+    groupBy: def.groupBy, groupLabel: def.groupLabel,
+    subGroupBy: def.subGroupBy, subGroupLabel: def.subGroupLabel,
     rows, stats,
     totals: Object.fromEntries((def.totalKeys ?? []).map((k) =>
       [k, rows.reduce((n: number, r: any) => n + Number(r[k] ?? 0), 0)]))

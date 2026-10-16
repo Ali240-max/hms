@@ -30,6 +30,13 @@ const OFFLINE = [
 const ONLINE = [
   'billing', 'chits', 'screens', 'pharmacy', 'supplies', 'emergency',
   'lab', 'returns', 'modules', 'reports', 'numbering', 'admin', 'escpos',
+  /* Credit bills, department bills, the expired badge, the lab's booked time.
+     Also reads DATABASE_URL directly, so it must be the server's database. */
+  'credit',
+  /* Service categories, department token queues, the department report
+     filter and the pharmacy bill tabs. Its restore section only runs with
+     VERIFY_RESTORE=1, because it replaces the whole database. */
+  'queues',
   /* The attendance agent's whole HTTP protocol, minus the SDK calls. */
   'agent'
 ]

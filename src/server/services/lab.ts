@@ -16,6 +16,30 @@ import { issueSupplies } from './supplies'
  * reagents away, and there is no way to bill for it afterwards.
  */
 
+
+/**
+ * When the test was BOOKED: the moment its bill was made at the counter.
+ *
+ * Not when the sample was drawn and not when the report was written — the
+ * report already carries those two — but when the patient paid for the test,
+ * which is where a complaint about waiting starts counting from.
+ *
+ * Read from the invoice line that names this service order (every bill
+ * written by completeBill since counter invoices existed has one), or failing
+ * that the invoice written for the chit the order was on. Each test on a
+ * bill of several gets that one bill's time, because that is when all of them
+ * were booked. A test with no counter invoice behind it — bedside work on an
+ * admission, anything paid before invoices existed — has no booked time, and
+ * NULL is returned rather than borrowing another timestamp that would look
+ * right and be wrong.
+ */
+const BOOKED_AT = sql`COALESCE(
+  (SELECT MIN(cb.created_at) FROM counter_bill_items cbi
+     JOIN counter_bills cb ON cb.id = cbi.bill_id
+    WHERE cbi.ref_type = 'service_order' AND cbi.ref_id = so.id),
+  (SELECT MIN(cb.created_at) FROM counter_bills cb
+    WHERE so.chit_id IS NOT NULL AND cb.chit_id = so.chit_id))`
+
 export class LabError extends Error {
   constructor(msg: string, public code:
     'NOT_FOUND' | 'NOT_PAID' | 'WRONG_STATE' | 'NO_VALUES') { super(msg) }
@@ -83,10 +107,14 @@ export async function labQueue(opts: {
            -- working afterwards.
            sv.code AS service_code,
            lo.id AS lab_order_id, lo.report_no, lo.sample_type,
+           ${BOOKED_AT} AS booked_at,
            lo.collected_at, lo.collected_by, lo.started_at, lo.resulted_at, lo.resulted_by,
            lo.verified_at, lo.verified_by, lo.notes,
            COALESCE(lo.status, 'pending') AS lab_status,
-           v.id AS visit_id, v.token_no, v.visit_no, v.visit_type, v.created_at AS visit_at,
+           -- The department's own token from the chit; the visit's for work
+           -- ordered before tokens were per department.
+           v.id AS visit_id, COALESCE(ch.token_no, v.token_no) AS token_no,
+           v.visit_no, v.visit_type, v.created_at AS visit_at,
            p.id AS patient_id, p.mrn, p.name AS patient_name, p.age_years, p.gender, p.phone,
            st.display_name AS doctor_name,
            (SELECT COUNT(*)::int FROM service_parameters sp
@@ -98,13 +126,14 @@ export async function labQueue(opts: {
     LEFT JOIN doctors d ON d.id = v.doctor_id
     LEFT JOIN staff st  ON st.id = d.staff_id
     LEFT JOIN lab_orders lo ON lo.service_order_id = so.id
+    LEFT JOIN chits ch      ON ch.id = so.chit_id
     WHERE sv.category IN ('lab', 'radiology', 'procedure')
       AND so.status <> 'cancelled'
       AND (${category} = 'all' OR sv.category::text = ${category})
       ${excludeCategory ? sql`AND sv.category::text <> ${excludeCategory}` : sql``}
       AND (${q} = '' OR p.name ILIKE ${like} OR p.mrn ILIKE ${like}
            OR so.service_name ILIKE ${like} OR lo.report_no ILIKE ${like}
-           OR v.token_no::text = ${q})
+           OR COALESCE(ch.token_no, v.token_no)::text = ${q})
       AND ${having}
     ORDER BY (so.status = 'paid') DESC, so.ordered_at DESC
     LIMIT 300`)
@@ -471,6 +500,7 @@ export async function visitWork(visitId: number) {
            sv.id AS service_id, sv.category,
            lo.id AS lab_order_id, lo.report_no, lo.status AS lab_status,
            lo.sample_type, lo.notes, lo.verified_at,
+           ${BOOKED_AT} AS booked_at, lo.collected_at, lo.resulted_at,
            (SELECT COUNT(*)::int FROM service_parameters sp
             WHERE sp.service_id = sv.id AND sp.is_active) AS parameter_count
     FROM service_orders so
@@ -640,6 +670,7 @@ export async function verifyResult(labOrderId: number, by: string) {
 export async function reportFor(labOrderId: number) {
   const head = (await db.execute<any>(sql`
     SELECT lo.*, so.service_name, so.price_paisa, sv.category,
+           ${BOOKED_AT} AS booked_at,
            -- Needed to look up the test's interpretation bands when printing.
            sv.id AS service_id,
            p.mrn, p.name AS patient_name, p.age_years, p.gender, p.phone, p.cnic,

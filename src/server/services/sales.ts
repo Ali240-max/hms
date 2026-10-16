@@ -33,6 +33,20 @@ export type NewSaleInput = {
   patientId?: number
   /** Allow selling stock that expires within N days. Default: block expired only. */
   allowExpiringWithinDays?: number
+  /**
+   * 'counter' paid now, 'credit' owed by a customer, 'department' issued to a
+   * hospital department. Defaults from the pay method, so a credit sale from
+   * the till is a credit bill even when the caller does not say so.
+   */
+  saleKind?: 'counter' | 'credit' | 'department'
+  /** The hospital department a 'department' bill is issued to. */
+  departmentId?: number
+  /**
+   * Generated once per bill by the screen. A second request with the same key
+   * gets the first bill back instead of a second one, so a double click or a
+   * retry after a dropped connection cannot take the stock twice.
+   */
+  requestKey?: string
 }
 
 export class StockError extends Error {
@@ -214,7 +228,39 @@ function priceLine(qty: number, unitPaisa: number, discountPaisa: number, taxRat
 export async function createSale(db: NodePgDatabase<typeof s>, input: NewSaleInput) {
   if (!input.lines.length) throw new Error('Cannot bill an empty cart')
 
+  const saleKind = input.saleKind
+    ?? (input.departmentId ? 'department' : input.payMethod === 'credit' ? 'credit' : 'counter')
+  if (saleKind === 'department' && !input.departmentId) {
+    throw new Error('A department bill needs a department')
+  }
+
   return db.transaction(async (tx) => {
+    /*
+     * The same request twice returns the first bill.
+     *
+     * The lock is taken on the key before looking, so two copies of one
+     * request arriving together are serialised: the second waits, then finds
+     * the first one's bill. Without the lock both would look, both find
+     * nothing, and the unique index would turn the second into an error
+     * instead of the answer it should have had.
+     */
+    if (input.requestKey) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(32, hashtext(${input.requestKey}))`)
+      const [already] = await tx.select().from(s.sales)
+        .where(sql`request_key = ${input.requestKey}`).limit(1)
+      if (already) {
+        const n = await tx.execute<any>(sql`
+          SELECT COUNT(*)::int AS n FROM sale_items WHERE sale_id = ${already.id}`)
+        return { sale: already, items: Number((n.rows as any[])[0].n), duplicate: true }
+      }
+    }
+
+    if (saleKind === 'department') {
+      const dept = await tx.execute<any>(sql`
+        SELECT id FROM departments WHERE id = ${input.departmentId!} AND is_active`)
+      if (!(dept.rows as any[]).length) throw new Error('That department does not exist or is switched off')
+    }
+
     // Compliance runs before anything is locked or decremented, so a rejected
     // bill never leaves half-allocated batches behind.
     const controlled = await tx.execute<{ name: string }>(sql`
@@ -374,14 +420,27 @@ export async function createSale(db: NodePgDatabase<typeof s>, input: NewSaleInp
         discountPaisa: discountTotal,
         taxPaisa: taxTotal,
         totalPaisa: total,
-        paidPaisa: input.paidPaisa ?? total,
-        payMethod: input.payMethod ?? 'cash',
+        /*
+         * Nothing is taken at the counter for a credit or department bill,
+         * whatever the caller sent. The till used to send the full total for
+         * every non-cash method, credit included, which made every credit
+         * bill look paid and counted it as money collected the day it was
+         * written. What comes in later is recorded in sale_payments.
+         */
+        paidPaisa: saleKind === 'counter' ? (input.paidPaisa ?? total) : 0,
+        payMethod: saleKind === 'counter' ? (input.payMethod ?? 'cash') : 'credit',
         cashier: input.cashier,
         cashierStaffId: input.cashierStaffId,
         visitId: input.visitId ?? null,
         patientId: input.patientId ?? null
       })
       .returning()
+
+    // Columns that exist only in SQL (0008, 0039), not in schema.ts.
+    await tx.execute(sql`
+      UPDATE sales SET sale_kind = ${saleKind}, department_id = ${input.departmentId ?? null},
+                       request_key = ${input.requestKey ?? null}
+      WHERE id = ${sale.id}`)
 
     for (const p of pending) {
       await tx.insert(s.saleItems).values({
@@ -425,7 +484,7 @@ export async function createSale(db: NodePgDatabase<typeof s>, input: NewSaleInp
       })
     }
 
-    return { sale, items: pending.length }
+    return { sale, items: pending.length, duplicate: false }
   })
 }
 
